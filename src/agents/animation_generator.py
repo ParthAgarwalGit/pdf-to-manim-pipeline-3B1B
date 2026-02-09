@@ -6,6 +6,9 @@ including mathematical objects, transformations, and timing synchronization.
 
 import ast
 import re
+import anthropic 
+import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -64,13 +67,16 @@ class AnimationCodeGeneratorAgent(Agent):
     an LLM (GPT-4, Claude 3.5 Sonnet) with temperature=0 for code generation.
     """
     
-    def __init__(self, max_retries: int = 3):
-        """Initialize Animation Code Generator Agent.
-        
-        Args:
-            max_retries: Maximum retry attempts for code generation failures
-        """
+def __init__(self, max_retries: int = 3):
+        super().__init__()
         self.max_retries = max_retries
+        
+        # Initialize Anthropic Client
+        # This looks for os.environ["ANTHROPIC_API_KEY"]
+        if os.getenv("ANTHROPIC_API_KEY"):
+            self.client = anthropic.Anthropic()
+        else:
+            self.client = None
     
     def execute(self, input_data: AnimationGeneratorInput) -> AgentOutput:
         """Execute animation code generation.
@@ -162,44 +168,82 @@ class AnimationCodeGeneratorAgent(Agent):
             retryable_errors=["SYNTAX_ERROR", "API_TIMEOUT", "TRANSIENT_FAILURE"]
         )
     
-    def _generate_code(
-        self,
-        scene_spec: Any,
-        context: SharedContext
-    ) -> str:
-        """Generate Manim code for the scene.
+    def _generate_code(self, scene_spec: Any, context: SharedContext) -> str:
+        """Generate Manim code using GPT-4o with 3B1B style enforcement"""
         
-        Args:
-            scene_spec: Scene specification
-            context: Shared context with definitions and style
-            
-        Returns:
-            Generated Python code string
-        """
-        visual_intent = scene_spec.visual_intent
-        
-        # Generate code sections
-        math_objects_code = self._generate_mathematical_objects(
-            visual_intent.get("mathematical_objects", []),
-            context
-        )
-        transformations_code = self._generate_transformations(
-            visual_intent.get("transformations", []),
-            context
-        )
-        
-        # Combine into construct method
+        # Safety: Fallback if no key
+        if not os.getenv("OPENAI_API_KEY"):
+            return self._mock_generate_code(scene_spec, context)
+
         class_name = self._get_class_name(scene_spec.scene_id)
-        code = f'''class {class_name}(Scene):
-    def construct(self):
-{math_objects_code}
-{transformations_code}
         
-        # Wait for duration
-        self.wait({scene_spec.duration_estimate})
-'''
+        # Prepare data for the LLM
+        scene_data = {
+            "narration": scene_spec.narration,
+            "duration": scene_spec.duration_estimate,
+            "objects": [
+                {"type": obj.object_type, "content": obj.content, "style": obj.style.__dict__} 
+                for obj in scene_spec.visual_intent.mathematical_objects
+            ],
+            "transformations": [
+                {"type": t.transformation_type, "target": t.target_object, "timing": t.timing} 
+                for t in scene_spec.visual_intent.transformations
+            ]
+        }
+
+        # THE 3B1B SYSTEM PROMPT
+        system_prompt = f"""
+        You are an expert Manim developer specializing in the 3Blue1Brown style.
         
-        return code
+        TASK:
+        Write a Python class named '{class_name}' that inherits from 'Scene'.
+        
+        STYLE GUIDELINES:
+        1. Animations: Use 'Write' and 'Create' for text. Use 'ReplacementTransform' for equations.
+        2. Colors: Use the default black background. Use accents like BLUE, YELLOW, and GREEN for emphasis.
+        3. Pacing: Ensure animations match the duration: {scene_spec.duration_estimate}s.
+        4. Math: ALWAYS use MathTex(r"...") for equations.
+        
+        OUTPUT RULES:
+        - Return ONLY valid Python code.
+        - Do NOT include markdown formatting (no ```python blocks).
+        - Do NOT include imports (I will handle them).
+        """
+
+        user_prompt = f"""
+        Generate the 'construct(self)' method for this scene plan:
+        {json.dumps(scene_data, indent=2)}
+        """
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1 # Keep strict syntax
+            )
+            
+            raw_code = response.choices[0].message.content
+            return self._clean_llm_code(raw_code, class_name)
+
+        except Exception as e:
+            print(f"LLM generation failed: {e}")
+            return self._mock_generate_code(scene_spec, context)
+
+    def _clean_llm_code(self, raw_code: str, class_name: str) -> str:
+        """Strip markdown and ensure class structure"""
+        # Remove markdown fences if present
+        clean = raw_code.replace("```python", "").replace("```", "").strip()
+        
+        # If LLM only returned the method body, wrap it in the class
+        if f"class {class_name}" not in clean:
+            # Indent the body
+            body = "\n".join(["    " + line for line in clean.split("\n")])
+            return f"class {class_name}(Scene):\n    def construct(self):\n{body}"
+            
+        return clean
     
     def _generate_mathematical_objects(
         self,
