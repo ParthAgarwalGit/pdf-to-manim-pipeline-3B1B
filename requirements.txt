@@ -1,0 +1,17 @@
+# Core dependencies
+manim>=0.17.0
+pydantic>=2.0.0
+boto3>=1.28.0
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+hypothesis>=6.82.0
+
+# Additional dependencies
+jsonschema>=4.19.0
+python-dateutil>=2.8.2
+
+# PDF processing and OCR
+PyMuPDF>=1.23.0
+Pillow>=10.0.0
