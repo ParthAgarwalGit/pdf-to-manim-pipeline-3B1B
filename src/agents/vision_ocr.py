@@ -15,6 +15,8 @@ import time
 import openai
 import os
 from typing import List, Optional, Tuple
+import base64
+from io import BytesIO
 
 try:
     from PIL import Image
@@ -67,20 +69,6 @@ class VisionOCRAgent(Agent):
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY")
         openai.api_key = self.api_key
-
-    def _extract_diagram_description(self, image_data):
-        # This replaces the mock logic with a real API call
-        response = openai.chat.completions.create(
-            model="gpt-4-vision-preview",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Describe this diagram for a Manim animation:"},
-                    {"type": "image_url", "image_url": {"url": image_data}}
-                ]
-            }]
-        )
-        return response.choices[0].message.content
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute OCR extraction on the PDF file
@@ -455,47 +443,53 @@ class VisionOCRAgent(Agent):
                     ))
         
         return diagrams
+
+def _mock_diagram_analysis(
+    self, 
+    img: Image.Image, 
+    bbox: Tuple[float, float, float, float]
+) -> Tuple[str, str, List[str]]:
+    """
+    REPLACES MOCK LOGIC WITH REAL VISION CALL
+    Processes a specific cropped area of the page image.
+    """
+    # 1. Crop the image to the diagram's bounding box
+    # (x0, y0, x1, y1)
+    cropped_img = img.crop(bbox)
     
-    def _mock_diagram_analysis(
-        self,
-        img: Image.Image,
-        bbox: Tuple[float, float, float, float]
-    ) -> Tuple[str, str, List[str]]:
-        """Mock diagram analysis using vision model
+    # 2. Convert PIL Image to Base64 string for OpenAI
+    buffered = BytesIO()
+    cropped_img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    # 3. Call the Vision Model
+    try:
+        # Using gpt-4o as suggested in SETUP.md for better accuracy/cost
+        response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Identify the type of this mathematical diagram (graph, flowchart, geometric, or plot) and provide a detailed description for a Manim animator."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}
+                ]
+            }],
+            max_tokens=300
+        )
         
-        In production, this would call GPT-4 Vision or Claude 3 API.
+        full_description = response.choices[0].message.content
         
-        Args:
-            img: PIL Image of the page
-            bbox: Bounding box of the diagram (x0, y0, x1, y1)
-            
-        Returns:
-            Tuple of (diagram_type, description, visual_elements)
-        """
-        # Mock classification based on aspect ratio and size
-        width = bbox[2] - bbox[0]
-        height = bbox[3] - bbox[1]
-        aspect_ratio = width / height if height > 0 else 1.0
+        # 4. Parse the response into the expected tuple format
+        # In a real scenario, you'd use a structured output/parser here
+        diagram_type = "geometric" # Default
+        if "graph" in full_description.lower(): diagram_type = "graph"
+        elif "flow" in full_description.lower(): diagram_type = "flowchart"
         
-        # Simple heuristic classification
-        if aspect_ratio > 1.5:
-            diagram_type = "graph"
-            description = "A graph showing the relationship between variables with axes and plotted points"
-            visual_elements = ["axes", "grid lines", "plotted points", "labels"]
-        elif aspect_ratio < 0.7:
-            diagram_type = "flowchart"
-            description = "A flowchart diagram showing process flow with connected boxes and arrows"
-            visual_elements = ["boxes", "arrows", "text labels", "decision nodes"]
-        elif width * height > 50000:
-            diagram_type = "plot"
-            description = "A mathematical plot with coordinate axes and function curves"
-            visual_elements = ["x-axis", "y-axis", "curve", "tick marks"]
-        else:
-            diagram_type = "geometric"
-            description = "A geometric figure showing shapes and spatial relationships"
-            visual_elements = ["shapes", "lines", "angles", "labels"]
-        
-        return diagram_type, description, visual_elements
+        return diagram_type, full_description, ["extracted_via_vision"]
+
+    except Exception as e:
+        logger.error(f"Vision API call failed: {e}")
+        return "unknown", "Failed to extract description", []
     
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is a FileReference object
