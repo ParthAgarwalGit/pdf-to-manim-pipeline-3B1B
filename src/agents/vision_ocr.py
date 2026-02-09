@@ -12,6 +12,8 @@ import io
 import logging
 import re
 import time
+import openai
+import os
 from typing import List, Optional, Tuple
 
 try:
@@ -63,8 +65,22 @@ class VisionOCRAgent(Agent):
     MAX_RETRIES = 3  # Maximum retry attempts for API calls
     
     def __init__(self):
-        """Initialize the Vision+OCR Agent"""
-        self.retry_count = 0
+        self.api_key = os.getenv("OPENAI_API_KEY")
+        openai.api_key = self.api_key
+
+    def _extract_diagram_description(self, image_data):
+        # This replaces the mock logic with a real API call
+        response = openai.chat.completions.create(
+            model="gpt-4-vision-preview",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this diagram for a Manim animation:"},
+                    {"type": "image_url", "image_url": {"url": image_data}}
+                ]
+            }]
+        )
+        return response.choices[0].message.content
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute OCR extraction on the PDF file
