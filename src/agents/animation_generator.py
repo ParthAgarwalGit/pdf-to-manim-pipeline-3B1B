@@ -169,10 +169,10 @@ def __init__(self, max_retries: int = 3):
         )
     
     def _generate_code(self, scene_spec: Any, context: SharedContext) -> str:
-        """Generate Manim code using GPT-4o with 3B1B style enforcement"""
+        """Generate Manim code using Anthropic Claude with 3B1B style enforcement"""
         
         # Safety: Fallback if no key
-        if not os.getenv("OPENAI_API_KEY"):
+        if not os.getenv("ANTHROPIC_API_KEY"):
             return self._mock_generate_code(scene_spec, context)
 
         class_name = self._get_class_name(scene_spec.scene_id)
@@ -217,7 +217,7 @@ def __init__(self, max_retries: int = 3):
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="claude-3-5-sonnet-20240620",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
