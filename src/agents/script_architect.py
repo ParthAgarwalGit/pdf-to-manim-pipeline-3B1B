@@ -16,8 +16,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import openai
 import os
 
-# Initialize client (it will look for OPENAI_API_KEY in os.environ)
-client = openai.OpenAI()
 
 from src.agents.base import (
     Agent,
@@ -54,6 +52,7 @@ class ScriptArchitectInput(AgentInput):
             ocr_output: OCR output from Vision+OCR Agent
             configuration: Configuration parameters for storyboard generation
         """
+        
         self.ocr_output = ocr_output
         self.configuration = configuration
 
@@ -96,6 +95,15 @@ class ScriptArchitectAgent(Agent):
     def __init__(self):
         """Initialize the Script/Storyboard Architect Agent"""
         self.retry_count = 0
+        super().__init__()
+        # FIX: Initialize the client HERE, inside __init__
+        # This checks for the key safely when the agent is actually used
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            self.client = openai.OpenAI(api_key=api_key)
+        else:
+            self.client = None
+            print("⚠️ Warning: OPENAI_API_KEY not found. ScriptArchitect will fail if called.")
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute storyboard generation
