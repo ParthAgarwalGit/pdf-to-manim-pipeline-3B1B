@@ -202,4 +202,7 @@ class Agent(ABC):
 
 ## Contributing
 
-[To be determined]
+Parth Agarwal
+Vignesh KS
+Divyansh Bisht
+Sumit Galgalkar
