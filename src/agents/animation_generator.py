@@ -67,7 +67,7 @@ class AnimationCodeGeneratorAgent(Agent):
     an LLM (GPT-4, Claude 3.5 Sonnet) with temperature=0 for code generation.
     """
     
-def __init__(self, max_retries: int = 3):
+    def __init__(self, max_retries: int = 3):
         super().__init__()
         self.max_retries = max_retries
         
@@ -469,3 +469,17 @@ Generated: {datetime.now().isoformat()}
             result += ' '
         
         return result
+    
+    # Missing method mock for fallback functionality
+    def _mock_generate_code(self, scene_spec: Any, context: SharedContext) -> str:
+        """Fallback mock generator when API is unavailable"""
+        class_name = self._get_class_name(scene_spec.scene_id)
+        
+        return f"""class {class_name}(Scene):
+    def construct(self):
+        # MOCK GENERATION - API KEY NOT FOUND
+        # Narration: {scene_spec.narration}
+{self._generate_mathematical_objects(scene_spec.visual_intent.mathematical_objects, context)}
+
+{self._generate_transformations(scene_spec.visual_intent.transformations, context)}
+"""
