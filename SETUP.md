@@ -20,6 +20,34 @@ This guide will help you set up and run the PDF-to-Manim pipeline. The current i
 
 ## Quick Start (Mock Mode)
 
+### Google Colab (recommended notebook flow)
+
+Use a single dependency install step to avoid partial installs that can leave the
+environment in an inconsistent state.
+
+```python
+!git clone https://github.com/ParthAgarwalGit/pdf-to-manim-pipeline-3B1B.git
+%cd /content/pdf-to-manim-pipeline-3B1B
+
+# Install all required dependencies from the project lockstep list
+!pip install -r requirements.txt
+!pip install openai anthropic python-dotenv
+```
+
+Set environment variables **before** importing pipeline modules:
+
+```python
+import os
+
+os.environ["OPENAI_API_KEY"] = "<your-openai-key>"
+os.environ["ANTHROPIC_API_KEY"] = "<your-anthropic-key>"
+
+from src.orchestrator.pipeline import Orchestrator, PipelineConfig
+
+config = PipelineConfig()
+orchestrator = Orchestrator(config=config)
+```
+
 ### 1. Prerequisites
 
 - **Python 3.8+** installed
