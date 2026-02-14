@@ -99,7 +99,6 @@ class Agent(ABC):
         """
         pass
     
-    @abstractmethod
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input conforms to expected schema
         
@@ -113,9 +112,10 @@ class Agent(ABC):
             This method should perform schema validation only, not business logic.
             It should be fast and deterministic.
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement validate_input()"
+        )
     
-    @abstractmethod
     def get_retry_policy(self) -> RetryPolicy:
         """Return retry policy for this agent
         
@@ -127,4 +127,4 @@ class Agent(ABC):
             a policy with max_attempts=1. Agents with transient failures (e.g.,
             API calls) should return a policy with exponential backoff.
         """
-        pass
+        return RetryPolicy(max_attempts=1)
