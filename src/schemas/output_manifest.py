@@ -1,7 +1,7 @@
 """Output manifest schema for Persistence Agent."""
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -47,9 +47,34 @@ class OutputFile(BaseModel):
         return v
 
 
+class RunConfig(BaseModel):
+    """Records what the run actually did."""
+
+    dry_run: bool = Field(
+        ...,
+        description="Whether this run was a dry run (stops after storyboard)"
+    )
+    enable_render: bool = Field(
+        ...,
+        description="Whether video rendering was enabled"
+    )
+    enable_tts: bool = Field(
+        ...,
+        description="Whether TTS generation was enabled"
+    )
+    render_quality: str = Field(
+        ...,
+        description="Render quality setting (low/medium/high)"
+    )
+    tts_voice: str = Field(
+        ...,
+        description="TTS voice selection"
+    )
+
+
 class FailedSceneManifest(BaseModel):
     """Information about a scene that failed to generate."""
-    
+
     scene_id: str = Field(..., description="Unique identifier for the failed scene")
     error: str = Field(..., description="Error message describing the failure")
 
@@ -96,6 +121,10 @@ class OutputManifest(BaseModel):
     failed_scenes: List[FailedSceneManifest] = Field(
         default_factory=list,
         description="Array of scenes that failed to generate"
+    )
+    run_config: Optional[RunConfig] = Field(
+        default=None,
+        description="Effective runtime configuration for this run"
     )
     
     @field_validator('status')

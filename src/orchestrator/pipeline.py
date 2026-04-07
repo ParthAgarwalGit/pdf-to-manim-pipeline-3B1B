@@ -75,6 +75,11 @@ class PipelineConfig:
         enable_ocr_debug: Whether to write OCR output for debugging
         strict: If True, agents raise errors when API keys are missing
                 instead of falling back to mock/heuristic outputs
+        enable_tts: If True, run TTS generation stage
+        enable_render: If True, run video rendering stage
+        dry_run: If True, stop after storyboard generation (skip code, render, TTS, composition)
+        tts_voice: TTS voice selection (alloy/echo/fable/onyx/nova/shimmer)
+        render_quality: Video render quality (low/medium/high)
     """
     verbosity: str = "medium"
     depth: str = "intermediate"
@@ -88,6 +93,11 @@ class PipelineConfig:
     enable_manim_dry_run_validation: bool = False
     enable_final_video_review: bool = True
     strict: bool = False
+    enable_tts: bool = True
+    enable_render: bool = True
+    dry_run: bool = False
+    tts_voice: str = "alloy"
+    render_quality: str = "medium"
     
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -268,7 +278,39 @@ class Orchestrator:
             
             # Step 5: JSON Sanitization
             sanitized_storyboard = self._run_json_sanitizer(storyboard, self.structured_logger)
-            
+
+            # ── dry_run gate ─────────────────────────────────────
+            if self.config.dry_run:
+                logger.info("Dry run: stopping after sanitized storyboard")
+                # Still run persistence to write storyboard/planning artifacts to disk
+                manifest = self._run_persistence(
+                    None,  # No scene output in dry run
+                    sanitized_storyboard,
+                    ocr_output if self.config.enable_ocr_debug else None,
+                    validated_ref,
+                    self.structured_logger
+                )
+                manifest = self._finalize_manifest(
+                    manifest,
+                    video_output=None,
+                    tts_output=None,
+                    composition_output=None,
+                    video_review_output=None,
+                )
+                pipeline_duration = time.time() - pipeline_start_time
+                scene_success_rate = (
+                    manifest.successful_scenes / manifest.total_scenes
+                    if manifest.total_scenes > 0 else 0.0
+                )
+                self.structured_logger.log_pipeline_complete(
+                    duration_seconds=pipeline_duration,
+                    output_directory=manifest.output_directory,
+                    status=manifest.status,
+                    scene_success_rate=scene_success_rate
+                )
+                logger.info(f"Dry run completed in {pipeline_duration:.2f}s")
+                return manifest
+
             # Step 6: Scene Processing
             scene_output = self._run_scene_controller(
                 sanitized_storyboard,
@@ -286,36 +328,51 @@ class Orchestrator:
                 self.structured_logger
             )
 
-            # Step 8: Video Rendering — run Manim on the written .py files
-            video_output = self._run_video_renderer(
-                manifest,
-                self.structured_logger
-            )
+            # Step 8: Video Rendering (conditional)
+            video_output = None
+            if self.config.enable_render:
+                video_output = self._run_video_renderer(
+                    manifest,
+                    self.structured_logger
+                )
+            else:
+                logger.info("Render skipped (enable_render=False)")
 
-            # Step 9: TTS Generation — generate narration audio for each scene
-            tts_output = self._run_tts_generation(
-                sanitized_storyboard,
-                manifest,
-                self.structured_logger
-            )
+            # Step 9: TTS Generation (conditional)
+            tts_output = None
+            if self.config.enable_tts:
+                tts_output = self._run_tts_generation(
+                    sanitized_storyboard,
+                    manifest,
+                    self.structured_logger
+                )
+            else:
+                logger.info("TTS skipped (enable_tts=False)")
 
-            # Step 10: Audio-Video Composition — merge .mp4 + .mp3 per scene
-            composition_output = self._run_audio_video_composition(
-                video_output,
-                tts_output,
-                manifest,
-                self.structured_logger
-            )
+            # Step 10: Audio-Video Composition (requires both render and TTS)
+            composition_output = None
+            if self.config.enable_render and self.config.enable_tts:
+                composition_output = self._run_audio_video_composition(
+                    video_output,
+                    tts_output,
+                    manifest,
+                    self.structured_logger
+                )
+            else:
+                logger.info("Audio-video composition skipped (missing render or TTS)")
 
-            video_review_output = self._run_final_video_review(
-                sanitized_storyboard,
-                scene_output,
-                manifest,
-                video_output,
-                tts_output,
-                composition_output,
-                self.structured_logger
-            )
+            # Final video review (only if we have rendered output)
+            video_review_output = None
+            if self.config.enable_render:
+                video_review_output = self._run_final_video_review(
+                    sanitized_storyboard,
+                    scene_output,
+                    manifest,
+                    video_output,
+                    tts_output,
+                    composition_output,
+                    self.structured_logger
+                )
 
             manifest = self._finalize_manifest(
                 manifest,
@@ -1249,6 +1306,17 @@ class Orchestrator:
         video_review_output,
     ) -> OutputManifest:
         """Add runtime media artifacts and quality reports to the final manifest."""
+        from src.schemas.output_manifest import RunConfig
+
+        # Record effective runtime configuration
+        manifest.run_config = RunConfig(
+            dry_run=self.config.dry_run,
+            enable_render=self.config.enable_render,
+            enable_tts=self.config.enable_tts,
+            render_quality=self.config.render_quality,
+            tts_voice=self.config.tts_voice,
+        )
+
         self._register_runtime_artifact(
             manifest,
             Path(manifest.output_directory) / "pipeline.log",

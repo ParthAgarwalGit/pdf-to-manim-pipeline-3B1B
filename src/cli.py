@@ -228,7 +228,12 @@ def convert(
             audience=audience,
             base_output_dir=output_dir,
             enable_ocr_debug=False,
-            strict=strict
+            strict=strict,
+            enable_tts=not skip_tts,
+            enable_render=not skip_render,
+            dry_run=dry_run,
+            tts_voice=voice,
+            render_quality=quality,
         )
 
         # Initialize cost tracker

@@ -827,3 +827,103 @@ class TestQualityLoops:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestPipelineConfigExecutionFlags:
+    """Test that PipelineConfig properly carries execution flags."""
+
+    def test_pipeline_config_has_execution_flags(self):
+        """Test that PipelineConfig has all execution control flags."""
+        config = PipelineConfig()
+        
+        assert hasattr(config, 'enable_tts')
+        assert hasattr(config, 'enable_render')
+        assert hasattr(config, 'dry_run')
+        assert hasattr(config, 'tts_voice')
+        assert hasattr(config, 'render_quality')
+
+    def test_pipeline_config_defaults_are_truthful(self):
+        """Test default values match expected behavior."""
+        config = PipelineConfig()
+        
+        assert config.enable_tts is True
+        assert config.enable_render is True
+        assert config.dry_run is False
+        assert config.tts_voice == "alloy"
+        assert config.render_quality == "medium"
+
+    def test_pipeline_config_can_disable_tts(self):
+        """Test that TTS can be disabled via config."""
+        config = PipelineConfig(enable_tts=False)
+        assert config.enable_tts is False
+
+    def test_pipeline_config_can_disable_render(self):
+        """Test that rendering can be disabled via config."""
+        config = PipelineConfig(enable_render=False)
+        assert config.enable_render is False
+
+    def test_pipeline_config_can_enable_dry_run(self):
+        """Test that dry_run mode can be enabled via config."""
+        config = PipelineConfig(dry_run=True)
+        assert config.dry_run is True
+
+    def test_pipeline_config_can_set_voice(self):
+        """Test that TTS voice can be set via config."""
+        config = PipelineConfig(tts_voice="nova")
+        assert config.tts_voice == "nova"
+
+    def test_pipeline_config_can_set_quality(self):
+        """Test that render quality can be set via config."""
+        config = PipelineConfig(render_quality="high")
+        assert config.render_quality == "high"
+
+
+class TestOutputManifestRecordsRunConfig:
+    """Test that OutputManifest records the effective run configuration."""
+
+    def test_output_manifest_has_run_config_field(self):
+        """Test that OutputManifest has run_config field."""
+        manifest = OutputManifest(
+            output_directory="/tmp/out",
+            files=[],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+            failed_scenes=[],
+        )
+        
+        assert hasattr(manifest, 'run_config')
+        assert manifest.run_config is None  # Should be optional
+
+    def test_output_manifest_can_store_run_config(self):
+        """Test that OutputManifest can store RunConfig."""
+        from src.schemas.output_manifest import RunConfig
+        
+        run_config = RunConfig(
+            dry_run=False,
+            enable_render=True,
+            enable_tts=False,
+            render_quality="high",
+            tts_voice="nova",
+        )
+        
+        manifest = OutputManifest(
+            output_directory="/tmp/out",
+            files=[],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+            failed_scenes=[],
+            run_config=run_config,
+        )
+        
+        assert manifest.run_config is not None
+        assert manifest.run_config.dry_run is False
+        assert manifest.run_config.enable_render is True
+        assert manifest.run_config.enable_tts is False
+        assert manifest.run_config.render_quality == "high"
+        assert manifest.run_config.tts_voice == "nova"
