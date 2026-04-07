@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.schemas.storyboard import VisualIntent
+
 
 class VisualStyle(BaseModel):
     """Visual style parameters for consistent appearance across scenes."""
@@ -52,9 +54,9 @@ class SceneSpec(BaseModel):
     
     scene_id: str = Field(..., description="Unique identifier for the scene")
     narration: str = Field(..., description="Narration text for the scene")
-    visual_intent: Dict[str, Any] = Field(
+    visual_intent: VisualIntent = Field(
         ...,
-        description="Visual intent specification (see Storyboard schema)"
+        description="Visual intent specification with mathematical objects and transformations"
     )
     duration_estimate: float = Field(
         ...,
@@ -68,6 +70,14 @@ class SceneSpec(BaseModel):
         """Ensure scene_id is not empty."""
         if not v or not v.strip():
             raise ValueError("scene_id cannot be empty")
+        return v
+
+    @field_validator('narration')
+    @classmethod
+    def validate_narration(cls, v: str) -> str:
+        """Ensure narration is not empty."""
+        if not v or not v.strip():
+            raise ValueError("narration cannot be empty")
         return v
 
 

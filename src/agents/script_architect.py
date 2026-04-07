@@ -13,6 +13,9 @@ import logging
 import re
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Set, Tuple
+import openai
+import os
+
 
 from src.agents.base import (
     Agent,
@@ -42,15 +45,23 @@ logger = logging.getLogger(__name__)
 class ScriptArchitectInput(AgentInput):
     """Input for Script/Storyboard Architect Agent"""
     
-    def __init__(self, ocr_output: OCROutput, configuration: Configuration):
+    def __init__(
+        self,
+        ocr_output: OCROutput,
+        configuration: Configuration,
+        review_feedback: Optional[List[str]] = None,
+    ):
         """Initialize input
         
         Args:
             ocr_output: OCR output from Vision+OCR Agent
             configuration: Configuration parameters for storyboard generation
+            review_feedback: Optional critique to apply on a regeneration pass
         """
+        
         self.ocr_output = ocr_output
         self.configuration = configuration
+        self.review_feedback = review_feedback or []
 
 
 class ScriptArchitectAgent(Agent):
@@ -88,9 +99,27 @@ class ScriptArchitectAgent(Agent):
     DEFAULT_DEPTH = "intermediate"
     DEFAULT_AUDIENCE = "undergraduate"
     
-    def __init__(self):
-        """Initialize the Script/Storyboard Architect Agent"""
+    def __init__(self, strict: bool = False):
+        """Initialize the Script/Storyboard Architect Agent.
+
+        Args:
+            strict: If True, raise immediately when OPENAI_API_KEY is missing
+                    instead of falling back to mock narration/visual generation.
+        """
         self.retry_count = 0
+        self.strict = strict
+        super().__init__()
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            self.client = openai.OpenAI(api_key=api_key)
+        else:
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "OPENAI_API_KEY is required in --strict mode for ScriptArchitect"
+                )
+            self.client = None
+            logger.warning("OPENAI_API_KEY not found. ScriptArchitect will use mock fallbacks.")
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute storyboard generation
@@ -114,9 +143,12 @@ class ScriptArchitectAgent(Agent):
         script_input: ScriptArchitectInput = input_data
         ocr_output = script_input.ocr_output
         config = script_input.configuration
+        review_feedback = script_input.review_feedback or []
         
         logger.info(f"Starting storyboard generation for: {ocr_output.pdf_metadata.filename}")
         logger.info(f"Configuration: verbosity={config.verbosity}, depth={config.depth}, audience={config.audience}")
+        if review_feedback:
+            logger.info(f"Applying {len(review_feedback)} storyboard revision hints")
         
         try:
             # Step 1: Identify core concepts from OCR output
@@ -132,7 +164,12 @@ class ScriptArchitectAgent(Agent):
             logger.info(f"Ordered {len(ordered_concepts)} concepts pedagogically")
             
             # Step 4: Decompose into atomic scenes
-            scenes = self._decompose_into_scenes(ordered_concepts, ocr_output, config)
+            scenes = self._decompose_into_scenes(
+                ordered_concepts,
+                ocr_output,
+                config,
+                review_feedback=review_feedback,
+            )
             logger.info(f"Decomposed content into {len(scenes)} scenes")
             
             # Step 5: Assemble storyboard JSON
@@ -411,7 +448,8 @@ class ScriptArchitectAgent(Agent):
         self,
         ordered_concepts: List[str],
         ocr_output: OCROutput,
-        config: Configuration
+        config: Configuration,
+        review_feedback: Optional[List[str]] = None,
     ) -> List[Scene]:
         """Decompose content into atomic scenes
         
@@ -441,7 +479,8 @@ class ScriptArchitectAgent(Agent):
                 concept_id=concept_id,
                 scene_index=scene_index,
                 ocr_output=ocr_output,
-                config=config
+                config=config,
+                review_feedback=review_feedback,
             )
             scenes.append(scene)
         
@@ -452,7 +491,8 @@ class ScriptArchitectAgent(Agent):
         concept_id: str,
         scene_index: int,
         ocr_output: OCROutput,
-        config: Configuration
+        config: Configuration,
+        review_feedback: Optional[List[str]] = None,
     ) -> Scene:
         """Generate a single scene for a concept
         
@@ -469,13 +509,24 @@ class ScriptArchitectAgent(Agent):
         # Format: scene_001, scene_002, etc. (Requirements 10.2, 10.4)
         scene_id = f"scene_{scene_index + 1:03d}"
         
-        # Generate narration based on configuration
-        narration = self._generate_narration(concept_id, config, ocr_output)
-        
-        # Generate visual intent
-        visual_intent = self._generate_visual_intent(concept_id, config, ocr_output)
-        
-        # Estimate duration based on narration length and transformations
+        # Generate narration FIRST — this is the creative backbone
+        narration = self._generate_narration(
+            concept_id,
+            config,
+            ocr_output,
+            review_feedback=review_feedback,
+        )
+
+        # Generate visual intent SECOND — pass narration so visuals match what's spoken
+        visual_intent = self._generate_visual_intent(
+            concept_id,
+            config,
+            ocr_output,
+            narration=narration,
+            review_feedback=review_feedback,
+        )
+
+        # Duration is driven by narration word count (the source of truth)
         duration = self._estimate_duration(narration, visual_intent)
         
         # Determine dependencies (previous scene if not first)
@@ -497,12 +548,10 @@ class ScriptArchitectAgent(Agent):
         self,
         concept_id: str,
         config: Configuration,
-        ocr_output: OCROutput
+        ocr_output: OCROutput,
+        review_feedback: Optional[List[str]] = None,
     ) -> str:
-        """Generate narration text for a concept
-        
-        Mock implementation that generates pedagogically sound narration
-        emphasizing intuition over formalism.
+        """Generate narration text for a concept using LLM
         
         Args:
             concept_id: ID of the concept
@@ -512,87 +561,324 @@ class ScriptArchitectAgent(Agent):
         Returns:
             Narration text string
         """
-        # Mock narration generation based on configuration
-        # In production, this would use LLM with temperature=0
-        
-        base_narration = f"Let's explore the concept of {concept_id}. "
-        
-        # Adjust based on verbosity
-        if config.verbosity == "low":
-            narration = base_narration + "This is a fundamental idea in mathematics."
-        elif config.verbosity == "high":
-            narration = base_narration + (
-                "This is a fundamental idea in mathematics that builds on previous concepts. "
-                "We'll see how it connects to what we've learned and why it's important. "
-                "Pay attention to the visual representation as it will help build intuition."
+        # 1. Safety Check: If no API key, fall back to the old mock logic
+        if not os.getenv("OPENAI_API_KEY"):
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "OPENAI_API_KEY is required in --strict mode for narration generation"
+                )
+            logger.warning("No OpenAI API key found. Using mock narration.")
+            return self._generate_mock_narration_fallback(concept_id, config)
+
+        try:
+            # 2. Extract Context — full OCR text + extracted math
+            context_text = ""
+            math_expressions = []
+            for page in ocr_output.pages:
+                context_text += " ".join(block.text for block in page.text_blocks) + "\n"
+                for expr in page.math_expressions:
+                    if not expr.extraction_failed:
+                        math_expressions.append(expr.latex)
+
+            math_block = ""
+            if math_expressions:
+                math_block = "\n--- KEY FORMULAS FROM THE PDF ---\n"
+                math_block += "\n".join(f"  • {e}" for e in math_expressions[:20])
+                math_block += "\n---------------------------------\n"
+
+            # 3. Style nuances from config
+            verbosity_instruction = "Provide a balanced explanation."
+            if config.verbosity == "low":
+                verbosity_instruction = "Keep it concise. Focus ONLY on the fundamental idea."
+            elif config.verbosity == "high":
+                verbosity_instruction = "Be detailed. Connect this to previous concepts, explain why it's important, and explicitly mention how the visual elements help build intuition."
+
+            audience_instruction = "Build understanding through clear, standard academic examples."
+            if config.audience == "high-school":
+                audience_instruction = "Use relatable, real-world examples from everyday life. Avoid dense jargon."
+            elif config.audience == "graduate":
+                audience_instruction = "Focus on theoretical implications, generalizations, and formal rigor."
+
+            review_block = ""
+            if review_feedback:
+                review_block = "\nREVISION FEEDBACK FROM THE LAST QUALITY PASS:\n"
+                review_block += "\n".join(f"- {item}" for item in review_feedback[:8])
+                review_block += "\nAddress these issues directly in the revised narration.\n"
+
+            # 4. Construct the Prompt — anchored to actual PDF content
+            prompt = f"""You are a world-class educational scriptwriter like Grant Sanderson (3Blue1Brown).
+
+--- SOURCE MATERIAL (extracted from the PDF) ---
+{context_text[:4000]}
+{math_block}
+--- END SOURCE MATERIAL ---
+
+TASK: Write a narration script that EXPLAINS the content above.
+
+CRITICAL CONTENT RULES:
+1. You MUST reference the specific definitions, formulas, and examples from
+   the source material.  If the PDF defines foundational formulae to the concepts like sin θ = opposite / hypotenuse in trigonometry, then
+   your narration must state that exact relationship and explain it.
+2. Every formula listed above should be mentioned and explained intuitively.
+3. Build deeper understanding by connecting the formulas to visual intuition
+   (e.g. "sin θ equals the y-coordinate on the unit circle" if the PDF
+   covers unit circles).  This deeper insight is what makes it 3Blue1Brown.
+4. Do NOT invent examples that contradict or ignore the source material.
+   Extend and illustrate, but stay faithful. If a visually explainable example is present in the pdf, you MUST use it.
+5. EVERY concrete example you mention (like a specific triangle with
+   sides 6 and 10) MUST be something that can be animated. If you mention
+   it in words, the viewer will expect to see it on screen.
+
+STYLE GUIDELINES:
+1. TONE: Friendly, conversational, and intuitive.
+2. VERBOSITY ({config.verbosity}): {verbosity_instruction}
+3. AUDIENCE ({config.audience}): {audience_instruction}
+4. FORMAT: Return ONLY the spoken text. No markdown, no "Scene 1:", no
+   stage directions, no headers.
+{review_block}
+"""
+
+            # 5. Call the API
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2, # Slight creativity allowed, but mostly deterministic
             )
-        else:  # medium
-            narration = base_narration + (
-                "This concept is important for understanding the broader topic. "
-                "Watch how the visual elements illustrate the key ideas."
-            )
-        
-        # Adjust based on audience
-        if config.audience == "high-school":
-            narration += " Think of this in terms of familiar examples from everyday life."
-        elif config.audience == "graduate":
-            narration += " Consider the theoretical implications and generalizations."
-        else:  # undergraduate
-            narration += " We'll build understanding through clear examples."
-        
-        return narration
+            
+            return response.choices[0].message.content
+
+        except Exception as e:
+            logger.error(f"Failed to generate narration via LLM: {e}")
+            return f"Error generating narration for {concept_id}. Please check logs."
+
+    def _generate_mock_narration_fallback(self, concept_id, config):
+        """Helper to keep the old mock logic accessible if API fails"""
+        base = f"Let's explore the concept of {concept_id}. "
+        if config.verbosity == "low": return base + "This is a fundamental idea."
+        if config.audience == "high-school": return base + "Imagine this in real life."
+        return base + "This concept is crucial."
     
     def _generate_visual_intent(
         self,
         concept_id: str,
         config: Configuration,
-        ocr_output: OCROutput
+        ocr_output: OCROutput,
+        narration: str = "",
+        review_feedback: Optional[List[str]] = None,
     ) -> VisualIntent:
-        """Generate visual intent for a concept
-        
-        Mock implementation that creates mathematical objects and transformations.
-        
+        """Generate visual intent for a concept, synchronized with narration.
+
+        The narration is the single source of truth. Visual intent must depict
+        exactly what the narration describes, in the same order and at matching
+        timestamps so that the final video and TTS audio stay in lock-step.
+
         Args:
             concept_id: ID of the concept
             config: Configuration parameters
             ocr_output: OCR output for math expressions
-            
+            narration: The already-generated narration text for this scene.
+                       Visuals are planned to match this narration beat-by-beat.
+
         Returns:
-            VisualIntent object
+            VisualIntent object with structured animation plan
         """
-        # Mock visual intent generation
-        # In production, this would use LLM to analyze content and generate intent
-        
-        mathematical_objects: List[MathematicalObject] = []
-        transformations: List[Transformation] = []
-        
-        # Create a sample mathematical object (equation)
-        mathematical_objects.append(MathematicalObject(
-            object_type="equation",
-            content=f"f(x) = x^2",  # Mock equation
-            style=ObjectStyle(color="blue", position="center")
+        # 1. Safety Check: Fallback if no API key
+        if not os.getenv("OPENAI_API_KEY"):
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "OPENAI_API_KEY is required in --strict mode for visual intent generation"
+                )
+            logger.warning("No OpenAI API key found. Using mock visual intent.")
+            return self._generate_mock_visual_fallback(concept_id)
+
+        try:
+            # 2. Extract Math/Text Context from OCR
+            math_context = []
+            for page in ocr_output.pages:
+                for expr in page.math_expressions:
+                    if not expr.extraction_failed:
+                        math_context.append(expr.latex)
+
+            context_str = f"Available Math: {', '.join(math_context[:10])}" if math_context else "No math expressions extracted."
+
+            # 3. Compute timing budget from narration
+            word_count = len(narration.split())
+            tts_duration = round(word_count / 3.0, 1)  # ~3 words/sec for TTS
+
+            review_block = ""
+            if review_feedback:
+                review_block = "\nREVISION FEEDBACK TO INCORPORATE:\n"
+                review_block += "\n".join(f"- {item}" for item in review_feedback[:8])
+                review_block += "\n"
+
+            # 4. Construct the narration-aware prompt
+            prompt = f"""
+You are a 3Blue1Brown animation architect.
+
+CONCEPT: {concept_id}
+MATH CONTEXT: {context_str}
+
+--- NARRATION (this is the AUDIO the viewer will hear) ---
+{narration[:4000]}
+--- END NARRATION ---
+
+TIMING: The narration is ~{word_count} words. At ~3 words/sec TTS this
+will produce ~{tts_duration}s of audio. Your visual plan MUST fill
+exactly {tts_duration}s of screen time.
+{review_block}
+
+TASK — Plan Manim visuals that stay perfectly in sync with the narration:
+
+1. Split the narration into BEATS (logical paragraphs / sentences).
+   For each beat, specify the objects on screen and the animations.
+2. Every example or metaphor mentioned in the narration MUST have a
+   matching visual (equation, graph, geometric shape, or diagram).
+   If the narration contains a discussion-only aside with no natural
+   visual, use a "pi_character" object (a blue Pi character talking
+   to 3 smaller dark-brown Pi characters — 3Blue1Brown style).
+3. Objects must NOT overlap. Use these screen regions:
+   - "top": title / section headers
+   - "center": main equation or primary visual
+   - "bottom_left": axes / graphs
+   - "bottom_right": supplementary labels
+   - "right": side notes / explanations
+   When a region is reused, emit a FadeOut for the previous occupant first.
+4. Transformation timings must sum to ≈{tts_duration}s total, matching
+   the narration pace. Include self.wait() gaps for the narrator to speak
+   between animations.
+
+Return JSON in this EXACT schema:
+{{
+  "beats": [
+    {{
+      "beat_index": 0,
+      "narration_excerpt": "first ~15 words of this beat...",
+      "start_time": 0.0,
+      "end_time": 12.0
+    }}
+  ],
+  "objects": [
+    {{
+      "id": "obj_0",
+      "type": "equation|text|graph|geometric_shape|pi_character",
+      "content": "LaTeX or description",
+      "color": "BLUE",
+      "position": "center|top|bottom_left|bottom_right|right"
+    }}
+  ],
+  "transformations": [
+    {{
+      "type": "Write|FadeIn|FadeOut|Transform|ReplacementTransform|Create|Indicate",
+      "target": "obj_0",
+      "timing": 1.0,
+      "beat_index": 0
+    }}
+  ],
+  "emphasis_points": [
+    {{
+      "timestamp": 2.0,
+      "description": "Focus on the exponent"
+    }}
+  ]
+}}
+"""
+
+            # 5. Call LLM
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={ "type": "json_object" }
+            )
+
+            data = json.loads(response.choices[0].message.content)
+
+            # 6. Map JSON back to project classes
+
+            # A. Mathematical Objects
+            math_objs = []
+            for obj in data.get('objects', []):
+                math_objs.append(MathematicalObject(
+                    object_type=obj.get('type', 'text'),
+                    content=obj.get('content', ''),
+                    style=ObjectStyle(
+                        color=obj.get('color', 'WHITE'),
+                        position=obj.get('position', 'center')
+                    )
+                ))
+
+            # B. Transformations
+            trans = []
+            for t in data.get('transformations', []):
+                trans.append(Transformation(
+                    transformation_type=t.get('type', 'FadeIn'),
+                    target_object=t.get('target', 'obj_0'),
+                    parameters={
+                        "beat_index": t.get('beat_index', 0)
+                    },
+                    timing=float(t.get('timing', 1.0))
+                ))
+
+            # C. Emphasis Points
+            emphasis = []
+            for e in data.get('emphasis_points', []):
+                emphasis.append(EmphasisPoint(
+                    timestamp=float(e.get('timestamp', 0.0)),
+                    description=e.get('description', 'Key moment')
+                ))
+
+            return VisualIntent(
+                mathematical_objects=math_objs,
+                transformations=trans,
+                emphasis_points=emphasis
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to generate visual intent via LLM: {e}", exc_info=True)
+            logger.warning("Falling back to narration-derived visual intent")
+            return self._generate_fallback_visual_intent(narration)
+
+    def _generate_fallback_visual_intent(self, narration: str) -> VisualIntent:
+        """Build a minimal visual intent from the narration text.
+
+        Instead of the old generic `f(x)=x^2` mock, this scans the narration
+        for keywords and creates placeholder objects the animation generator
+        can use to at least show relevant text on screen.
+        """
+        objs = []
+        # Show the key narration summary as a text object
+        # Take the first sentence as a title-like object
+        first_sentence = narration.split(".")[0].strip() if narration else "Introduction"
+        objs.append(MathematicalObject(
+            object_type="text",
+            content=first_sentence[:80],
+            style=ObjectStyle(color="BLUE", position="top")
         ))
-        
-        # Create a sample transformation (fade in)
-        transformations.append(Transformation(
-            transformation_type="fade_in",
-            target_object="equation_0",
-            parameters={},
-            timing=0.5
-        ))
-        
-        # Add emphasis point
-        emphasis_points = [
-            EmphasisPoint(
-                timestamp=2.0,
-                description="Focus on the key mathematical relationship"
+
+        # If narration mentions equations, add a placeholder
+        import re as _re
+        latex_hints = _re.findall(r'(sin|cos|tan|theta|pi|equation|formula)', narration.lower())
+        if latex_hints:
+            objs.append(MathematicalObject(
+                object_type="equation",
+                content=r"\sin(\theta) = \frac{\text{opposite}}{\text{hypotenuse}}",
+                style=ObjectStyle(color="YELLOW", position="center")
+            ))
+
+        trans = [
+            Transformation(
+                transformation_type="Write",
+                target_object="obj_0",
+                parameters={},
+                timing=2.0,
             )
         ]
-        
+
         return VisualIntent(
-            mathematical_objects=mathematical_objects,
-            transformations=transformations,
-            emphasis_points=emphasis_points
+            mathematical_objects=objs,
+            transformations=trans,
+            emphasis_points=[],
         )
     
     def _estimate_duration(
@@ -600,29 +886,24 @@ class ScriptArchitectAgent(Agent):
         narration: str,
         visual_intent: VisualIntent
     ) -> float:
-        """Estimate scene duration based on narration and transformations
-        
+        """Estimate scene duration from narration word count.
+
+        The narration is the single source of truth for duration.
+        TTS produces audio at ~3 words/second, so duration = words / 3.
+        We floor at 15s to avoid degenerate scenes.
+
         Args:
             narration: Narration text
-            visual_intent: Visual intent specification
-            
+            visual_intent: Visual intent specification (unused but kept for API)
+
         Returns:
             Estimated duration in seconds
         """
-        # Calculate narration duration
         word_count = len(narration.split())
-        narration_duration = word_count / self.WORDS_PER_SECOND
-        
-        # Add time for transformations
-        transformation_duration = len(visual_intent.transformations) * 2.0  # 2 seconds per transformation
-        
-        # Total duration
-        total_duration = narration_duration + transformation_duration
-        
-        # Clamp to reasonable bounds
-        total_duration = max(self.MIN_SCENE_DURATION, min(total_duration, self.MAX_SCENE_DURATION))
-        
-        return round(total_duration, 1)
+        tts_duration = word_count / 3.0  # TTS rate: ~3 words/sec
+
+        # Floor at 15s, no upper cap — long narrations get long videos
+        return round(max(15.0, tts_duration), 1)
     
     def _assemble_storyboard(
         self,

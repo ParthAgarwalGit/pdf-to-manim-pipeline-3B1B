@@ -1,10 +1,11 @@
 """Unit tests for Pipeline Orchestrator.
 
 Tests the orchestrator's ability to:
-- Sequence agents in linear pipeline
+- Sequence 10 agents in linear pipeline
 - Pass outputs from one agent as inputs to the next
 - Implement abort logic for validation and sanitization errors
 - Implement retry logic based on agent retry policies
+- Run in strict mode (fail fast on missing API keys)
 """
 
 import os
@@ -15,13 +16,30 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from src.agents.audio_video_composer import AudioVideoComposerFailure
 from src.agents.base import AgentExecutionError, BackoffStrategy, RetryPolicy
 from src.agents.ingestion import IngestionError, IngestionOutput
 from src.agents.json_sanitizer import SanitizationError, ValidationErrorDetail
+from src.agents.manim_code_validator import ManimValidatorFailure, ManimValidatorOutput, ValidationResult
+from src.agents.storyboard_grader import (
+    GradingCriterion,
+    GradingReport,
+    StoryboardGraderFailure,
+    StoryboardGraderOutput,
+)
+from src.agents.tts_agent import TTSError
+from src.agents.video_quality_reviewer import VideoQualityReviewerInput
+from src.agents.video_renderer import SceneRenderResult, VideoRendererFailure
 from src.agents.validation import ValidationError
+from src.orchestrator.logger import StructuredJSONLogger
 from src.orchestrator.pipeline import Orchestrator, PipelineAbortError, PipelineConfig
+from src.schemas.animation_code import AnimationCodeObject
 from src.schemas.file_reference import FileReference
 from src.schemas.output_manifest import OutputManifest
+from src.schemas.ocr_output import BoundingBox, OCROutput, PDFMetadata, Page, TextBlock
+from src.schemas.output_manifest import OutputFile
+from src.schemas.scene_processing import SceneProcessingReport
+from src.schemas.storyboard import Configuration, PDFMetadataStoryboard, Scene, StoryboardJSON, VisualIntent
 
 
 class TestOrchestratorInitialization:
@@ -53,9 +71,9 @@ class TestOrchestratorInitialization:
         assert orchestrator.config.base_output_dir == "custom_output"
     
     def test_orchestrator_initializes_all_agents(self):
-        """Test orchestrator initializes all required agents."""
+        """Test orchestrator initializes all 10 pipeline agents."""
         orchestrator = Orchestrator()
-        
+
         assert orchestrator.ingestion_agent is not None
         assert orchestrator.validation_agent is not None
         assert orchestrator.vision_ocr_agent is not None
@@ -63,6 +81,17 @@ class TestOrchestratorInitialization:
         assert orchestrator.json_sanitizer_agent is not None
         assert orchestrator.scene_controller_agent is not None
         assert orchestrator.persistence_agent is not None
+        assert orchestrator.video_renderer_agent is not None
+        assert orchestrator.tts_agent is not None
+        assert orchestrator.audio_video_composer_agent is not None
+
+    def test_config_has_strict_mode(self):
+        """Test PipelineConfig supports strict mode."""
+        config = PipelineConfig(strict=True)
+        assert config.strict is True
+
+        config_default = PipelineConfig()
+        assert config_default.strict is False
 
 
 class TestPipelineAbortLogic:
@@ -498,12 +527,13 @@ class TestPipelineConfig:
     def test_config_defaults(self):
         """Test default configuration values."""
         config = PipelineConfig()
-        
+
         assert config.verbosity == "medium"
         assert config.depth == "intermediate"
         assert config.audience == "undergraduate"
         assert config.base_output_dir == "output"
         assert config.enable_ocr_debug is False
+        assert config.strict is False
 
 
 class TestLogging:
@@ -558,6 +588,241 @@ class TestLogging:
         summary = orchestrator._summarize_output(file_ref)
         
         assert "FileReference" in summary
+
+
+class TestQualityLoops:
+    """Test storyboard/code review loops and final video diagnosis."""
+
+    def test_storyboard_review_retries_with_feedback(self):
+        """Storyboard grader feedback should be fed into the next architect pass."""
+        orchestrator = Orchestrator(PipelineConfig(max_quality_retries=1))
+        structured_logger = StructuredJSONLogger(output_directory=None)
+
+        ocr_output = OCROutput(
+            pdf_metadata=PDFMetadata(filename="test.pdf", page_count=1, file_size_bytes=100),
+            pages=[
+                Page(
+                    page_number=1,
+                    text_blocks=[
+                        TextBlock(
+                            text="A short explanation of derivatives.",
+                            bounding_box=BoundingBox(x=0, y=0, width=100, height=20),
+                            reading_order=0,
+                            confidence=0.9,
+                        )
+                    ],
+                    math_expressions=[],
+                    diagrams=[],
+                )
+            ],
+        )
+
+        storyboard = StoryboardJSON(
+            pdf_metadata=PDFMetadataStoryboard(filename="test.pdf", page_count=1),
+            configuration=Configuration(verbosity="medium", depth="intermediate", audience="undergraduate"),
+            concept_hierarchy=[],
+            scenes=[
+                Scene(
+                    scene_id="scene_001",
+                    scene_index=0,
+                    concept_id="concept_001",
+                    narration="Explain derivatives visually.",
+                    visual_intent=VisualIntent(mathematical_objects=[], transformations=[], emphasis_points=[]),
+                    duration_estimate=30.0,
+                    dependencies=[],
+                )
+            ],
+        )
+
+        fail_report = GradingReport(
+            overall_score=4.5,
+            passed=False,
+            criteria=[GradingCriterion(name="visual_richness", weight=1.0, score=4.5, feedback="Add clearer visuals.")],
+            summary="Too sparse.",
+            improvement_suggestions=["Add clearer visuals."],
+        )
+        pass_report = GradingReport(
+            overall_score=7.8,
+            passed=True,
+            criteria=[GradingCriterion(name="visual_richness", weight=1.0, score=7.8, feedback="Looks improved.")],
+            summary="Looks good.",
+            improvement_suggestions=[],
+        )
+
+        orchestrator.script_architect_agent.execute = Mock(side_effect=[storyboard, storyboard])
+        orchestrator.storyboard_grader_agent.execute = Mock(
+            side_effect=[
+                StoryboardGraderFailure(storyboard=storyboard, report=fail_report),
+                StoryboardGraderOutput(storyboard=storyboard, report=pass_report),
+            ]
+        )
+
+        result = orchestrator._run_script_architect(ocr_output, structured_logger)
+
+        assert result == storyboard
+        assert orchestrator.script_architect_agent.execute.call_count == 2
+        second_input = orchestrator.script_architect_agent.execute.call_args_list[1].args[0]
+        assert "Add clearer visuals." in second_input.review_feedback
+
+    def test_scene_code_review_retries_scene_controller_with_feedback(self):
+        """Validator failures should be converted into scene-specific retry guidance."""
+        orchestrator = Orchestrator(PipelineConfig(max_quality_retries=1))
+        structured_logger = StructuredJSONLogger(output_directory=None)
+        orchestrator._run_output_dir = "output/test/run"
+
+        storyboard = StoryboardJSON(
+            pdf_metadata=PDFMetadataStoryboard(filename="test.pdf", page_count=1),
+            configuration=Configuration(verbosity="medium", depth="intermediate", audience="undergraduate"),
+            concept_hierarchy=[],
+            scenes=[
+                Scene(
+                    scene_id="scene_001",
+                    scene_index=0,
+                    concept_id="concept_001",
+                    narration="Explain the graph.",
+                    visual_intent=VisualIntent(mathematical_objects=[], transformations=[], emphasis_points=[]),
+                    duration_estimate=20.0,
+                    dependencies=[],
+                )
+            ],
+        )
+        file_ref = FileReference(
+            file_path="test.pdf",
+            filename="test.pdf",
+            size_bytes=100,
+            upload_timestamp=datetime.now(timezone.utc),
+            metadata={},
+        )
+
+        animation_code = AnimationCodeObject(
+            scene_id="scene_001",
+            code="class Scene_001(Scene):\n    def construct(self):\n        broken =\n",
+            imports=["from manim import *"],
+            class_name="Scene_001",
+            narration="Explain the graph.",
+            duration_estimate=20.0,
+            generation_timestamp=datetime.now(timezone.utc),
+        )
+        scene_report = SceneProcessingReport(
+            total_scenes=1,
+            successful_scenes=1,
+            failed_scenes=[],
+            output_directory="output/test/run",
+        )
+        scene_output = Mock(
+            report=scene_report,
+            animation_code_objects=[animation_code],
+            shared_context=None,
+        )
+
+        failed_validation = ManimValidatorFailure(
+            passed_objects=[],
+            failed_objects=[animation_code],
+            results=[
+                ValidationResult(
+                    scene_id="scene_001",
+                    passed=False,
+                    syntax_ok=False,
+                    imports_ok=False,
+                    dry_run_ok=None,
+                    errors=["SyntaxError at line 3: invalid syntax"],
+                    warnings=[],
+                )
+            ],
+        )
+        passed_validation = ManimValidatorOutput(
+            validated_objects=[animation_code],
+            results=[
+                ValidationResult(
+                    scene_id="scene_001",
+                    passed=True,
+                    syntax_ok=True,
+                    imports_ok=True,
+                    dry_run_ok=None,
+                    errors=[],
+                    warnings=[],
+                )
+            ],
+        )
+
+        orchestrator.scene_controller_agent.execute = Mock(side_effect=[scene_output, scene_output])
+        orchestrator.manim_code_validator_agent.execute = Mock(
+            side_effect=[failed_validation, passed_validation]
+        )
+
+        result = orchestrator._run_scene_controller(storyboard, file_ref, structured_logger)
+
+        assert result == scene_output
+        assert orchestrator.scene_controller_agent.execute.call_count == 2
+        second_input = orchestrator.scene_controller_agent.execute.call_args_list[1].args[0]
+        assert "scene_001" in second_input.scene_feedback
+        assert any("SyntaxError" in item for item in second_input.scene_feedback["scene_001"])
+
+    def test_final_video_reviewer_points_to_responsible_stage(self):
+        """Final reviewer should emit actionable findings and code hints."""
+        orchestrator = Orchestrator()
+        storyboard = StoryboardJSON(
+            pdf_metadata=PDFMetadataStoryboard(filename="test.pdf", page_count=1),
+            configuration=Configuration(verbosity="medium", depth="intermediate", audience="undergraduate"),
+            concept_hierarchy=[],
+            scenes=[
+                Scene(
+                    scene_id="scene_001",
+                    scene_index=0,
+                    concept_id="concept_001",
+                    narration="Explain the triangle.",
+                    visual_intent=VisualIntent(mathematical_objects=[], transformations=[], emphasis_points=[]),
+                    duration_estimate=18.0,
+                    dependencies=[],
+                )
+            ],
+        )
+        manifest = OutputManifest(
+            output_directory="output/test/run",
+            files=[OutputFile(path="manifest.json", size_bytes=10, type="manifest")],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+            failed_scenes=[],
+        )
+        animation_code = AnimationCodeObject(
+            scene_id="scene_001",
+            code='class Scene_001(Scene):\n    def construct(self):\n        label = Text("theta")\n        label.next_to(ORIGIN)\n',
+            imports=["from manim import *"],
+            class_name="Scene_001",
+            narration="Explain the triangle.",
+            duration_estimate=18.0,
+            generation_timestamp=datetime.now(timezone.utc),
+        )
+        video_output = VideoRendererFailure(
+            scene_results=[
+                SceneRenderResult(
+                    scene_id="scene_001",
+                    success=False,
+                    error="manim exit code 1: SyntaxError",
+                )
+            ],
+            error="render failed",
+        )
+        composition_output = AudioVideoComposerFailure(scene_results=[], error="No scene videos available")
+        tts_output = [TTSError(scene_id="scene_001", error="API unavailable")]
+
+        result = orchestrator.video_quality_reviewer_agent.execute(
+            VideoQualityReviewerInput(
+                storyboard=storyboard,
+                manifest=manifest,
+                animation_code_objects=[animation_code],
+                video_output=video_output,
+                tts_output=tts_output,
+                composition_output=composition_output,
+            )
+        )
+
+        assert result.passed is False
+        assert any(finding.suspected_stage == "animation_generator" for finding in result.findings)
+        assert any(finding.code_hint for finding in result.findings)
 
 
 if __name__ == "__main__":

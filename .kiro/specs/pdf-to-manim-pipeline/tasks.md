@@ -315,7 +315,7 @@ Each task builds incrementally, with early validation through tests. The plan fo
     - Test error handling for disk full, permissions
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 11.1, 11.2, 11.3, 11.4_
 
-- [~] 13. Implement Orchestrator
+- [ ] 13. Implement Orchestrator
   - [x] 13.1 Create Orchestrator class
     - Implement linear agent sequencing (Ingestion → Validation → Vision+OCR → Script Architect → JSON Sanitizer → Scene Controller → Persistence)
     - Pass outputs from one agent as inputs to the next

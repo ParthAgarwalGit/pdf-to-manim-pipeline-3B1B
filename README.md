@@ -16,8 +16,10 @@ The pipeline follows an agent-oriented architecture with the following stages:
 4. **Script/Storyboard Architect** - Generates pedagogically sound scene sequences
 5. **JSON Sanitizer** - Enforces schema compliance on storyboard output
 6. **Scene Controller** - Manages deterministic iteration over scenes
-7. **Animation Code Generator** - Converts scene specifications to Manim code
-8. **Persistence Agent** - Writes generated artifacts to file system
+7. **Persistence Agent** - Writes generated artifacts to file system
+8. **Video Renderer Agent** - Renders generated scene files with Manim
+9. **TTS Agent** - Generates narration audio
+10. **Audio-Video Composer Agent** - Produces the final narrated video
 
 Each agent has a single responsibility, explicit input/output contracts, and isolated failure modes.
 
@@ -25,7 +27,7 @@ Each agent has a single responsibility, explicit input/output contracts, and iso
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - LaTeX (for mathematical notation rendering)
 - FFmpeg (for video rendering)
 
@@ -62,25 +64,33 @@ Download from [ffmpeg.org](https://ffmpeg.org)
 ### Python Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
+
+If you only want runtime dependencies, `pip install -r requirements.txt` still works.
 
 ## Usage
 
 ### Process a Single PDF
 
 ```bash
-python -m src.orchestrator.pipeline --input path/to/document.pdf --config config.json
+pdf2manim convert path/to/document.pdf --output-dir ./output
 ```
 
 ### Process with Custom Configuration
 
 ```bash
-python -m src.orchestrator.pipeline \
-    --input document.pdf \
+pdf2manim convert document.pdf \
     --verbosity high \
     --depth advanced \
-    --audience graduate
+    --audience graduate \
+    --voice nova
+```
+
+### Estimate Cost Before Running
+
+```bash
+pdf2manim cost document.pdf
 ```
 
 ### Render Generated Animations
@@ -100,25 +110,25 @@ done
 ### Run All Tests
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ### Run with Coverage
 
 ```bash
-pytest --cov=src --cov-report=html
+python -m pytest --cov-report=html
 ```
 
 ### Run Property-Based Tests Only
 
 ```bash
-pytest -k "property"
+python -m pytest -k "property"
 ```
 
 ### Run Specific Test File
 
 ```bash
-pytest tests/test_validation_agent.py
+python -m pytest tests/test_orchestrator.py
 ```
 
 ## Project Structure
@@ -132,8 +142,8 @@ pytest tests/test_validation_agent.py
 │   └── utils/           # Shared utilities
 ├── tests/               # Test suite
 ├── output/              # Generated artifacts (runtime)
-├── requirements.txt     # Python dependencies
-├── pytest.ini          # Pytest configuration
+├── pyproject.toml      # Packaging, CLI, pytest, and lint configuration
+├── requirements.txt    # Runtime dependency fallback
 └── README.md           # This file
 ```
 
@@ -147,6 +157,9 @@ output/{pdf_filename}/{timestamp}/
 ├── narration_script.txt    # Narration with scene markers
 ├── storyboard.json         # Scene specifications
 ├── processing_report.json  # Success/failure summary
+├── storyboard_review.json  # Storyboard quality review
+├── scene_code_review.json  # Scene code validation review
+├── video_review.json       # Final media quality review
 ├── manifest.json           # File listing
 └── pipeline.log            # Structured execution logs
 ```

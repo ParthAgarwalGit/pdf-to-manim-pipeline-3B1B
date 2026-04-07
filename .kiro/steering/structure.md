@@ -74,9 +74,9 @@
 │           ├── manifest.json          # File listing
 │           └── pipeline.log           # Structured execution logs
 │
-├── requirements.txt                   # Python dependencies (to be created)
-├── pytest.ini                         # Pytest configuration (to be created)
-└── README.md                          # Project documentation (to be created)
+├── pyproject.toml                     # Packaging, CLI, pytest, and lint configuration
+├── requirements.txt                   # Runtime dependency fallback
+└── README.md                          # Project documentation
 ```
 
 ## Architecture Patterns

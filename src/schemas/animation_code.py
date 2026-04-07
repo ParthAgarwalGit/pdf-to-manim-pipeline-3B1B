@@ -63,6 +63,14 @@ class AnimationCodeObject(BaseModel):
             raise ValueError("code cannot be empty")
         return v
     
+    @field_validator('narration')
+    @classmethod
+    def validate_narration(cls, v: str) -> str:
+        """Ensure narration is not empty."""
+        if not v or not v.strip():
+            raise ValueError("narration cannot be empty")
+        return v
+
     @field_validator('imports')
     @classmethod
     def validate_imports(cls, v: List[str]) -> List[str]:

@@ -6,6 +6,9 @@ including mathematical objects, transformations, and timing synchronization.
 
 import ast
 import re
+import anthropic 
+import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -20,8 +23,13 @@ class AnimationGeneratorInput(AgentInput):
     This is an alias for SceneProcessingInput for clarity.
     """
     
-    def __init__(self, scene_processing_input: SceneProcessingInput):
+    def __init__(
+        self,
+        scene_processing_input: SceneProcessingInput,
+        review_feedback: Optional[List[str]] = None,
+    ):
         self.scene_processing_input = scene_processing_input
+        self.review_feedback = review_feedback or []
 
 
 class AnimationGeneratorOutput(AgentOutput):
@@ -64,13 +72,22 @@ class AnimationCodeGeneratorAgent(Agent):
     an LLM (GPT-4, Claude 3.5 Sonnet) with temperature=0 for code generation.
     """
     
-    def __init__(self, max_retries: int = 3):
-        """Initialize Animation Code Generator Agent.
-        
-        Args:
-            max_retries: Maximum retry attempts for code generation failures
-        """
+    def __init__(self, max_retries: int = 3, strict: bool = False):
+        super().__init__()
         self.max_retries = max_retries
+        self.strict = strict
+
+        # Initialize Anthropic Client
+        # This looks for os.environ["ANTHROPIC_API_KEY"]
+        if os.getenv("ANTHROPIC_API_KEY"):
+            self.client = anthropic.Anthropic()
+        else:
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "ANTHROPIC_API_KEY is required in --strict mode for AnimationCodeGenerator"
+                )
+            self.client = None
     
     def execute(self, input_data: AnimationGeneratorInput) -> AgentOutput:
         """Execute animation code generation.
@@ -94,12 +111,13 @@ class AnimationCodeGeneratorAgent(Agent):
         scene_input = input_data.scene_processing_input
         scene_spec = scene_input.scene_spec
         context = scene_input.context
+        review_feedback = input_data.review_feedback or []
         
         try:
             # Generate code with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    code = self._generate_code(scene_spec, context)
+                    code = self._generate_code(scene_spec, context, review_feedback=review_feedback)
                     
                     # Validate syntax
                     self._validate_syntax(code)
@@ -165,41 +183,308 @@ class AnimationCodeGeneratorAgent(Agent):
     def _generate_code(
         self,
         scene_spec: Any,
-        context: SharedContext
+        context: SharedContext,
+        review_feedback: Optional[List[str]] = None,
     ) -> str:
-        """Generate Manim code for the scene.
-        
-        Args:
-            scene_spec: Scene specification
-            context: Shared context with definitions and style
-            
-        Returns:
-            Generated Python code string
+        """Generate Manim code using Anthropic Claude, synchronized to narration.
+
+        The narration is the single source of truth for duration.  We compute
+        target_duration = word_count / 3.0 (TTS rate) and instruct the LLM to
+        produce animations whose total run_time + wait() gaps equal that value.
         """
-        visual_intent = scene_spec.visual_intent
-        
-        # Generate code sections
-        math_objects_code = self._generate_mathematical_objects(
-            visual_intent.get("mathematical_objects", []),
-            context
-        )
-        transformations_code = self._generate_transformations(
-            visual_intent.get("transformations", []),
-            context
-        )
-        
-        # Combine into construct method
+
+        # Safety: Fallback if no key (in strict mode, constructor already raised)
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "ANTHROPIC_API_KEY is required in --strict mode"
+                )
+            return self._mock_generate_code(scene_spec, context)
+
         class_name = self._get_class_name(scene_spec.scene_id)
-        code = f'''class {class_name}(Scene):
-    def construct(self):
-{math_objects_code}
-{transformations_code}
-        
-        # Wait for duration
-        self.wait({scene_spec.duration_estimate})
-'''
-        
-        return code
+
+        # ── Compute narration-driven duration ────────────────────────
+        narration = scene_spec.narration or ""
+        word_count = len(narration.split())
+        target_duration = round(word_count / 3.0, 1)  # ~3 words/sec TTS
+        if target_duration < 15:
+            target_duration = 15.0  # floor
+
+        # ── Prepare structured scene data for the LLM ────────────────
+        scene_data = {
+            "narration": narration,
+            "target_duration_seconds": target_duration,
+            "word_count": word_count,
+            "objects": [
+                {
+                    "type": obj.object_type,
+                    "content": obj.content,
+                    "style": obj.style.model_dump(),
+                }
+                for obj in scene_spec.visual_intent.mathematical_objects
+            ],
+            "transformations": [
+                {
+                    "type": t.transformation_type,
+                    "target": t.target_object,
+                    "timing": t.timing,
+                    "beat_index": t.parameters.get("beat_index", 0)
+                        if hasattr(t, "parameters") and t.parameters else 0,
+                }
+                for t in scene_spec.visual_intent.transformations
+            ],
+        }
+
+        # ── THE NARRATION-AWARE 3B1B SYSTEM PROMPT ───────────────────
+        system_prompt = f"""You are an expert Manim Community v0.19 developer who creates
+3Blue1Brown-quality educational animations.
+
+CLASS NAME: {class_name}  (must inherit from Scene)
+
+═══════════════════════  DURATION  ═══════════════════════
+The narration is {word_count} words.  TTS will produce ~{target_duration}s of
+audio.  Your total animation time (sum of all run_time + self.wait) MUST equal
+{target_duration}s (±2 s).  Add self.wait() calls between animations so the
+viewer can absorb what's on screen while the narrator speaks.
+
+At the END of construct(), add a comment:
+  # Total animation time: Xs  (target: {target_duration}s)
+with your manually-computed running total so you can self-check.
+
+═══════════════════════  SCREEN LAYOUT (NO OVERLAP)  ═══════════════════════
+A LayoutTracker is imported for you.  Use it to REGISTER every Mobject after
+you place it, and to PLACE LABELS so they never overlap other objects.
+
+    layout = LayoutTracker()          # create once at the top of construct()
+
+    # After creating and positioning any object, register it:
+    triangle = Polygon(A, B, C, color=WHITE)
+    triangle.shift(LEFT * 2)
+    layout.register("triangle", triangle)
+
+    # To place a label near a registered object without overlap:
+    opp_label = Text("opposite = 6m", font_size=24, color=GREEN)
+    layout.place_label(opp_label, "opp_label", anchor="triangle",
+                       preferred=RIGHT, buff=0.3)
+    #   → tries RIGHT first; if that overlaps something it auto-tries
+    #     UP, LEFT, DOWN, UR, UL, DR, DL until it finds free space.
+    #   → stays within max_distance=1.5 of the anchor (labels stay close).
+
+    # For angle arcs at a vertex — place arc at the vertex, register,
+    # then use place_label for the θ symbol:
+    arc = Arc(radius=0.5, start_angle=0, angle=PI/4, color=YELLOW)
+    arc.shift(triangle.get_vertices()[0])      # put arc AT the vertex
+    layout.register("theta_arc", arc)
+    theta = MathTex(r"\\theta", color=YELLOW)
+    layout.place_label(theta, "theta", anchor="theta_arc",
+                       preferred=RIGHT, buff=0.2)
+
+    # When you FadeOut objects, unregister them to free space:
+    layout.unregister("triangle")
+    layout.unregister("opp_label")
+
+RULES:
+1. Create `layout = LayoutTracker()` as the FIRST line of construct().
+2. Call `layout.register(name, mob)` after EVERY Mobject is positioned.
+3. ALWAYS use `layout.place_label(...)` for Text/MathTex labels — never
+   raw `.next_to()` or `.move_to()` for labels.  The tracker prevents overlap.
+4. Call `layout.unregister(name)` before or after FadeOut so space is freed.
+5. Keep font sizes readable:  Text(font_size=28..36), MathTex default is fine.
+6. Scale graphs/axes to fit reasonably (x_length ≤ 5, y_length ≤ 3).
+7. Angle arcs: position the arc at the ACTUAL VERTEX of the shape using
+   `.shift(vertex_point)`, then register it, then place_label the θ symbol
+   anchored to the arc.  This keeps the angle annotation touching the shape.
+
+═══════════════════════  PI CHARACTERS  ═══════════════════════
+For discussion-only narration beats (no equation or graph to show), use the
+pre-built Pi character helpers (already imported for you):
+
+    teacher = create_pi_teacher().shift(LEFT * 3)
+    students = create_pi_students().shift(RIGHT * 3)
+    bubble = create_speech_bubble("Key insight text", teacher)
+
+    self.play(FadeIn(teacher), FadeIn(students), run_time=1.0)
+    self.play(Write(bubble), run_time=1.0)
+    self.wait(3)
+    self.play(FadeOut(bubble), FadeOut(teacher), FadeOut(students), run_time=1.0)
+
+Use this pattern whenever the narration discusses something abstract or
+conversational that has no natural equation/graph/shape to show.
+
+═══════════════════════  STYLE  ═══════════════════════
+- Black background (default).  Use BLUE, YELLOW, GREEN, RED for emphasis.
+- Use MathTex(r"...") for ALL equations.  Use Text("...") for plain labels.
+- Prefer Write / Create for new objects, ReplacementTransform for morphing.
+- Smooth pacing: run_time between 1.0 and 3.0 for most animations.
+- After every major visual change, add self.wait(2) to self.wait(5)
+  so the narrator can explain.
+
+═══════════════════════  CONTENT FIDELITY  ═══════════════════════
+The narration is extracted from an academic PDF.  Your animation MUST
+show every formula, definition, and example the narration mentions:
+- If the narration says "sin θ = opposite / hypotenuse", you MUST show
+  that equation on screen using MathTex.
+- If the narration describes a right triangle with specific sides,
+  you MUST draw that triangle with labeled sides.
+- If the narration mentions the unit circle, you MUST draw it.
+Do NOT omit PDF content.  Do NOT replace it with unrelated content.
+
+═══════════════════════  OUTPUT RULES  ═══════════════════════
+- Return ONLY the class definition.  No module docstrings, no imports,
+  no markdown fences, no commentary outside the class body.
+- Every self.play() call MUST have an explicit run_time parameter.
+- Do NOT use deprecated Manim APIs (e.g. ShowCreation → Create).
+"""
+
+        user_prompt = f"""Generate the full class for this scene:
+
+{json.dumps(scene_data, indent=2)}
+"""
+        if review_feedback:
+            feedback_block = "\n".join(f"- {item}" for item in review_feedback[:8])
+            user_prompt += (
+                "\nREVISION FEEDBACK TO FIX IN THIS REWRITE:\n"
+                f"{feedback_block}\n"
+                "Address the issues above while preserving the narration content and mathematical intent.\n"
+            )
+
+        try:
+            response = self.client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=8192,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+            )
+
+            raw_code = response.content[0].text
+            cleaned = self._clean_llm_code(raw_code, class_name)
+            return self._enforce_duration(cleaned, target_duration)
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"LLM generation failed: {e}")
+            return self._mock_generate_code(scene_spec, context)
+
+    def _enforce_duration(self, code: str, target_duration: float) -> str:
+        """Parse run_time and self.wait values; distribute padding waits if short.
+
+        Sums every numeric ``run_time=X`` and ``self.wait(X)`` in the code.
+        If the total is significantly less than *target_duration*, it distributes
+        extra wait time by boosting existing self.wait() calls proportionally
+        and adding a small tail wait if needed.
+        """
+        import re as _re3
+
+        total = 0.0
+        for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', code):
+            total += float(m.group(1))
+        for m in _re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code):
+            total += float(m.group(1))
+
+        gap = target_duration - total
+        if gap <= 3.0:
+            return code  # close enough
+
+        # Strategy: find all existing self.wait(X) calls and scale them up
+        # proportionally, then add any remainder as a tail wait.
+        wait_calls = list(_re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code))
+        existing_wait_total = sum(float(m.group(1)) for m in wait_calls)
+
+        if existing_wait_total > 0 and wait_calls:
+            # Scale factor: how much to multiply each wait by
+            scale = (existing_wait_total + gap) / existing_wait_total
+            # Cap individual waits at 8s to avoid absurdly long pauses
+            max_single_wait = 8.0
+
+            new_code = code
+            # Process in reverse so indices stay valid
+            for m in reversed(wait_calls):
+                old_val = float(m.group(1))
+                new_val = min(round(old_val * scale, 1), max_single_wait)
+                new_code = (new_code[:m.start()]
+                            + f"self.wait({new_val})"
+                            + new_code[m.end():])
+
+            # Recompute total after scaling
+            new_total = 0.0
+            for m2 in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', new_code):
+                new_total += float(m2.group(1))
+            for m2 in _re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', new_code):
+                new_total += float(m2.group(1))
+
+            remaining = target_duration - new_total
+            if remaining > 2.0:
+                lines = new_code.rstrip().split("\n")
+                lines.append(f"        self.wait({round(remaining, 1)})  # duration padding")
+                new_code = "\n".join(lines) + "\n"
+
+            return new_code
+        else:
+            # No existing waits — just add a tail wait
+            lines = code.rstrip().split("\n")
+            lines.append(f"        self.wait({round(gap, 1)})  # duration padding")
+            return "\n".join(lines) + "\n"
+
+    def _clean_llm_code(self, raw_code: str, class_name: str) -> str:
+        """Strip markdown, duplicate headers, and ensure class structure.
+
+        Handles three LLM output shapes:
+          A) Full class with construct  → return as-is
+          B) Just ``def construct(self):`` + body → wrap in class
+          C) Bare code (no class, no def) → wrap in class + def
+        """
+        # Remove markdown fences if present
+        clean = raw_code.replace("```python", "").replace("```", "").strip()
+
+        # Remove module-level docstrings the LLM may have added
+        # (these will be re-added by _format_code)
+        import re as _re2
+        clean = _re2.sub(r'^"""[\s\S]*?"""\s*', '', clean).strip()
+        clean = _re2.sub(r"^'''[\s\S]*?'''\s*", '', clean).strip()
+
+        # Remove ALL import lines — imports are added by _format_code
+        lines = clean.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("from manim import")
+                 and not l.strip().startswith("import manim")
+                 and not l.strip().startswith("from src.utils.pi_characters")]
+        clean = "\n".join(lines).strip()
+
+        # ── Case A: full class already present ────────────────────
+        if f"class {class_name}" in clean:
+            return clean
+
+        # Check if ANY Scene subclass is present (LLM may have used a
+        # different name).  If so, rename it.
+        import re as _re
+        class_match = _re.search(
+            r"class\s+(\w+)\s*\(\s*(?:Scene|ThreeDScene|MovingCameraScene)\s*\)", clean
+        )
+        if class_match:
+            old_name = class_match.group(1)
+            return clean.replace(f"class {old_name}", f"class {class_name}", 1)
+
+        # ── Case B: starts with ``def construct(self):`` ──────────
+        has_def = _re.match(r"^\s*def\s+construct\s*\(\s*self\s*\)", clean)
+        if has_def:
+            # Ensure body is indented 4 spaces under the class
+            indented = "\n".join("    " + line for line in clean.split("\n"))
+            return f"class {class_name}(Scene):\n{indented}"
+
+        # ── Case C: bare code body ────────────────────────────────
+        # Indent to 8 spaces (inside class > def construct)
+        indented_body = "\n".join(
+            "        " + line if line.strip() else ""
+            for line in clean.split("\n")
+        )
+        return (
+            f"class {class_name}(Scene):\n"
+            f"    def construct(self):\n"
+            f"{indented_body}"
+        )
     
     def _generate_mathematical_objects(
         self,
@@ -222,9 +507,22 @@ class AnimationCodeGeneratorAgent(Agent):
         colors = context.visual_style.colors
         
         for i, obj in enumerate(math_objects):
-            obj_type = obj.get("object_type", "text")
-            content = obj.get("content", "")
-            style = obj.get("style", {})
+            if hasattr(obj, "model_dump"):
+                obj_data = obj.model_dump()
+            elif isinstance(obj, dict):
+                obj_data = obj
+            else:
+                obj_data = {
+                    "object_type": getattr(obj, "object_type", "text"),
+                    "content": getattr(obj, "content", ""),
+                    "style": getattr(obj, "style", {}),
+                }
+
+            obj_type = obj_data.get("object_type", "text")
+            content = obj_data.get("content", "")
+            style = obj_data.get("style", {})
+            if hasattr(style, "model_dump"):
+                style = style.model_dump()
             color = style.get("color", colors.get("primary", "BLUE"))
             
             var_name = f"obj_{i}"
@@ -278,9 +576,21 @@ class AnimationCodeGeneratorAgent(Agent):
         animation_speed = context.visual_style.animation_speed
         
         for trans in transformations:
-            trans_type = trans.get("transformation_type", "fade_in")
-            target = trans.get("target_object", "obj_0")
-            timing = trans.get("timing", 0.0)
+            if hasattr(trans, "model_dump"):
+                trans_data = trans.model_dump()
+            elif isinstance(trans, dict):
+                trans_data = trans
+            else:
+                trans_data = {
+                    "transformation_type": getattr(trans, "transformation_type", "fade_in"),
+                    "target_object": getattr(trans, "target_object", "obj_0"),
+                    "timing": getattr(trans, "timing", 0.0),
+                    "parameters": getattr(trans, "parameters", {}) or {},
+                }
+
+            trans_type = trans_data.get("transformation_type", "fade_in")
+            target = trans_data.get("target_object", "obj_0")
+            timing = trans_data.get("timing", 0.0)
             
             # Map target_object reference to variable name
             # Simplified: assume target_object is like "equation_0" -> "obj_0"
@@ -314,7 +624,7 @@ class AnimationCodeGeneratorAgent(Agent):
                 code_lines.append(f'        self.play({var_name}.animate.shift(UP), run_time={1.0/animation_speed})')
             
             elif trans_type == "scale":
-                params = trans.get("parameters", {})
+                params = trans_data.get("parameters", {})
                 scale_factor = params.get("scale_factor", 1.5)
                 code_lines.append(f'        self.play({var_name}.animate.scale({scale_factor}), run_time={1.0/animation_speed})')
             
@@ -374,12 +684,14 @@ Generated: {datetime.now().isoformat()}
     
     def _get_imports(self) -> List[str]:
         """Get required import statements.
-        
+
         Returns:
             List of import statements
         """
         return [
-            "from manim import *"
+            "from manim import *",
+            "from src.utils.pi_characters import create_pi_teacher, create_pi_students, create_speech_bubble",
+            "from src.utils.layout_tracker import LayoutTracker",
         ]
     
     def _get_class_name(self, scene_id: str) -> str:
@@ -425,3 +737,26 @@ Generated: {datetime.now().isoformat()}
             result += ' '
         
         return result
+    
+    # Missing method mock for fallback functionality
+    def _mock_generate_code(self, scene_spec: Any, context: SharedContext) -> str:
+        """Fallback mock generator when API is unavailable"""
+        class_name = self._get_class_name(scene_spec.scene_id)
+        math_code = self._generate_mathematical_objects(scene_spec.visual_intent.mathematical_objects, context)
+        transform_code = self._generate_transformations(scene_spec.visual_intent.transformations, context)
+
+        body_blocks = [
+            "        # MOCK GENERATION - API KEY NOT FOUND",
+            f"        # Narration: {scene_spec.narration}",
+        ]
+        if math_code and "No mathematical objects" not in math_code:
+            body_blocks.append(math_code)
+        if transform_code and "No transformations" not in transform_code:
+            body_blocks.append(transform_code)
+        if len(body_blocks) == 2:
+            body_blocks.append("        pass")
+        
+        return f"""class {class_name}(Scene):
+    def construct(self):
+{chr(10).join(body_blocks)}
+"""

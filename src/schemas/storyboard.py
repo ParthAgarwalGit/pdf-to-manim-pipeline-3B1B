@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class PDFMetadataStoryboard(BaseModel):
@@ -130,11 +130,51 @@ class Transformation(BaseModel):
     @field_validator('transformation_type')
     @classmethod
     def validate_transformation_type(cls, v: str) -> str:
-        """Validate transformation_type is one of the allowed values."""
+        """Normalize and validate transformation_type.
+
+        LLMs often return PascalCase Manim class names (e.g. 'FadeIn',
+        'Write', 'GrowFromCenter').  We normalise to snake_case and map
+        common Manim animation names to our canonical set.
+        """
+        import re
+
+        # PascalCase → snake_case  (e.g. "FadeIn" → "fade_in")
+        normalized = re.sub(r'(?<=[a-z0-9])([A-Z])', r'_\1', v)
+        normalized = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', normalized)
+        normalized = normalized.lower().strip()
+
+        # Map common Manim animation names to canonical types
+        alias_map = {
+            "write": "fade_in",
+            "create": "fade_in",
+            "grow_from_center": "fade_in",
+            "grow_arrow": "fade_in",
+            "draw_border_then_fill": "fade_in",
+            "show_creation": "fade_in",
+            "uncreate": "fade_out",
+            "shrink_to_center": "fade_out",
+            "transform": "morph",
+            "replacement_transform": "morph",
+            "transform_from_copy": "morph",
+            "clockwise_transform": "morph",
+            "rotate": "move",
+            "shift": "move",
+            "animate": "move",
+            "indicate": "highlight",
+            "flash": "highlight",
+            "circumscribe": "highlight",
+            "wiggle": "highlight",
+            "focus_on": "highlight",
+            "scale_in_place": "scale",
+        }
+
+        canonical = alias_map.get(normalized, normalized)
+
         allowed = {'morph', 'highlight', 'move', 'fade_in', 'fade_out', 'scale'}
-        if v not in allowed:
-            raise ValueError(f"transformation_type must be one of {allowed}, got '{v}'")
-        return v
+        if canonical not in allowed:
+            # Last resort: default to fade_in rather than crashing
+            canonical = 'fade_in'
+        return canonical
 
 
 class EmphasisPoint(BaseModel):
@@ -204,6 +244,14 @@ class Scene(BaseModel):
             raise ValueError("scene_id cannot be empty")
         return v
 
+    @field_validator('narration')
+    @classmethod
+    def validate_narration(cls, v: str) -> str:
+        """Ensure narration is not empty."""
+        if not v or not v.strip():
+            raise ValueError("narration cannot be empty")
+        return v
+
 
 class StoryboardJSON(BaseModel):
     """
@@ -246,7 +294,32 @@ class StoryboardJSON(BaseModel):
             duplicates = [sid for sid in scene_ids if scene_ids.count(sid) > 1]
             raise ValueError(f"Duplicate scene_ids found: {set(duplicates)}")
         return v
-    
+
+    @model_validator(mode='after')
+    def validate_concept_references(self) -> 'StoryboardJSON':
+        """Ensure all scene concept_ids reference valid concepts in the hierarchy."""
+        valid_concept_ids = {c.concept_id for c in self.concept_hierarchy}
+        if valid_concept_ids:  # Only validate if hierarchy is provided
+            for scene in self.scenes:
+                if scene.concept_id not in valid_concept_ids:
+                    raise ValueError(
+                        f"Scene '{scene.scene_id}' references concept_id "
+                        f"'{scene.concept_id}' which is not in concept_hierarchy. "
+                        f"Valid concept_ids: {valid_concept_ids}"
+                    )
+        return self
+
+    @model_validator(mode='after')
+    def validate_scene_indices(self) -> 'StoryboardJSON':
+        """Ensure scene_index values are sequential and match array positions."""
+        for i, scene in enumerate(self.scenes):
+            if scene.scene_index != i:
+                raise ValueError(
+                    f"Scene '{scene.scene_id}' has scene_index={scene.scene_index} "
+                    f"but is at position {i} in the scenes array"
+                )
+        return self
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

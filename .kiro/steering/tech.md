@@ -49,22 +49,22 @@ pip install -r requirements.txt
 pytest
 
 # Run with coverage
-pytest --cov=src --cov-report=html
+python -m pytest --cov-report=html
 
 # Run property-based tests only
-pytest -k "property"
+python -m pytest -k "property"
 
 # Run specific test file
-pytest tests/test_validation_agent.py
+python -m pytest tests/test_orchestrator.py
 ```
 
 ### Running the Pipeline
 ```bash
 # Process a single PDF
-python -m src.orchestrator.pipeline --input path/to/document.pdf --config config.json
+pdf2manim convert path/to/document.pdf --output-dir ./output
 
 # Process with custom configuration
-python -m src.orchestrator.pipeline --input document.pdf --verbosity high --depth advanced --audience graduate
+pdf2manim convert document.pdf --verbosity high --depth advanced --audience graduate
 ```
 
 ### Rendering Animations

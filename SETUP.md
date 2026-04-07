@@ -7,11 +7,11 @@ This guide will help you set up and run the PDF-to-Manim pipeline. The current i
 ## Current Status
 
 ✅ **Fully Functional (Mock Mode)**
-- All 8 agents implemented with mock/deterministic behavior
+- Full CLI and pipeline flow available for local development
 - Complete pipeline orchestration
 - File validation and processing
 - Scene generation and persistence
-- 358 passing tests with 93% code coverage
+- Automated tests and coverage reports available through pytest
 
 ⚠️ **Requires API Setup (Production Mode)**
 - Vision+OCR Agent: Needs multimodal vision API (GPT-4 Vision, Claude 3 Opus, or Mathpix)
@@ -22,7 +22,7 @@ This guide will help you set up and run the PDF-to-Manim pipeline. The current i
 
 ### 1. Prerequisites
 
-- **Python 3.8+** installed
+- **Python 3.10+** installed
 - **Git** installed (for version control)
 - **pip** package manager
 
@@ -32,24 +32,24 @@ This guide will help you set up and run the PDF-to-Manim pipeline. The current i
 # Clone or navigate to the project directory
 cd path/to/pdf-to-manim-pipeline
 
-# Install Python dependencies
-pip install -r requirements.txt
+# Install package with development tools
+pip install -e ".[dev]"
 
-# Verify installation
-pytest tests/ -v
+# Verify the CLI is installed
+pdf2manim --help
 ```
 
 ### 3. Run Tests
 
 ```bash
 # Run all tests
-pytest
+python -m pytest
 
 # Run with coverage report
-pytest --cov=src --cov-report=html
+python -m pytest --cov-report=html
 
 # Run specific test suite
-pytest tests/test_orchestrator.py -v
+python -m pytest tests/test_orchestrator.py -v
 ```
 
 ### 4. Process a PDF (Mock Mode)
@@ -220,29 +220,29 @@ pdf-to-manim-pipeline/
 ├── tests/                 # Test suite (358 tests)
 ├── docs/                  # Documentation
 ├── output/                # Generated animations (runtime)
-├── requirements.txt       # Python dependencies
-├── pytest.ini            # Test configuration
+├── pyproject.toml        # Packaging, CLI, pytest, and lint configuration
+├── requirements.txt      # Runtime dependency fallback
 ├── README.md             # Project overview
 └── SETUP.md              # This file
 ```
 
 ## Running the Pipeline
 
-### Command Line Interface (TODO)
+### Command Line Interface
 
 ```bash
 # Process a single PDF
-python -m src.orchestrator.pipeline \
-    --input document.pdf \
+pdf2manim convert document.pdf \
     --verbosity high \
     --depth advanced \
     --audience graduate \
     --output-dir ./output
 
-# Process with cloud storage trigger
-python -m src.orchestrator.pipeline \
-    --s3-bucket my-bucket \
-    --s3-key path/to/document.pdf
+# Generate planning artifacts only
+pdf2manim convert document.pdf --dry-run
+
+# Estimate cost before a full run
+pdf2manim cost document.pdf
 ```
 
 ### Python API

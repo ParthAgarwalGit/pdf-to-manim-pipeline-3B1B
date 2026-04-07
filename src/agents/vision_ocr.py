@@ -2,23 +2,23 @@
 
 This module implements the Vision+OCR Agent which extracts text, mathematical notation,
 and diagrams from PDF files using OCR and multimodal vision models.
-
-Note: This implementation uses mock/stub implementations for external services
-(Tesseract OCR, Mathpix, GPT-4 Vision) since we don't have actual API keys.
-The focus is on agent structure, error handling, and data flow.
 """
 
 import io
 import logging
 import re
 import time
-from typing import List, Optional, Tuple
+import os
+import base64
+from typing import List, Optional, Tuple, Any
+from io import BytesIO
 
+# Try importing dependencies, handle if missing (for initial setup)
 try:
     from PIL import Image
     import fitz  # PyMuPDF
+    import openai
 except ImportError:
-    # These will be installed via requirements.txt
     pass
 
 from src.agents.base import (
@@ -42,42 +42,32 @@ from src.schemas.ocr_output import (
 
 logger = logging.getLogger(__name__)
 
-
 class VisionOCRAgent(Agent):
-    """Agent responsible for extracting text, math notation, and diagrams from PDFs
-    
-    The VisionOCRAgent performs the following operations:
-    1. Render PDF pages to high-resolution images (300 DPI)
-    2. Extract text blocks with bounding boxes and reading order
-    3. Identify and extract mathematical notation in LaTeX format
-    4. Detect diagram regions and generate textual descriptions
-    5. Assemble all extracted content into structured OCROutput
-    
-    The agent handles partial failures gracefully and implements retry logic
-    for transient API failures.
-    """
+    """Agent responsible for extracting text, math notation, and diagrams from PDFs"""
     
     # Configuration constants
     DPI = 300  # Resolution for PDF rendering
     MIN_DIAGRAM_AREA = 1000  # Minimum area in pixels² for diagram detection
     MAX_RETRIES = 3  # Maximum retry attempts for API calls
     
-    def __init__(self):
-        """Initialize the Vision+OCR Agent"""
-        self.retry_count = 0
+    def __init__(self, strict: bool = False):
+        super().__init__()
+        self.strict = strict
+        # Initialize OpenAI Client safely
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            self.client = openai.OpenAI(api_key=api_key)
+        else:
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "OPENAI_API_KEY is required in --strict mode for VisionOCR"
+                )
+            self.client = None
+            logger.warning("OPENAI_API_KEY not found. Vision features will return mocks.")
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
-        """Execute OCR extraction on the PDF file
-        
-        Args:
-            input_data: FileReference object from Validation Agent
-            
-        Returns:
-            OCROutput object with extracted content
-            
-        Raises:
-            AgentExecutionError: For unrecoverable failures
-        """
+        """Execute OCR extraction on the PDF file"""
         if not self.validate_input(input_data):
             raise AgentExecutionError(
                 error_code="INVALID_INPUT",
@@ -147,15 +137,7 @@ class VisionOCRAgent(Agent):
             )
     
     def _process_page(self, pdf_document: 'fitz.Document', page_num: int) -> Page:
-        """Process a single PDF page
-        
-        Args:
-            pdf_document: PyMuPDF document object
-            page_num: Zero-indexed page number
-            
-        Returns:
-            Page object with extracted content
-        """
+        """Process a single PDF page"""
         page = pdf_document[page_num]
         
         # Render page to image at high resolution
@@ -179,15 +161,7 @@ class VisionOCRAgent(Agent):
         )
     
     def _extract_text_blocks(self, page: 'fitz.Page', img: Image.Image) -> List[TextBlock]:
-        """Extract text blocks with bounding boxes and reading order
-        
-        Args:
-            page: PyMuPDF page object
-            img: PIL Image of the page
-            
-        Returns:
-            List of TextBlock objects sorted by reading order
-        """
+        """Extract text blocks with bounding boxes and reading order"""
         text_blocks: List[TextBlock] = []
         
         # Extract text with bounding boxes using PyMuPDF
@@ -231,22 +205,7 @@ class VisionOCRAgent(Agent):
         return text_blocks
     
     def _sort_by_reading_order(self, text_blocks: List[TextBlock]) -> List[TextBlock]:
-        """Sort text blocks by reading order for multi-column layouts
-        
-        Uses spatial sorting: top-to-bottom, left-to-right within rows.
-        Handles multi-column layouts by grouping blocks into rows.
-        
-        This operation is deterministic (Requirements 10.2, 10.3):
-        - Rows sorted by minimum Y coordinate (top to bottom)
-        - Within rows, blocks sorted by X coordinate (left to right)
-        - No random or timestamp-based ordering
-        
-        Args:
-            text_blocks: List of TextBlock objects
-            
-        Returns:
-            Sorted list of TextBlock objects
-        """
+        """Sort text blocks by reading order for multi-column layouts"""
         if not text_blocks:
             return text_blocks
         
@@ -292,20 +251,8 @@ class VisionOCRAgent(Agent):
         img: Image.Image,
         text_blocks: List[TextBlock]
     ) -> List[MathExpression]:
-        """Extract mathematical notation in LaTeX format
-        
-        Args:
-            page: PyMuPDF page object
-            img: PIL Image of the page
-            text_blocks: Previously extracted text blocks for context
-            
-        Returns:
-            List of MathExpression objects
-        """
+        """Extract mathematical notation in LaTeX format"""
         math_expressions: List[MathExpression] = []
-        
-        # Mock implementation: Detect LaTeX-like patterns in text
-        # In production, this would use Mathpix API or similar
         
         for block in text_blocks:
             # Look for LaTeX-like patterns
@@ -333,7 +280,6 @@ class VisionOCRAgent(Agent):
                     context = text[start:end]
                     
                     try:
-                        # Mock extraction - in production, use specialized math OCR
                         math_expr = self._mock_math_ocr(latex_str, block.bounding_box)
                         if math_expr:
                             math_expr.context = context
@@ -352,17 +298,7 @@ class VisionOCRAgent(Agent):
         return math_expressions
     
     def _mock_math_ocr(self, text: str, bbox: BoundingBox) -> Optional[MathExpression]:
-        """Mock math OCR implementation
-        
-        In production, this would call Mathpix API or similar service.
-        
-        Args:
-            text: Text containing potential math notation
-            bbox: Bounding box of the text
-            
-        Returns:
-            MathExpression object or None
-        """
+        """Mock math OCR implementation"""
         # Clean up the LaTeX string
         latex = text.strip()
         
@@ -388,20 +324,8 @@ class VisionOCRAgent(Agent):
         img: Image.Image,
         text_blocks: List[TextBlock]
     ) -> List[Diagram]:
-        """Detect and describe diagrams in the page
-        
-        Args:
-            page: PyMuPDF page object
-            img: PIL Image of the page
-            text_blocks: Previously extracted text blocks
-            
-        Returns:
-            List of Diagram objects
-        """
+        """Detect and describe diagrams in the page"""
         diagrams: List[Diagram] = []
-        
-        # Mock implementation: Detect image blocks in PDF
-        # In production, this would use image segmentation and GPT-4 Vision
         
         blocks = page.get_text("dict")["blocks"]
         diagram_count = 0
@@ -418,9 +342,8 @@ class VisionOCRAgent(Agent):
                     diagram_count += 1
                     diagram_id = f"diagram_{page.number + 1}_{diagram_count}"
                     
-                    # Mock diagram classification and description
-                    # In production, use multimodal vision model
-                    diagram_type, description, visual_elements = self._mock_diagram_analysis(
+                    # Use multimodal vision model (GPT-4o)
+                    diagram_type, description, visual_elements = self._analyze_diagram_vision(
                         img, bbox
                     )
                     
@@ -439,68 +362,66 @@ class VisionOCRAgent(Agent):
                     ))
         
         return diagrams
-    
-    def _mock_diagram_analysis(
-        self,
-        img: Image.Image,
+
+    def _analyze_diagram_vision(
+        self, 
+        img: Image.Image, 
         bbox: Tuple[float, float, float, float]
     ) -> Tuple[str, str, List[str]]:
-        """Mock diagram analysis using vision model
-        
-        In production, this would call GPT-4 Vision or Claude 3 API.
-        
-        Args:
-            img: PIL Image of the page
-            bbox: Bounding box of the diagram (x0, y0, x1, y1)
-            
-        Returns:
-            Tuple of (diagram_type, description, visual_elements)
         """
-        # Mock classification based on aspect ratio and size
-        width = bbox[2] - bbox[0]
-        height = bbox[3] - bbox[1]
-        aspect_ratio = width / height if height > 0 else 1.0
+        Processes a specific cropped area of the page image using GPT-4o Vision.
+        """
+        # Safety fallback
+        if not self.client:
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "OPENAI_API_KEY is required in --strict mode for diagram analysis"
+                )
+            return "unknown", "Visual analysis unavailable (No API Key)", []
+
+        # 1. Crop the image to the diagram's bounding box (x0, y0, x1, y1)
+        cropped_img = img.crop(bbox)
         
-        # Simple heuristic classification
-        if aspect_ratio > 1.5:
-            diagram_type = "graph"
-            description = "A graph showing the relationship between variables with axes and plotted points"
-            visual_elements = ["axes", "grid lines", "plotted points", "labels"]
-        elif aspect_ratio < 0.7:
-            diagram_type = "flowchart"
-            description = "A flowchart diagram showing process flow with connected boxes and arrows"
-            visual_elements = ["boxes", "arrows", "text labels", "decision nodes"]
-        elif width * height > 50000:
-            diagram_type = "plot"
-            description = "A mathematical plot with coordinate axes and function curves"
-            visual_elements = ["x-axis", "y-axis", "curve", "tick marks"]
-        else:
-            diagram_type = "geometric"
-            description = "A geometric figure showing shapes and spatial relationships"
-            visual_elements = ["shapes", "lines", "angles", "labels"]
-        
-        return diagram_type, description, visual_elements
-    
+        # 2. Convert PIL Image to Base64 string for OpenAI
+        buffered = BytesIO()
+        cropped_img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+        # 3. Call the Vision Model
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Identify the type of this mathematical diagram (graph, flowchart, geometric, or plot) and provide a detailed description for a Manim animator."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}
+                    ]
+                }],
+                max_tokens=300
+            )
+            
+            full_description = response.choices[0].message.content
+            
+            # 4. Parse the response
+            diagram_type = "geometric" # Default
+            if "graph" in full_description.lower(): diagram_type = "graph"
+            elif "flow" in full_description.lower(): diagram_type = "flowchart"
+            elif "plot" in full_description.lower(): diagram_type = "plot"
+            
+            return diagram_type, full_description, ["extracted_via_vision"]
+
+        except Exception as e:
+            logger.error(f"Vision API call failed: {e}")
+            return "unknown", f"Failed to extract description: {e}", []
+
     def validate_input(self, input_data: AgentInput) -> bool:
-        """Validate input is a FileReference object
-        
-        Args:
-            input_data: Input object to validate
-            
-        Returns:
-            True if input is a valid FileReference, False otherwise
-        """
+        """Validate input is a FileReference object"""
         return isinstance(input_data, FileReference)
     
     def get_retry_policy(self) -> RetryPolicy:
-        """Return retry policy for Vision+OCR Agent
-        
-        OCR operations may fail due to transient API failures (timeouts, rate limits).
-        Use exponential backoff with max 3 attempts.
-        
-        Returns:
-            RetryPolicy with exponential backoff
-        """
+        """Return retry policy for Vision+OCR Agent"""
         return RetryPolicy(
             max_attempts=3,
             backoff_strategy=BackoffStrategy.EXPONENTIAL,

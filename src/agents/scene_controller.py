@@ -34,11 +34,13 @@ class SceneControllerInput(AgentInput):
         self,
         storyboard: StoryboardJSON,
         output_directory: str,
-        animation_generator: Optional[Any] = None
+        animation_generator: Optional[Any] = None,
+        scene_feedback: Optional[Dict[str, List[str]]] = None,
     ):
         self.storyboard = storyboard
         self.output_directory = output_directory
         self.animation_generator = animation_generator
+        self.scene_feedback = scene_feedback or {}
 
 
 class SceneControllerOutput(AgentOutput):
@@ -104,6 +106,7 @@ class SceneControllerAgent(Agent):
         storyboard = input_data.storyboard
         output_directory = input_data.output_directory
         animation_generator = input_data.animation_generator
+        scene_feedback = input_data.scene_feedback or {}
         
         # Extract scene array
         scenes = storyboard.scenes
@@ -133,7 +136,8 @@ class SceneControllerAgent(Agent):
                     animation_code = self._process_scene_with_generator(
                         animation_generator,
                         processing_input,
-                        scene.scene_id
+                        scene.scene_id,
+                        review_feedback=scene_feedback.get(scene.scene_id, []),
                     )
                 else:
                     # Mock implementation for testing without Animation Generator
@@ -246,33 +250,43 @@ class SceneControllerAgent(Agent):
         self,
         animation_generator: Any,
         processing_input: SceneProcessingInput,
-        scene_id: str
+        scene_id: str,
+        review_feedback: Optional[List[str]] = None,
     ) -> AnimationCodeObject:
         """Process scene using Animation Generator with retry logic.
-        
+
         Args:
             animation_generator: Animation Generator agent instance
             processing_input: SceneProcessingInput for the scene
             scene_id: Scene identifier for error reporting
-            
+
         Returns:
             AnimationCodeObject from successful generation
-            
+
         Raises:
             Exception: If generation fails after all retries
         """
         last_error = None
-        
+
         for attempt in range(self.max_retries_per_scene):
             try:
                 # Call Animation Generator's execute method
-                result = animation_generator.execute(processing_input)
+                # Wrap in AnimationGeneratorInput as expected by the agent
+                from src.agents.animation_generator import AnimationGeneratorInput
+                gen_input = AnimationGeneratorInput(
+                    scene_processing_input=processing_input,
+                    review_feedback=review_feedback or [],
+                )
+                result = animation_generator.execute(gen_input)
                 
                 # Check if result is an error object
                 if hasattr(result, 'error'):
                     raise Exception(result.error)
-                
-                # Success
+
+                # Unwrap: AnimationGeneratorOutput → AnimationCodeObject
+                from src.agents.animation_generator import AnimationGeneratorOutput
+                if isinstance(result, AnimationGeneratorOutput):
+                    return result.animation_code
                 return result
                 
             except Exception as e:

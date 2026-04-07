@@ -34,7 +34,11 @@ class OutputFile(BaseModel):
             'manifest',
             'report',
             'ocr_output',
-            'log'
+            'log',
+            'scene_video',
+            'scene_audio',
+            'composed_video',
+            'final_video',
         }
         if v not in allowed_types:
             raise ValueError(

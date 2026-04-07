@@ -7,7 +7,7 @@ automatic corrections for common violations before passing to Scene Controller.
 import copy
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -170,7 +170,7 @@ class JSONSanitizerAgent(Agent):
     def _apply_corrections(
         self,
         storyboard_dict: Dict[str, Any]
-    ) -> tuple[Dict[str, Any], List[SanitizationCorrection]]:
+    ) -> Tuple[Dict[str, Any], List[SanitizationCorrection]]:
         """Apply automatic corrections to storyboard dictionary.
         
         Args:

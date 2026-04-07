@@ -48,9 +48,19 @@ class PersistenceInput(AgentInput, BaseModel):
         ...,
         description="Original PDF filename (without extension)"
     )
+    output_dir: Optional[str] = Field(
+        None,
+        description="Precomputed absolute output directory path.  When set, "
+                    "the agent writes directly here and ignores timestamp.  "
+                    "This is the canonical way to pass the run's single output "
+                    "directory from the orchestrator so all artifacts land in "
+                    "the same place."
+    )
     timestamp: Optional[datetime] = Field(
         None,
-        description="Timestamp for output directory (defaults to current time)"
+        description="Fallback timestamp used to derive the output directory "
+                    "when output_dir is not provided.  Deprecated: prefer "
+                    "output_dir.  Kept for backward compatibility only."
     )
 
 
@@ -104,14 +114,20 @@ class PersistenceAgent(Agent):
                 "Input validation failed for PersistenceAgent"
             )
         
-        # Determine output directory path
+        # Determine output directory path.
+        # Prefer the precomputed output_dir passed from the orchestrator
+        # (the canonical path for this run).  Fall back to timestamp-based
+        # derivation only when called outside the orchestrator (e.g. tests).
         timestamp = input_data.timestamp or datetime.now(timezone.utc)
-        timestamp_str = timestamp.strftime("%Y-%m-%dT%H-%M-%S")
-        output_dir = os.path.join(
-            self.base_output_dir,
-            input_data.pdf_filename,
-            timestamp_str
-        )
+        if input_data.output_dir:
+            output_dir = input_data.output_dir
+        else:
+            timestamp_str = timestamp.strftime("%Y-%m-%dT%H-%M-%S")
+            output_dir = os.path.join(
+                self.base_output_dir,
+                input_data.pdf_filename,
+                timestamp_str
+            )
         
         # Create directory structure (with cleanup for idempotency)
         try:
@@ -192,7 +208,8 @@ class PersistenceAgent(Agent):
                 written_files.append(ocr_file)
             except Exception as e:
                 # OCR output is optional, log but don't fail
-                pass
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to write OCR output: {e}")
         
         # Generate and write manifest
         try:
@@ -336,8 +353,9 @@ class PersistenceAgent(Agent):
             Exception: If write fails
         """
         file_path_obj = Path(file_path)
+        import sys
         temp_file_path = None
-        
+
         try:
             # Write to temporary file in same directory
             with tempfile.NamedTemporaryFile(
@@ -348,21 +366,29 @@ class PersistenceAgent(Agent):
                 suffix='.tmp'
             ) as temp_file:
                 temp_file.write(content)
-                temp_file.flush()  # Ensure content is written to disk
-                os.fsync(temp_file.fileno())  # Force write to disk
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
                 temp_file_path = temp_file.name
-            
+
             # Atomically rename temp file to destination
-            # This is atomic on most filesystems and overwrites existing files
-            os.replace(temp_file_path, file_path)
-            
+            try:
+                os.replace(temp_file_path, file_path)
+            except PermissionError:
+                # Windows: os.replace can fail if another process holds a lock.
+                # Fall back to: delete target → rename temp → done.
+                if sys.platform == "win32":
+                    if os.path.exists(file_path):
+                        os.unlink(file_path)
+                    os.rename(temp_file_path, file_path)
+                else:
+                    raise
+
         except Exception:
             # Clean up temp file if something went wrong
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.unlink(temp_file_path)
                 except Exception:
-                    # Best effort cleanup
                     pass
             raise
     
