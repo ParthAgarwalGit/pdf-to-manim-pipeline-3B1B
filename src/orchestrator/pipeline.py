@@ -1361,6 +1361,13 @@ class Orchestrator:
                 final_video_path,
                 "final_video",
             )
+            # Record on manifest for direct access
+            output_root = Path(manifest.output_directory)
+            try:
+                rel = str(Path(final_video_path).relative_to(output_root)).replace("\\", "/")
+            except ValueError:
+                rel = str(Path(final_video_path).name)
+            manifest.final_video_path = rel
 
         self._persist_quality_reports(manifest)
         self._write_manifest_to_disk(manifest)

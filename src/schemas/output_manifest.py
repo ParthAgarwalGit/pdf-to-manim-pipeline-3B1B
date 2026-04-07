@@ -126,6 +126,10 @@ class OutputManifest(BaseModel):
         default=None,
         description="Effective runtime configuration for this run"
     )
+    final_video_path: Optional[str] = Field(
+        default=None,
+        description="Relative path to the final composed video (None if render was skipped)"
+    )
     
     @field_validator('status')
     @classmethod
