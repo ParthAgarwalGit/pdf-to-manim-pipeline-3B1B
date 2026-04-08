@@ -9,6 +9,7 @@ This agent is responsible for:
 """
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.animation_code import AnimationCodeObject
@@ -308,35 +311,49 @@ class PersistenceAgent(Agent):
     def _cleanup_incomplete_files(self, output_dir: str) -> None:
         """
         Clean up incomplete files from previous failed run.
-        
+
         This method ensures idempotency by removing all files except
         pipeline.log from the output directory. It handles both files
         and subdirectories that might have been created.
-        
+
         Args:
             output_dir: Path to output directory
         """
-        output_path = Path(output_dir)
-        
+        import shutil
+
+        output_path = Path(output_dir).resolve()
+
         if not output_path.exists():
             return
-        
+
         # Remove all files and directories except pipeline.log (keep logs for debugging)
         for item_path in output_path.iterdir():
             if item_path.name == "pipeline.log":
                 continue
-                
+
+            # Guard against symlink escape: resolved path must stay inside output_path.
             try:
-                if item_path.is_file():
+                resolved = item_path.resolve()
+                if not str(resolved).startswith(str(output_path) + os.sep) and resolved != output_path:
+                    logger.warning(
+                        "Skipping cleanup of %s — resolves outside output dir (%s)",
+                        item_path, resolved,
+                    )
+                    continue
+            except (OSError, ValueError):
+                continue
+
+            try:
+                if item_path.is_symlink():
+                    # Never follow symlinks — just remove the link itself.
+                    item_path.unlink()
+                elif item_path.is_file():
                     item_path.unlink()
                 elif item_path.is_dir():
-                    # Remove directory and all its contents
-                    import shutil
                     shutil.rmtree(item_path)
-            except Exception:
-                # Best effort cleanup, don't fail if item can't be removed
-                # This could happen due to permissions or file locks
-                pass
+            except Exception as exc:
+                # Best effort cleanup — log but don't fail.
+                logger.debug("Could not remove %s during cleanup: %s", item_path, exc)
     
     def _write_file_atomically(self, file_path: str, content: str) -> None:
         """

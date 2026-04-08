@@ -413,7 +413,7 @@ class AudioVideoComposerAgent(Agent):
                 mode="w", suffix=".txt", delete=False, encoding="utf-8"
             ) as f:
                 for vp in video_paths:
-                    escaped = vp.replace("\\", "/")
+                    escaped = vp.replace("\\", "/").replace("'", "'\\''")  # escape for FFmpeg concat
                     f.write(f"file '{escaped}'\n")
                 concat_file = f.name
 

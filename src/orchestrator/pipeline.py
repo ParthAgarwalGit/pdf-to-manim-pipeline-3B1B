@@ -1444,7 +1444,6 @@ class Orchestrator:
             return
 
         manifest_path = output_dir / "manifest.json"
-        manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
         self._register_runtime_artifact(manifest, manifest_path, "manifest")
         manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     

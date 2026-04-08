@@ -373,7 +373,7 @@ class VideoRendererAgent(Agent):
         ) as f:
             for vp in video_paths:
                 # ffmpeg requires forward slashes and escaped quotes
-                escaped = vp.replace("\\", "/")
+                escaped = vp.replace("\\", "/").replace("'", "'\\''")  # escape for FFmpeg concat
                 f.write(f"file '{escaped}'\n")
             concat_file = f.name
 
