@@ -23,7 +23,7 @@ from src.agents.base import (
     BackoffStrategy,
     RetryPolicy,
 )
-from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
+from src.utils.ffmpeg_finder import ffmpeg_available, get_ffmpeg, get_ffprobe
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,17 @@ class VideoRendererAgent(Agent):
     def execute(self, input_data: VideoRendererInput) -> AgentOutput:
         if not self.validate_input(input_data):
             raise AgentExecutionError("INVALID_INPUT", "Expected VideoRendererInput.")
+
+        # Preflight: ensure ffmpeg is reachable before doing any work.
+        if not ffmpeg_available():
+            logger.error("FFmpeg not found — cannot render or concatenate video.")
+            return VideoRendererFailure(
+                scene_results=[],
+                error=(
+                    "FFmpeg is not installed or not on PATH. "
+                    "Install it (https://ffmpeg.org/download.html) and retry."
+                ),
+            )
 
         if not input_data.scene_files:
             return VideoRendererFailure(
