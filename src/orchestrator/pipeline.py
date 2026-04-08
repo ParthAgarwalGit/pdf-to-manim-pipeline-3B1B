@@ -1306,6 +1306,10 @@ class Orchestrator:
             video_output=video_output,
             tts_output=tts_output,
             composition_output=composition_output,
+            # A composed final video only exists when both render and TTS ran.
+            # When TTS is disabled, skip the "no final video" check so it
+            # doesn't fire as a spurious critical finding.
+            final_video_expected=self.config.enable_tts,
         )
         result = self._execute_agent(
             agent=self.video_quality_reviewer_agent,

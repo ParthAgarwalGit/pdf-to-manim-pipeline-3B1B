@@ -54,6 +54,7 @@ class VideoQualityReviewerInput(AgentInput):
         tts_output: Optional[List[Any]] = None,
         composition_output: Optional[Any] = None,
         final_video_path: Optional[str] = None,
+        final_video_expected: bool = True,
     ):
         self.storyboard = storyboard
         self.manifest = manifest
@@ -62,6 +63,9 @@ class VideoQualityReviewerInput(AgentInput):
         self.tts_output = tts_output or []
         self.composition_output = composition_output
         self.final_video_path = final_video_path
+        # When False, the "no final video" check is suppressed — e.g. when
+        # TTS is disabled and composition is intentionally skipped.
+        self.final_video_expected = final_video_expected
 
 
 class VideoQualityReviewerOutput(AgentOutput):
@@ -129,7 +133,9 @@ class VideoQualityReviewerAgent(Agent):
         )
         findings.extend(self._review_layout_risk(code_by_scene))
 
-        if not final_video_path or not Path(final_video_path).exists():
+        if input_data.final_video_expected and (
+            not final_video_path or not Path(final_video_path).exists()
+        ):
             findings.append(
                 VideoQualityFinding(
                     issue="No final video artifact was produced.",

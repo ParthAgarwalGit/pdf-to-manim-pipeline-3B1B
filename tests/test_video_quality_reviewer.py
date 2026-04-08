@@ -337,3 +337,39 @@ class TestPassFailSeverity:
         assert result.passed is False
         critical = [f for f in result.findings if f.severity == "critical"]
         assert len(critical) >= 1
+
+    def test_no_spurious_critical_when_final_video_not_expected(self, tmp_path):
+        """Reviewer must NOT fire 'no final video' when final_video_expected=False.
+
+        Reproduces the --skip-tts false-positive: render succeeds but composition
+        is intentionally skipped, so there is no composed final video.  The review
+        should still run (checking per-scene render failures and layout risk) but
+        must not mark the run as failed just because there is no final video.
+        """
+        agent = VideoQualityReviewerAgent()
+        scene = _make_scene("scene_007")
+        storyboard = _make_storyboard([scene])
+        manifest = _make_manifest(tmp_path)
+
+        input_data = VideoQualityReviewerInput(
+            storyboard=storyboard,
+            manifest=manifest,
+            video_output=FakeVideoOutput(
+                scene_results=[FakeRenderResult("scene_007", success=True, duration_seconds=10.0)],
+            ),
+            tts_output=[],
+            composition_output=None,
+            final_video_expected=False,   # TTS disabled — no composed video expected
+        )
+        result = agent.execute(input_data)
+
+        # No "no final video" critical finding
+        critical_missing_video = [
+            f for f in result.findings
+            if f.severity == "critical" and "no final video" in f.issue.lower()
+        ]
+        assert len(critical_missing_video) == 0, (
+            "Reviewer must not fire 'no final video' when final_video_expected=False"
+        )
+        # Review as a whole should pass (all scenes rendered OK, no layout risk)
+        assert result.passed is True
