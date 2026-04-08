@@ -7,6 +7,7 @@ retry logic with exponential backoff, and graceful handling of missing API keys.
 
 import logging
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import List, Optional
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.utils.cost_tracker import CostTracker
+from src.utils.ffmpeg_finder import get_ffprobe
 
 
 logger = logging.getLogger(__name__)
@@ -214,8 +216,11 @@ class TTSAgent(Agent):
                     {"scene_id": input_data.scene_id}
                 )
 
-            # Estimate duration
-            duration_seconds = self._estimate_duration(input_data.narration)
+            # Measure actual duration from the generated file; fall back to
+            # heuristic estimate when ffprobe is unavailable.
+            duration_seconds = self._probe_duration(audio_file_path)
+            if duration_seconds <= 0:
+                duration_seconds = self._estimate_duration(input_data.narration)
 
             # Track cost
             char_count = len(input_data.narration)
@@ -409,6 +414,23 @@ class TTSAgent(Agent):
                 f"Invalid voice: {input_data.voice}. "
                 f"Must be one of {self.VALID_VOICES}"
             )
+
+    @staticmethod
+    def _probe_duration(file_path: str) -> float:
+        """Return actual audio duration via ffprobe, or -1.0 on failure."""
+        try:
+            result = subprocess.run(
+                [
+                    get_ffprobe(), "-v", "quiet",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0",
+                    file_path,
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            return -1.0
 
     def _estimate_duration(self, narration: str) -> float:
         """Estimate audio duration from narration text.

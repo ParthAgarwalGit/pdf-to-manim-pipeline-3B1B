@@ -214,29 +214,25 @@ class PersistenceAgent(Agent):
                 import logging
                 logging.getLogger(__name__).warning(f"Failed to write OCR output: {e}")
         
-        # Generate and write manifest
+        # Generate and write manifest (single write — include the manifest
+        # entry in the file list before writing so the on-disk copy is
+        # self-consistent).
         try:
-            # Generate manifest with current files
+            # Pre-create the manifest file entry so the file list is complete.
+            manifest_rel_path = "manifest.json"
+            manifest_placeholder = OutputFile(
+                path=manifest_rel_path, size_bytes=0, type="manifest"
+            )
+            all_files = written_files + [manifest_placeholder]
+
             manifest = self._generate_manifest(
                 output_dir,
-                written_files,
+                all_files,
                 input_data.scene_processing_report,
-                timestamp
+                timestamp,
             )
-            
-            # Write manifest and get actual file info
-            manifest_file = self._write_manifest(output_dir, manifest)
-            written_files.append(manifest_file)
-            
-            # Update manifest with complete file list (including manifest itself)
-            manifest = self._generate_manifest(
-                output_dir,
-                written_files,
-                input_data.scene_processing_report,
-                timestamp
-            )
-            
-            # Write final manifest with complete file list
+
+            # Single atomic write.
             self._write_manifest(output_dir, manifest)
         except Exception as e:
             raise AgentExecutionError(
@@ -334,7 +330,9 @@ class PersistenceAgent(Agent):
             # Guard against symlink escape: resolved path must stay inside output_path.
             try:
                 resolved = item_path.resolve()
-                if not str(resolved).startswith(str(output_path) + os.sep) and resolved != output_path:
+                # Use is_relative_to (Python 3.9+) for correct prefix comparison.
+                # str.startswith is unsafe: /tmp/out matches /tmp/output_evil.
+                if not resolved.is_relative_to(output_path):
                     logger.warning(
                         "Skipping cleanup of %s — resolves outside output dir (%s)",
                         item_path, resolved,

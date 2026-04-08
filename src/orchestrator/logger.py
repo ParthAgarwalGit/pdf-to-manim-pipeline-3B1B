@@ -51,8 +51,9 @@ class StructuredJSONLogger:
         self.log_file_path = None
         self.json_file_handle = None
 
-        # Setup Python logger for console output (always available)
-        self.logger = logging.getLogger(__name__)
+        # Use a per-instance logger name to avoid handler duplication when
+        # multiple StructuredJSONLogger instances exist (common in tests).
+        self.logger = logging.getLogger(f"{__name__}.{id(self)}")
         if not self.logger.handlers:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.INFO)
@@ -102,7 +103,7 @@ class StructuredJSONLogger:
         """
         if self.json_file_handle:
             # Write JSON object on a single line
-            json_line = json.dumps(log_entry, ensure_ascii=False)
+            json_line = json.dumps(log_entry, ensure_ascii=False, default=str)
             self.json_file_handle.write(json_line + '\n')
             self.json_file_handle.flush()  # Ensure immediate write
     

@@ -300,7 +300,7 @@ class Orchestrator:
                 pipeline_duration = time.time() - pipeline_start_time
                 scene_success_rate = (
                     manifest.successful_scenes / manifest.total_scenes
-                    if manifest.total_scenes > 0 else 0.0
+                    if manifest.total_scenes > 0 else 1.0
                 )
                 self.structured_logger.log_pipeline_complete(
                     duration_seconds=pipeline_duration,
@@ -735,7 +735,7 @@ class Orchestrator:
         scene_feedback: Dict[str, List[str]] = {}
         validation_attempts: List[Dict[str, Any]] = []
         max_attempts = max(1, self.config.max_quality_retries + 1)
-        latest_result = None
+        latest_result = None  # guaranteed to be assigned in first loop iteration (max_attempts >= 1)
 
         for attempt in range(max_attempts):
             input_data = SceneControllerInput(

@@ -488,7 +488,7 @@ class AudioVideoComposerAgent(Agent):
             raise RuntimeError(f"FFmpeg exit code {result.returncode}: {stderr}")
 
     def _get_media_duration(self, file_path: str) -> float:
-        """Get media duration in seconds using ffprobe."""
+        """Get media duration in seconds using ffprobe. Returns -1.0 on failure."""
         try:
             result = subprocess.run(
                 [
@@ -502,5 +502,6 @@ class AudioVideoComposerAgent(Agent):
                 timeout=10,
             )
             return float(result.stdout.strip())
-        except Exception:
-            return 0.0
+        except Exception as exc:
+            logger.warning("Duration detection failed for %s: %s", file_path, exc)
+            return -1.0

@@ -348,16 +348,16 @@ class VideoRendererAgent(Agent):
             if "partial_movie_files" not in str(mp4):
                 return str(mp4)
 
-        # 4. Also check CWD-relative media/ and scene-dir-relative media/
-        #    in case --media_dir was ignored (older Manim versions)
-        for base in [Path("media"), Path(scene_file).parent / "media"]:
-            candidate = base / "videos" / file_stem
-            if candidate.exists():
-                for qdir in candidate.iterdir():
-                    if qdir.is_dir():
-                        video = qdir / f"{class_name}.mp4"
-                        if video.exists():
-                            return str(video)
+        # 4. Scene-dir-relative media/ as last resort (older Manim versions
+        #    that ignore --media_dir).  CWD-relative search is intentionally
+        #    omitted to avoid picking up files from unrelated runs.
+        scene_media = Path(scene_file).parent / "media" / "videos" / file_stem
+        if scene_media.exists():
+            for qdir in scene_media.iterdir():
+                if qdir.is_dir():
+                    video = qdir / f"{class_name}.mp4"
+                    if video.exists():
+                        return str(video)
 
         return None
 

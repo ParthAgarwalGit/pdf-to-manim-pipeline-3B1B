@@ -417,6 +417,7 @@ class VideoQualityReviewerAgent(Agent):
         )
 
     def _get_media_duration(self, file_path: str) -> float:
+        """Return duration in seconds, or -1.0 if detection fails."""
         try:
             result = subprocess.run(
                 [
@@ -430,5 +431,6 @@ class VideoQualityReviewerAgent(Agent):
                 timeout=10,
             )
             return float(result.stdout.strip())
-        except Exception:
-            return 0.0
+        except Exception as exc:
+            logger.warning("Duration detection failed for %s: %s", file_path, exc)
+            return -1.0
