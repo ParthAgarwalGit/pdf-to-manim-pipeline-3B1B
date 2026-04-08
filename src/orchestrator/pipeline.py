@@ -799,10 +799,16 @@ class Orchestrator:
                 len(scene_feedback),
             )
 
+        # Determine exit reason: if the last feedback was empty the scenes
+        # passed validation; otherwise we exhausted retry attempts.
+        final_status = (
+            "passed" if not scene_feedback
+            else "accepted_with_remaining_failures"
+        )
         self._quality_reports["scene_code_review"] = {
             "enabled": self.config.enable_quality_loops,
             "attempts": validation_attempts,
-            "final_status": "accepted_with_validation_failures",
+            "final_status": final_status,
         }
         return latest_result
     
@@ -1378,7 +1384,7 @@ class Orchestrator:
             # Record on manifest for direct access
             output_root = Path(manifest.output_directory)
             try:
-                rel = str(Path(final_video_path).relative_to(output_root)).replace("\\", "/")
+                rel = Path(final_video_path).relative_to(output_root).as_posix()
             except ValueError:
                 rel = str(Path(final_video_path).name)
             manifest.final_video_path = rel

@@ -403,8 +403,8 @@ class PersistenceAgent(Agent):
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.unlink(temp_file_path)
-                except Exception:
-                    pass
+                except Exception as cleanup_exc:
+                    logger.debug("Could not remove temp file %s: %s", temp_file_path, cleanup_exc)
             raise
     
     def _write_animation_code_files(

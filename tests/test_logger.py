@@ -324,10 +324,11 @@ class TestStructuredJSONLogger:
             
             log_entry = json.loads(log_line)
             
-            # Verify timestamp is ISO8601 format (contains 'T' and timezone)
+            # Verify timestamp is valid ISO8601
+            from datetime import datetime, timezone
             timestamp = log_entry["timestamp"]
-            assert 'T' in timestamp
-            assert '+' in timestamp or 'Z' in timestamp or timestamp.endswith('00:00')
+            parsed = datetime.fromisoformat(timestamp)
+            assert parsed.tzinfo is not None, "Timestamp must include timezone"
     
     def test_retry_attempt_tracking(self):
         """Test that retry attempts are correctly tracked in logs."""
@@ -415,3 +416,34 @@ class TestLoggerReliability:
             logger.close()
             logger.close()  # second call must be safe
             logger.close()  # third call too
+
+    def test_concurrent_writes_do_not_corrupt_log(self):
+        """Multiple threads writing to the same logger must produce valid JSON lines."""
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = StructuredJSONLogger(output_directory=tmpdir)
+            errors = []
+
+            def _write(agent_name: str, count: int):
+                try:
+                    for i in range(count):
+                        logger.log_agent_start(agent_name, f"item-{i}")
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_write, args=(f"Agent-{t}", 20)) for t in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            logger.close()
+            assert not errors, f"Thread errors: {errors}"
+
+            log_file = Path(tmpdir) / "pipeline.log"
+            lines = log_file.read_text().splitlines()
+            assert len(lines) == 80  # 4 threads × 20 writes
+            for line in lines:
+                entry = json.loads(line)
+                assert "agent_name" in entry

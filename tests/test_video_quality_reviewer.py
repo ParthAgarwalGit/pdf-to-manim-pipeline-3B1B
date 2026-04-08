@@ -156,6 +156,35 @@ class TestDurationMismatch:
         ]
         assert len(duration_findings) == 0
 
+    def test_boundary_at_tolerance_threshold(self, tmp_path):
+        """Drift of exactly DURATION_TOLERANCE_SECONDS (2.0) should NOT flag; 2.01 should."""
+        agent = VideoQualityReviewerAgent()
+
+        for drift, expect_flag in [(2.0, False), (2.01, True)]:
+            scene = _make_scene("scene_boundary", duration=10.0)
+            storyboard = _make_storyboard([scene])
+            manifest = _make_manifest(tmp_path)
+
+            video_output = FakeVideoOutput(
+                scene_results=[FakeRenderResult("scene_boundary", success=True, duration_seconds=10.0)],
+            )
+            tts_output = [FakeTTSOutput("scene_boundary", duration_seconds=10.0 + drift)]
+
+            input_data = VideoQualityReviewerInput(
+                storyboard=storyboard,
+                manifest=manifest,
+                video_output=video_output,
+                tts_output=tts_output,
+            )
+            result = agent.execute(input_data)
+            duration_findings = [
+                f for f in result.findings if "duration" in f.issue.lower() or "sync" in f.issue.lower()
+            ]
+            if expect_flag:
+                assert len(duration_findings) >= 1, f"drift={drift} should flag"
+            else:
+                assert len(duration_findings) == 0, f"drift={drift} should NOT flag"
+
 
 class TestOverlapBlameAttribution:
     """Reviewer must blame animation_generator for overlap-style layout issues."""

@@ -65,6 +65,16 @@ Records the effective execution settings:
 | `--skip-tts` | Above + rendered scene videos (no audio, no final compose) |
 | Full (default) | All artifacts including final_video.mp4 |
 
+### Invalid Mode Combinations
+
+Some flag combinations are redundant or non-sensical. The CLI will warn or error:
+
+| Combination | Behaviour |
+|---|---|
+| `--dry-run` + `--skip-render` | `--skip-render` is redundant — dry-run already skips render. Runs as `--dry-run`. |
+| `--skip-tts` without render | TTS audio is only useful when composed with video. TTS is silently skipped. |
+| `--skip-render` + `--skip-tts` | Valid — produces storyboard, narration, and scene code only. |
+
 ## Quality Review Artifacts
 
 When quality loops are enabled (default), up to three review files are produced:

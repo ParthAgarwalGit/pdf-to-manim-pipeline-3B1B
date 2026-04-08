@@ -225,12 +225,17 @@ class TTSAgent(Agent):
             # Track cost
             char_count = len(input_data.narration)
             cost = self._calculate_cost(char_count)
+            # NOTE: CostTracker.track_call expects token counts. For TTS the
+            # billable unit is characters, not tokens; we pass char_count as
+            # input_tokens so the tracker records *something* proportional to
+            # cost.  A future CostTracker revision should add a dedicated
+            # `characters` field.
             self.cost_tracker.track_call(
                 provider="openai",
                 model=model,
-                input_tokens=char_count,  # Using character count as proxy for tokens
-                output_tokens=0,  # TTS doesn't have output tokens
-                call_type="tts"
+                input_tokens=char_count,
+                output_tokens=0,
+                call_type="tts",
             )
 
             logger.info(f"Generated TTS audio for scene {input_data.scene_id}: {audio_file_path} ({duration_seconds:.2f}s, ${cost:.4f})")

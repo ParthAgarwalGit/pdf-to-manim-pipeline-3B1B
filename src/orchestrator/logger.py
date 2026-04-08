@@ -313,8 +313,8 @@ class StructuredJSONLogger:
         if self.json_file_handle:
             try:
                 self.json_file_handle.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).debug("Error closing log file: %s", exc)
             self.json_file_handle = None
 
     def __enter__(self):
