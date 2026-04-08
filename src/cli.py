@@ -347,6 +347,23 @@ def convert(
                     click.echo(f"  {click.style('AUDIO', fg='cyan')}: {full}  ({size_mb:.1f} MB)")
                 click.echo()
 
+            # Quality review artifacts
+            review_files = {
+                "storyboard_review.json": "Storyboard Review",
+                "scene_code_review.json": "Scene Code Review",
+                "video_review.json": "Video Review",
+            }
+            found_reviews = []
+            for filename, label in review_files.items():
+                review_path = output_path / filename
+                if review_path.exists():
+                    found_reviews.append((label, review_path))
+            if found_reviews:
+                click.echo(click.style("Quality Review Artifacts:", bold=True))
+                for label, path in found_reviews:
+                    click.echo(f"  {label}: {path}")
+                click.echo()
+
             click.echo(click.style("=" * 60, fg="cyan"))
             if manifest.final_video_path:
                 click.echo(click.style("Conversion completed successfully!", fg="green", bold=True))
