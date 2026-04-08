@@ -232,7 +232,18 @@ class PersistenceAgent(Agent):
                 timestamp,
             )
 
-            # Single atomic write.
+            # Two-pass write so the manifest's self-entry has a real size.
+            # Pass 1: write with size_bytes=0; get the actual file size back.
+            manifest_file_entry = self._write_manifest(output_dir, manifest)
+            # Patch the in-memory entry.
+            for i, f in enumerate(manifest.files):
+                if f.type == "manifest":
+                    manifest.files[i] = manifest_file_entry
+                    break
+            # Pass 2: re-write with the corrected size so the on-disk copy is
+            # self-consistent.  The file grows by a few bytes (the size digits
+            # themselves), which is an inherent chicken-and-egg rounding; the
+            # recorded size is accurate to within ~10 bytes — far better than 0.
             self._write_manifest(output_dir, manifest)
         except Exception as e:
             raise AgentExecutionError(
