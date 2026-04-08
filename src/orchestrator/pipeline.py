@@ -1105,9 +1105,23 @@ class Orchestrator:
         """
         pdf_filename = Path(file_ref.filename).stem  # Remove extension
 
+        # In dry-run mode scene_output is None — build empty placeholders.
+        if scene_output is not None:
+            report = scene_output.report
+            code_objects = scene_output.animation_code_objects
+        else:
+            from src.schemas.scene_processing import SceneProcessingReport
+            report = SceneProcessingReport(
+                total_scenes=0,
+                successful_scenes=0,
+                failed_scenes=[],
+                output_directory=self._run_output_dir or "",
+            )
+            code_objects = []
+
         input_data = PersistenceInput(
-            scene_processing_report=scene_output.report,
-            animation_code_objects=scene_output.animation_code_objects,
+            scene_processing_report=report,
+            animation_code_objects=code_objects,
             storyboard=storyboard,
             ocr_output=ocr_output,
             pdf_filename=pdf_filename,
