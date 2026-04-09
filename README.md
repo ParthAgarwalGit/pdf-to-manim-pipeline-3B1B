@@ -87,26 +87,22 @@ pdf2manim convert document.pdf \
     --voice nova
 ```
 
-### Execution Modes
-
-```bash
-# Planning only — no rendering or TTS (fast iteration)
-pdf2manim convert document.pdf --dry-run
-
-# Skip TTS (render video without narration audio)
-pdf2manim convert document.pdf --skip-tts
-
-# Skip rendering entirely (generate scene code only)
-pdf2manim convert document.pdf --skip-render
-
-# Set render quality: low / medium / high / 4k
-pdf2manim convert document.pdf --quality high
-```
-
 ### Estimate Cost Before Running
 
 ```bash
 pdf2manim cost document.pdf
+```
+
+### Render Generated Animations
+
+```bash
+# Render a single scene
+manim -pql output/document/timestamp/scene_001.py Scene_001
+
+# Render all scenes in directory
+for file in output/document/timestamp/scene_*.py; do
+    manim -pql "$file"
+done
 ```
 
 ## Testing
@@ -212,12 +208,6 @@ class Agent(ABC):
 3. Define input/output schemas in `src/schemas/`
 4. Write unit tests in `tests/`
 5. Add agent to orchestrator sequence
-
-## Documentation
-
-- [Output Contract](docs/output-contract.md) — manifest schema, file types, and inspection commands
-- [Troubleshooting](docs/troubleshooting.md) — common failures and fixes
-- [Determinism](docs/determinism.md) — reproducibility guarantees
 
 ## License
 

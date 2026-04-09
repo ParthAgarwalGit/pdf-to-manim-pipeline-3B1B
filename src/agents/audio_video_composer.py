@@ -413,7 +413,7 @@ class AudioVideoComposerAgent(Agent):
                 mode="w", suffix=".txt", delete=False, encoding="utf-8"
             ) as f:
                 for vp in video_paths:
-                    escaped = vp.replace("\\", "/").replace("'", "'\\''")  # escape for FFmpeg concat
+                    escaped = vp.replace("\\", "/")
                     f.write(f"file '{escaped}'\n")
                 concat_file = f.name
 
@@ -488,7 +488,7 @@ class AudioVideoComposerAgent(Agent):
             raise RuntimeError(f"FFmpeg exit code {result.returncode}: {stderr}")
 
     def _get_media_duration(self, file_path: str) -> float:
-        """Get media duration in seconds using ffprobe. Returns -1.0 on failure."""
+        """Get media duration in seconds using ffprobe."""
         try:
             result = subprocess.run(
                 [
@@ -502,6 +502,5 @@ class AudioVideoComposerAgent(Agent):
                 timeout=10,
             )
             return float(result.stdout.strip())
-        except Exception as exc:
-            logger.warning("Duration detection failed for %s: %s", file_path, exc)
-            return -1.0
+        except Exception:
+            return 0.0

@@ -54,7 +54,6 @@ class VideoQualityReviewerInput(AgentInput):
         tts_output: Optional[List[Any]] = None,
         composition_output: Optional[Any] = None,
         final_video_path: Optional[str] = None,
-        final_video_expected: bool = True,
     ):
         self.storyboard = storyboard
         self.manifest = manifest
@@ -63,9 +62,6 @@ class VideoQualityReviewerInput(AgentInput):
         self.tts_output = tts_output or []
         self.composition_output = composition_output
         self.final_video_path = final_video_path
-        # When False, the "no final video" check is suppressed — e.g. when
-        # TTS is disabled and composition is intentionally skipped.
-        self.final_video_expected = final_video_expected
 
 
 class VideoQualityReviewerOutput(AgentOutput):
@@ -133,9 +129,7 @@ class VideoQualityReviewerAgent(Agent):
         )
         findings.extend(self._review_layout_risk(code_by_scene))
 
-        if input_data.final_video_expected and (
-            not final_video_path or not Path(final_video_path).exists()
-        ):
+        if not final_video_path or not Path(final_video_path).exists():
             findings.append(
                 VideoQualityFinding(
                     issue="No final video artifact was produced.",
@@ -423,7 +417,6 @@ class VideoQualityReviewerAgent(Agent):
         )
 
     def _get_media_duration(self, file_path: str) -> float:
-        """Return duration in seconds, or -1.0 if detection fails."""
         try:
             result = subprocess.run(
                 [
@@ -437,6 +430,5 @@ class VideoQualityReviewerAgent(Agent):
                 timeout=10,
             )
             return float(result.stdout.strip())
-        except Exception as exc:
-            logger.warning("Duration detection failed for %s: %s", file_path, exc)
-            return -1.0
+        except Exception:
+            return 0.0

@@ -11,7 +11,7 @@ import logging
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -23,7 +23,7 @@ from src.agents.base import (
     BackoffStrategy,
     RetryPolicy,
 )
-from src.utils.ffmpeg_finder import ffmpeg_available, get_ffmpeg, get_ffprobe
+from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
 
 logger = logging.getLogger(__name__)
 
@@ -113,17 +113,6 @@ class VideoRendererAgent(Agent):
     def execute(self, input_data: VideoRendererInput) -> AgentOutput:
         if not self.validate_input(input_data):
             raise AgentExecutionError("INVALID_INPUT", "Expected VideoRendererInput.")
-
-        # Preflight: ensure ffmpeg is reachable before doing any work.
-        if not ffmpeg_available():
-            logger.error("FFmpeg not found — cannot render or concatenate video.")
-            return VideoRendererFailure(
-                scene_results=[],
-                error=(
-                    "FFmpeg is not installed or not on PATH. "
-                    "Install it (https://ffmpeg.org/download.html) and retry."
-                ),
-            )
 
         if not input_data.scene_files:
             return VideoRendererFailure(
@@ -348,16 +337,16 @@ class VideoRendererAgent(Agent):
             if "partial_movie_files" not in str(mp4):
                 return str(mp4)
 
-        # 4. Scene-dir-relative media/ as last resort (older Manim versions
-        #    that ignore --media_dir).  CWD-relative search is intentionally
-        #    omitted to avoid picking up files from unrelated runs.
-        scene_media = Path(scene_file).parent / "media" / "videos" / file_stem
-        if scene_media.exists():
-            for qdir in scene_media.iterdir():
-                if qdir.is_dir():
-                    video = qdir / f"{class_name}.mp4"
-                    if video.exists():
-                        return str(video)
+        # 4. Also check CWD-relative media/ and scene-dir-relative media/
+        #    in case --media_dir was ignored (older Manim versions)
+        for base in [Path("media"), Path(scene_file).parent / "media"]:
+            candidate = base / "videos" / file_stem
+            if candidate.exists():
+                for qdir in candidate.iterdir():
+                    if qdir.is_dir():
+                        video = qdir / f"{class_name}.mp4"
+                        if video.exists():
+                            return str(video)
 
         return None
 
@@ -373,7 +362,7 @@ class VideoRendererAgent(Agent):
         ) as f:
             for vp in video_paths:
                 # ffmpeg requires forward slashes and escaped quotes
-                escaped = vp.replace("\\", "/").replace("'", "'\\''")  # escape for FFmpeg concat
+                escaped = vp.replace("\\", "/")
                 f.write(f"file '{escaped}'\n")
             concat_file = f.name
 

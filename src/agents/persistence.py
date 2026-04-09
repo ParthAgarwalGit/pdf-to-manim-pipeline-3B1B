@@ -9,7 +9,6 @@ This agent is responsible for:
 """
 
 import json
-import logging
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -17,8 +16,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.animation_code import AnimationCodeObject
@@ -214,36 +211,29 @@ class PersistenceAgent(Agent):
                 import logging
                 logging.getLogger(__name__).warning(f"Failed to write OCR output: {e}")
         
-        # Generate and write manifest (single write — include the manifest
-        # entry in the file list before writing so the on-disk copy is
-        # self-consistent).
+        # Generate and write manifest
         try:
-            # Pre-create the manifest file entry so the file list is complete.
-            manifest_rel_path = "manifest.json"
-            manifest_placeholder = OutputFile(
-                path=manifest_rel_path, size_bytes=0, type="manifest"
-            )
-            all_files = written_files + [manifest_placeholder]
-
+            # Generate manifest with current files
             manifest = self._generate_manifest(
                 output_dir,
-                all_files,
+                written_files,
                 input_data.scene_processing_report,
-                timestamp,
+                timestamp
             )
-
-            # Two-pass write so the manifest's self-entry has a real size.
-            # Pass 1: write with size_bytes=0; get the actual file size back.
-            manifest_file_entry = self._write_manifest(output_dir, manifest)
-            # Patch the in-memory entry.
-            for i, f in enumerate(manifest.files):
-                if f.type == "manifest":
-                    manifest.files[i] = manifest_file_entry
-                    break
-            # Pass 2: re-write with the corrected size so the on-disk copy is
-            # self-consistent.  The file grows by a few bytes (the size digits
-            # themselves), which is an inherent chicken-and-egg rounding; the
-            # recorded size is accurate to within ~10 bytes — far better than 0.
+            
+            # Write manifest and get actual file info
+            manifest_file = self._write_manifest(output_dir, manifest)
+            written_files.append(manifest_file)
+            
+            # Update manifest with complete file list (including manifest itself)
+            manifest = self._generate_manifest(
+                output_dir,
+                written_files,
+                input_data.scene_processing_report,
+                timestamp
+            )
+            
+            # Write final manifest with complete file list
             self._write_manifest(output_dir, manifest)
         except Exception as e:
             raise AgentExecutionError(
@@ -318,51 +308,35 @@ class PersistenceAgent(Agent):
     def _cleanup_incomplete_files(self, output_dir: str) -> None:
         """
         Clean up incomplete files from previous failed run.
-
+        
         This method ensures idempotency by removing all files except
         pipeline.log from the output directory. It handles both files
         and subdirectories that might have been created.
-
+        
         Args:
             output_dir: Path to output directory
         """
-        import shutil
-
-        output_path = Path(output_dir).resolve()
-
+        output_path = Path(output_dir)
+        
         if not output_path.exists():
             return
-
+        
         # Remove all files and directories except pipeline.log (keep logs for debugging)
         for item_path in output_path.iterdir():
             if item_path.name == "pipeline.log":
                 continue
-
-            # Guard against symlink escape: resolved path must stay inside output_path.
+                
             try:
-                resolved = item_path.resolve()
-                # Use is_relative_to (Python 3.9+) for correct prefix comparison.
-                # str.startswith is unsafe: /tmp/out matches /tmp/output_evil.
-                if not resolved.is_relative_to(output_path):
-                    logger.warning(
-                        "Skipping cleanup of %s — resolves outside output dir (%s)",
-                        item_path, resolved,
-                    )
-                    continue
-            except (OSError, ValueError):
-                continue
-
-            try:
-                if item_path.is_symlink():
-                    # Never follow symlinks — just remove the link itself.
-                    item_path.unlink()
-                elif item_path.is_file():
+                if item_path.is_file():
                     item_path.unlink()
                 elif item_path.is_dir():
+                    # Remove directory and all its contents
+                    import shutil
                     shutil.rmtree(item_path)
-            except Exception as exc:
-                # Best effort cleanup — log but don't fail.
-                logger.debug("Could not remove %s during cleanup: %s", item_path, exc)
+            except Exception:
+                # Best effort cleanup, don't fail if item can't be removed
+                # This could happen due to permissions or file locks
+                pass
     
     def _write_file_atomically(self, file_path: str, content: str) -> None:
         """
@@ -414,8 +388,8 @@ class PersistenceAgent(Agent):
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.unlink(temp_file_path)
-                except Exception as cleanup_exc:
-                    logger.debug("Could not remove temp file %s: %s", temp_file_path, cleanup_exc)
+                except Exception:
+                    pass
             raise
     
     def _write_animation_code_files(

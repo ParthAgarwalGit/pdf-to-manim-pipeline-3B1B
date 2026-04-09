@@ -300,7 +300,7 @@ class Orchestrator:
                 pipeline_duration = time.time() - pipeline_start_time
                 scene_success_rate = (
                     manifest.successful_scenes / manifest.total_scenes
-                    if manifest.total_scenes > 0 else 1.0
+                    if manifest.total_scenes > 0 else 0.0
                 )
                 self.structured_logger.log_pipeline_complete(
                     duration_seconds=pipeline_duration,
@@ -735,7 +735,7 @@ class Orchestrator:
         scene_feedback: Dict[str, List[str]] = {}
         validation_attempts: List[Dict[str, Any]] = []
         max_attempts = max(1, self.config.max_quality_retries + 1)
-        latest_result = None  # guaranteed to be assigned in first loop iteration (max_attempts >= 1)
+        latest_result = None
 
         for attempt in range(max_attempts):
             input_data = SceneControllerInput(
@@ -799,16 +799,10 @@ class Orchestrator:
                 len(scene_feedback),
             )
 
-        # Determine exit reason: if the last feedback was empty the scenes
-        # passed validation; otherwise we exhausted retry attempts.
-        final_status = (
-            "passed" if not scene_feedback
-            else "accepted_with_remaining_failures"
-        )
         self._quality_reports["scene_code_review"] = {
             "enabled": self.config.enable_quality_loops,
             "attempts": validation_attempts,
-            "final_status": final_status,
+            "final_status": "accepted_with_validation_failures",
         }
         return latest_result
     
@@ -1111,23 +1105,9 @@ class Orchestrator:
         """
         pdf_filename = Path(file_ref.filename).stem  # Remove extension
 
-        # In dry-run mode scene_output is None — build empty placeholders.
-        if scene_output is not None:
-            report = scene_output.report
-            code_objects = scene_output.animation_code_objects
-        else:
-            from src.schemas.scene_processing import SceneProcessingReport
-            report = SceneProcessingReport(
-                total_scenes=0,
-                successful_scenes=0,
-                failed_scenes=[],
-                output_directory=self._run_output_dir or "",
-            )
-            code_objects = []
-
         input_data = PersistenceInput(
-            scene_processing_report=report,
-            animation_code_objects=code_objects,
+            scene_processing_report=scene_output.report,
+            animation_code_objects=scene_output.animation_code_objects,
             storyboard=storyboard,
             ocr_output=ocr_output,
             pdf_filename=pdf_filename,
@@ -1306,10 +1286,6 @@ class Orchestrator:
             video_output=video_output,
             tts_output=tts_output,
             composition_output=composition_output,
-            # A composed final video only exists when both render and TTS ran.
-            # When TTS is disabled, skip the "no final video" check so it
-            # doesn't fire as a spurious critical finding.
-            final_video_expected=self.config.enable_tts,
         )
         result = self._execute_agent(
             agent=self.video_quality_reviewer_agent,
@@ -1385,13 +1361,6 @@ class Orchestrator:
                 final_video_path,
                 "final_video",
             )
-            # Record on manifest for direct access
-            output_root = Path(manifest.output_directory)
-            try:
-                rel = Path(final_video_path).relative_to(output_root).as_posix()
-            except ValueError:
-                rel = str(Path(final_video_path).name)
-            manifest.final_video_path = rel
 
         self._persist_quality_reports(manifest)
         self._write_manifest_to_disk(manifest)
@@ -1454,6 +1423,7 @@ class Orchestrator:
             return
 
         manifest_path = output_dir / "manifest.json"
+        manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
         self._register_runtime_artifact(manifest, manifest_path, "manifest")
         manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     

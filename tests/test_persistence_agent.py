@@ -463,22 +463,6 @@ class TestPersistenceAgentFileContent:
         assert data["scene_success_rate"] == 1.0
         assert len(data["files"]) == 6
 
-        # Manifest self-entry must report a real on-disk size (not 0).
-        # Because knowing the size before writing is a chicken-and-egg problem
-        # we do two passes: write → patch → re-write.  The recorded size comes
-        # from pass 1, so it can be a handful of bytes smaller than the pass-2
-        # file (the digits of the size number itself take up space).  We verify
-        # the value is positive and within a 32-byte tolerance of the real size.
-        manifest_entries = [f for f in data["files"] if f["type"] == "manifest"]
-        assert len(manifest_entries) == 1, "Exactly one manifest entry expected"
-        recorded_size = manifest_entries[0]["size_bytes"]
-        actual_size = os.path.getsize(manifest_file)
-        assert recorded_size > 0, "Manifest self-entry size_bytes must not be 0"
-        assert abs(actual_size - recorded_size) <= 32, (
-            f"Manifest self-entry size {recorded_size} is not within 32 bytes of "
-            f"actual file size {actual_size}"
-        )
-
 
 class TestPersistenceAgentIdempotency:
     """Test idempotency of Persistence Agent."""

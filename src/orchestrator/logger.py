@@ -42,7 +42,7 @@ class StructuredJSONLogger:
     
     def __init__(self, output_directory: Optional[str] = None):
         """Initialize the structured JSON logger.
-
+        
         Args:
             output_directory: Directory where pipeline.log will be written.
                             If None, only console logging is enabled.
@@ -50,10 +50,13 @@ class StructuredJSONLogger:
         self.output_directory = output_directory
         self.log_file_path = None
         self.json_file_handle = None
-
-        # Use a per-instance logger name to avoid handler duplication when
-        # multiple StructuredJSONLogger instances exist (common in tests).
-        self.logger = logging.getLogger(f"{__name__}.{id(self)}")
+        
+        # Setup log file if output directory is provided
+        if output_directory:
+            self._setup_log_file(output_directory)
+        
+        # Setup Python logger for console output
+        self.logger = logging.getLogger(__name__)
         if not self.logger.handlers:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.INFO)
@@ -63,37 +66,22 @@ class StructuredJSONLogger:
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
             self.logger.setLevel(logging.INFO)
-
-        # Setup log file if output directory is provided.
-        # Degrade to console-only logging if file creation fails —
-        # never let a logging failure crash the pipeline.
-        if output_directory:
-            try:
-                self._setup_log_file(output_directory)
-            except (OSError, PermissionError) as exc:
-                self.logger.warning(
-                    "Could not create log file in %s: %s — falling back to console logging",
-                    output_directory,
-                    exc,
-                )
-                self.json_file_handle = None
-                self.log_file_path = None
     
     def _setup_log_file(self, output_directory: str) -> None:
         """Setup the pipeline.log file in the output directory.
-
-        Creates the parent directory safely and opens the file lazily.
-        Raises OSError/PermissionError on failure so the caller can
-        degrade to console-only logging.
+        
+        Args:
+            output_directory: Directory where pipeline.log will be written
         """
+        # Create output directory if it doesn't exist
         output_path = Path(output_directory)
         output_path.mkdir(parents=True, exist_ok=True)
-
+        
+        # Set log file path
         self.log_file_path = output_path / "pipeline.log"
-
-        # Open file — caller catches OSError/PermissionError
-        handle = open(self.log_file_path, 'a', encoding='utf-8')
-        self.json_file_handle = handle
+        
+        # Open file handle for appending JSON logs
+        self.json_file_handle = open(self.log_file_path, 'a', encoding='utf-8')
     
     def _write_json_log(self, log_entry: Dict[str, Any]) -> None:
         """Write a JSON log entry to pipeline.log.
@@ -103,7 +91,7 @@ class StructuredJSONLogger:
         """
         if self.json_file_handle:
             # Write JSON object on a single line
-            json_line = json.dumps(log_entry, ensure_ascii=False, default=str)
+            json_line = json.dumps(log_entry, ensure_ascii=False)
             self.json_file_handle.write(json_line + '\n')
             self.json_file_handle.flush()  # Ensure immediate write
     
@@ -311,21 +299,14 @@ class StructuredJSONLogger:
     def close(self) -> None:
         """Close the log file handle."""
         if self.json_file_handle:
-            try:
-                self.json_file_handle.close()
-            except Exception as exc:
-                logging.getLogger(__name__).debug("Error closing log file: %s", exc)
+            self.json_file_handle.close()
             self.json_file_handle = None
-
+    
     def __enter__(self):
         """Context manager entry."""
         return self
-
+    
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - ensures log file is closed."""
         self.close()
         return False
-
-    def __del__(self):
-        """Ensure file handle is released even if close() was never called."""
-        self.close()
