@@ -1488,7 +1488,7 @@ catalog entries to lines of code.
 - Modify: `C:/Users/Parth/Documents/3B1B/src/agents/animation_generator.py` (emitter)
 - Test: `C:/Users/Parth/Documents/3B1B/tests/test_manim_primitives.py` (new)
 
-- [ ] **Step 1: Build the catalog**
+- [x] **Step 1: Build the catalog**
 
 In `src/utils/manim_primitives.py`, define a curated table — start with these
 ~25 primitives (NOT auto-introspected; we want to whitelist exactly what we
@@ -1593,7 +1593,7 @@ def catalog_for_prompt() -> str:
     return "\n".join(lines)
 ```
 
-- [ ] **Step 2: Extend `MathematicalObject` schema with `primitive` + `args`**
+- [x] **Step 2: Extend `MathematicalObject` schema with `primitive` + `args`**
 
 In `src/schemas/storyboard.py`, add to `MathematicalObject`:
 
@@ -1632,7 +1632,7 @@ def _validate_primitive(self):
 Same treatment for `Transformation.animation_hint`: accept only names in
 `ANIMATION_CATALOG`.
 
-- [ ] **Step 3: Inject the catalog into the visual-planner prompt**
+- [x] **Step 3: Inject the catalog into the visual-planner prompt**
 
 In `_generate_visual_intent_for_chunk` (Task 7), append the catalog reference:
 
@@ -1648,7 +1648,7 @@ prompt += "\n\nCLOSED VOCABULARY:\n" + catalog_for_prompt() + (
 Update the JSON schema example in the prompt to show `"primitive": "Circle",
 "args": {"radius": 2.0}` instead of free-form `content`.
 
-- [ ] **Step 4: Animation generator becomes a thinner emitter**
+- [x] **Step 4: Animation generator becomes a thinner emitter**
 
 Replace the long `if/elif` chain in `_generate_mathematical_objects`
 (`animation_generator.py:528-634`) with catalog-driven emission:
@@ -1673,7 +1673,7 @@ def _emit_primitive(self, var_name: str, obj: dict) -> str:
 Keep `_legacy_emit_object` as a fallback for any object that lacks `primitive`
 (legacy storyboards, fallback visual intents).
 
-- [ ] **Step 5: Tests**
+- [x] **Step 5: Tests**
 
 ```python
 def test_catalog_for_prompt_contains_core_mobjects():
@@ -1718,7 +1718,7 @@ def test_animation_generator_emits_primitive_call():
     assert line.strip() == "c0 = Circle(radius=2.5, color=BLUE)"
 ```
 
-- [ ] **Step 6: Verify**
+- [x] **Step 6: Verify**
 
 ```
 python -m pytest tests/test_manim_primitives.py tests/test_schemas.py tests/test_animation_generator.py -q
@@ -1745,7 +1745,7 @@ not a post-hoc Manim concern.
 - Modify: `C:/Users/Parth/Documents/3B1B/src/agents/animation_generator.py` (force bbox-derived `move_to`)
 - Test: `C:/Users/Parth/Documents/3B1B/tests/test_layout_validator.py`
 
-- [ ] **Step 1: Extend `MathematicalObject` with explicit bbox + interval**
+- [x] **Step 1: Extend `MathematicalObject` with explicit bbox + interval**
 
 ```python
 class BBox(BaseModel):
@@ -1777,7 +1777,7 @@ The Manim screen is roughly `x ∈ [-7.1, 7.1]`, `y ∈ [-4.0, 4.0]` at 16:9 wit
 default frame_height=8. Document this in the schema docstring so the LLM
 prompt can include the safe area: `x ∈ [-6.5, 6.5]`, `y ∈ [-3.5, 3.5]`.
 
-- [ ] **Step 2: Write failing tests for temporal-aware overlap detection**
+- [x] **Step 2: Write failing tests for temporal-aware overlap detection**
 
 ```python
 def test_layout_validator_detects_simultaneous_overlap():
@@ -1814,7 +1814,7 @@ def test_layout_validator_rejects_offscreen_bbox():
     assert not out.is_valid
 ```
 
-- [ ] **Step 3: Implement `(x, y, t)`-aware overlap check**
+- [x] **Step 3: Implement `(x, y, t)`-aware overlap check**
 
 ```python
 SAFE_X = (-6.5, 6.5)
@@ -1850,7 +1850,7 @@ class LayoutValidatorAgent(Agent):
         return LayoutValidatorOutput(is_valid=not violations, violations=violations)
 ```
 
-- [ ] **Step 4: Force the animation generator to use bbox-derived placement**
+- [x] **Step 4: Force the animation generator to use bbox-derived placement**
 
 In the system prompt, replace the `LayoutTracker.place_label` instructions
 with bbox-driven placement when `bbox` is present on the object:
@@ -1866,7 +1866,7 @@ has already been validated for overlap-freeness in (x, y, t) space.
 Emit code in `_emit_primitive` that appends `move_to`/scaling lines whenever
 `obj["bbox"]` is set.
 
-- [ ] **Step 5: Make the visual planner emit bbox + interval**
+- [x] **Step 5: Make the visual planner emit bbox + interval**
 
 Update Task 7's prompt to require `bbox` and `interval` for every emitted
 mathematical_object. Wire the validator output back into the visual-planner
@@ -1875,7 +1875,7 @@ evaluator) so violations become structured `violation_feedback` lines like
 `"a and b overlap in both space and time at t=2.0..8.0"` and the LLM gets a
 concrete fix target.
 
-- [ ] **Step 6: Verify**
+- [x] **Step 6: Verify**
 
 ```
 python -m pytest tests/test_layout_validator.py tests/test_schemas.py -q

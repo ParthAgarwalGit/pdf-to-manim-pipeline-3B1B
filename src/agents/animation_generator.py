@@ -641,6 +641,16 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
             notation_key = obj_data.get("notation_key")
             notation_key_repr = repr(notation_key) if notation_key else "None"
 
+            # Catalog path (Task 12) — when the visual planner emitted a
+            # closed-vocabulary primitive, the animation generator becomes a
+            # thin emitter and the legacy if/elif chain is bypassed entirely.
+            if obj_data.get("primitive"):
+                code_lines.append(self._emit_primitive(var_name, obj_data))
+                bbox_line = self._emit_bbox_placement(var_name, obj_data)
+                if bbox_line:
+                    code_lines.append(bbox_line)
+                continue
+
             if obj_type == "equation":
                 # Use create_notation so the object carries a stable notation_key
                 latex = self._escape_latex(content)
@@ -844,6 +854,54 @@ Generated: {datetime.now().isoformat()}
             "from src.utils.pi_characters import create_character_for_role, create_character_lineup, create_pi_teacher, create_pi_students, create_speech_bubble",
             "from src.utils.layout_tracker import LayoutTracker",
         ]
+
+    def _emit_primitive(self, var_name: str, obj_data: dict) -> str:
+        """Emit one line of code from a closed-vocabulary primitive (Task 12).
+
+        ``obj_data["primitive"]`` selects the catalog entry and ``args``
+        carries its kwargs. Color from ``style.color`` is appended when the
+        spec accepts it. The Pydantic model_validator on ``MathematicalObject``
+        already rejected unknown primitives / args, so this method trusts
+        its input.
+        """
+        from src.utils.manim_primitives import MOBJECT_CATALOG
+
+        primitive = obj_data["primitive"]
+        spec = MOBJECT_CATALOG.get(primitive)
+        args = dict(obj_data.get("args", {}))
+        style = obj_data.get("style") or {}
+        if hasattr(style, "model_dump"):
+            style = style.model_dump()
+        color = style.get("color")
+
+        parts = [f"{k}={self._py_repr(v)}" for k, v in args.items()]
+        if spec is not None and spec.accepts_color and color and "color" not in args:
+            parts.append(f"color={color.upper()}")
+        return f"        {var_name} = {primitive}({', '.join(parts)})"
+
+    def _emit_bbox_placement(self, var_name: str, obj_data: dict) -> str:
+        """Emit ``move_to`` (and a width fit when sensible) for a primitive
+        that ships with a bbox (Task 13). Returns "" when no bbox is set
+        so the caller can simply append non-empty results.
+        """
+        bbox = obj_data.get("bbox")
+        if not bbox:
+            return ""
+        if hasattr(bbox, "model_dump"):
+            bbox = bbox.model_dump()
+        x = bbox.get("x")
+        y = bbox.get("y")
+        if x is None or y is None:
+            return ""
+        return f"        {var_name}.move_to([{x}, {y}, 0])"
+
+    @staticmethod
+    def _py_repr(value: Any) -> str:
+        """Compact Python literal for catalog kwargs (lists/tuples/strings)."""
+        if isinstance(value, str):
+            # Tex/Text content goes in raw strings so backslashes survive.
+            return "r" + repr(value)
+        return repr(value)
 
     def _object_var_name(self, obj_data: dict, index: int) -> str:
         """Derive a stable Python variable name from an object spec.

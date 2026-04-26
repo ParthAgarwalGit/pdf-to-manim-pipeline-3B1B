@@ -903,4 +903,86 @@ def test_animation_prompt_omits_opening_state_when_no_live_objects(monkeypatch):
         AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=0,
     )
     assert "OPENING STATE" not in captured["system"]
+
+
+# ============================================================================
+# Task 12: Closed-vocabulary primitive emitter
+# ============================================================================
+
+class TestPrimitiveEmitter:
+    """The animation generator becomes a thin emitter for catalog primitives:
+    when ``primitive`` is set on a math object, the legacy if/elif chain is
+    bypassed and the emitter writes a single deterministic constructor call."""
+
+    def _agent(self):
+        return AnimationCodeGeneratorAgent.__new__(AnimationCodeGeneratorAgent)
+
+    def test_emit_primitive_writes_circle_call_with_color(self):
+        agent = self._agent()
+        line = agent._emit_primitive("c0", {
+            "primitive": "Circle",
+            "args": {"radius": 2.5},
+            "style": {"color": "blue"},
+        })
+        # 8-space indent (inside class > def construct), call shape, color upper.
+        assert line.strip() == "c0 = Circle(radius=2.5, color=BLUE)"
+
+    def test_emit_primitive_omits_color_when_spec_rejects_it(self):
+        agent = self._agent()
+        # Axes' PrimitiveSpec.accepts_color is False; color must be skipped.
+        line = agent._emit_primitive("ax", {
+            "primitive": "Axes",
+            "args": {"x_length": 5.0},
+            "style": {"color": "red"},
+        })
+        assert "color" not in line
+        assert "Axes(x_length=5.0)" in line
+
+    def test_emit_primitive_uses_raw_string_for_tex(self):
+        agent = self._agent()
+        line = agent._emit_primitive("eq", {
+            "primitive": "MathTex",
+            "args": {"tex": r"\sin(\theta)"},
+            "style": {"color": "yellow"},
+        })
+        # Backslashes must survive in the emitted source.
+        assert r"\sin(\theta)" in line or r"\\sin(\\theta)" in line
+
+    def test_emit_bbox_placement_returns_move_to(self):
+        agent = self._agent()
+        line = agent._emit_bbox_placement("c0", {
+            "bbox": {"x": 1.5, "y": -2.0, "w": 3.0, "h": 1.0},
+        })
+        assert line.strip() == "c0.move_to([1.5, -2.0, 0])"
+
+    def test_emit_bbox_placement_returns_empty_when_no_bbox(self):
+        agent = self._agent()
+        assert agent._emit_bbox_placement("c0", {}) == ""
+
+    def test_generate_mathematical_objects_uses_catalog_path_when_primitive_set(
+        self, monkeypatch
+    ):
+        """If primitive is set, the generator emits the catalog form and the
+        legacy heuristic chain is bypassed — no `create_notation`/`Polygon` rescue.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        agent = AnimationCodeGeneratorAgent()
+        context = build_test_context()
+        objects = [
+            {
+                "object_id": "c0",
+                "object_type": "geometric_shape",
+                "content": "",
+                "primitive": "Circle",
+                "args": {"radius": 2.0},
+                "style": {"color": "blue"},
+                "bbox": {"x": 1.0, "y": 0.5, "w": 4.0, "h": 4.0},
+            }
+        ]
+        emitted = agent._generate_mathematical_objects(objects, context)
+        assert "Circle(radius=2.0, color=BLUE)" in emitted
+        assert "c0.move_to([1.0, 0.5, 0])" in emitted
+        # Legacy fallback would have produced a `create_notation` / generic
+        # Polygon; it must NOT appear when the catalog path fires.
+        assert "create_notation" not in emitted
     assert callable(getattr(AnimationCodeGeneratorAgent, "execute", None))

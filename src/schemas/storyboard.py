@@ -80,7 +80,7 @@ class ConceptHierarchy(BaseModel):
 
 class ObjectStyle(BaseModel):
     """Visual style parameters for a mathematical object."""
-    
+
     color: Optional[str] = Field(
         None,
         description="Color specification (e.g., hex code, color name)"
@@ -89,6 +89,52 @@ class ObjectStyle(BaseModel):
         None,
         description="Position on screen (e.g., 'center', 'top-left', 'bottom-right')"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# (x, y, t) layout primitives — Task 13 of the unified-script plan.
+#
+# Manim's default frame is roughly x ∈ [-7.1, 7.1], y ∈ [-4.0, 4.0]. The
+# safe area below leaves a small margin so labels do not crowd the edges.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class BBox(BaseModel):
+    """Axis-aligned bounding box in Manim world units (origin at center)."""
+
+    x: float = Field(..., description="Center x")
+    y: float = Field(..., description="Center y")
+    w: float = Field(..., gt=0, description="Width (positive)")
+    h: float = Field(..., gt=0, description="Height (positive)")
+
+    @property
+    def x_min(self) -> float:
+        return self.x - self.w / 2
+
+    @property
+    def x_max(self) -> float:
+        return self.x + self.w / 2
+
+    @property
+    def y_min(self) -> float:
+        return self.y - self.h / 2
+
+    @property
+    def y_max(self) -> float:
+        return self.y + self.h / 2
+
+
+class TimeInterval(BaseModel):
+    """Visibility window for an object. ``t_in`` inclusive, ``t_out`` exclusive."""
+
+    t_in: float = Field(..., ge=0, description="When the object first appears (s)")
+    t_out: float = Field(..., gt=0, description="When the object is removed (s)")
+
+    @model_validator(mode="after")
+    def _validate_ordering(self) -> "TimeInterval":
+        if self.t_out <= self.t_in:
+            raise ValueError(f"t_out ({self.t_out}) must be > t_in ({self.t_in})")
+        return self
 
 
 class MathematicalObject(BaseModel):
@@ -141,7 +187,29 @@ class MathematicalObject(BaseModel):
         default_factory=ObjectStyle,
         description="Visual style parameters"
     )
-    
+    primitive: Optional[str] = Field(
+        None,
+        description=(
+            "Closed-vocabulary Manim primitive name (e.g. 'Circle', 'MathTex'). "
+            "When set, ``args`` carries the kwargs for direct construction. "
+            "Falls back to legacy ``object_type``/``render_hint`` when None."
+        )
+    )
+    args: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Kwargs for the primitive constructor (e.g. {'radius': 2.0})."
+    )
+    bbox: Optional[BBox] = Field(
+        None,
+        description="(x, y, w, h) bounding box in Manim units. Required when "
+                    "the layout validator is used."
+    )
+    interval: Optional[TimeInterval] = Field(
+        None,
+        description="Visibility window (t_in, t_out) in seconds — paired with "
+                    "``bbox`` for (x, y, t) overlap checks."
+    )
+
     @field_validator('object_type')
     @classmethod
     def validate_object_type(cls, v: str) -> str:
@@ -174,6 +242,29 @@ class MathematicalObject(BaseModel):
         if hint not in allowed:
             raise ValueError(f"render_hint must be one of {allowed}, got '{v}'")
         return hint
+
+    @model_validator(mode="after")
+    def _validate_primitive_against_catalog(self) -> "MathematicalObject":
+        """When ``primitive`` is set it must exist in MOBJECT_CATALOG and
+        every key in ``args`` must be a known parameter for that primitive
+        (with ``color`` permitted for primitives that accept it)."""
+        if self.primitive is None:
+            return self
+        # Lazy import to avoid a circular dep at module-load time
+        from src.utils.manim_primitives import MOBJECT_CATALOG, allowed_args_for
+
+        if self.primitive not in MOBJECT_CATALOG:
+            raise ValueError(
+                f"Unknown primitive: {self.primitive!r}. Allowed: "
+                f"{sorted(MOBJECT_CATALOG.keys())}"
+            )
+        bad = set(self.args) - allowed_args_for(self.primitive)
+        if bad:
+            raise ValueError(
+                f"Unknown args for primitive {self.primitive!r}: {sorted(bad)}. "
+                f"Allowed: {sorted(allowed_args_for(self.primitive))}"
+            )
+        return self
 
 
 class Transformation(BaseModel):

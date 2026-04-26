@@ -601,6 +601,37 @@ class TestVisualIntentForChunk:
         # Fallback intent always produces at least one object (the title text).
         assert len(out.mathematical_objects) >= 1
 
+    def test_visual_intent_prompt_includes_catalog_block(self, monkeypatch):
+        """Task 12: the visual planner prompt must enumerate the closed
+        Manim primitive catalog so the LLM cannot invent unknown classes."""
+        from src.schemas.storyboard import Configuration
+        from src.schemas.video_script import VideoScript, Beat
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+        captured: dict = {}
+        agent = self._make_agent_with_fake_client(
+            captured,
+            '{"objects": [], "transformations": [], "beats": [], '
+            '"scene_state_in": {}, "scene_state_out": {}, "emphasis_points": []}',
+        )
+
+        script = VideoScript(beats=[
+            Beat(beat_id="beat_001", narration="explain sine", visual_hint="circle",
+                 introduces_concepts=["sine"]),
+        ])
+        scene = agent._chunk_script_into_scenes(script)[0]
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+
+        agent._generate_visual_intent_for_chunk(scene, script, config, [])
+
+        prompt = captured["prompt"]
+        assert "CLOSED VOCABULARY" in prompt
+        # A few catalog entries must appear so the LLM sees the menu.
+        for name in ("MathTex", "Circle", "Axes", "Polygon"):
+            assert name in prompt
+        # The 'primitive' field instruction must be present.
+        assert "primitive" in prompt.lower()
+
     def test_visual_intent_falls_back_when_llm_returns_empty(self, monkeypatch):
         """If the LLM returns an empty object list, fall back to the
         deterministic intent rather than shipping a blank scene."""

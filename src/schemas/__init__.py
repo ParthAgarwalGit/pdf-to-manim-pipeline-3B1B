@@ -26,6 +26,7 @@ from src.schemas.scene_processing import (
     VisualStyle,
 )
 from src.schemas.storyboard import (
+    BBox,
     Configuration,
     ConceptHierarchy,
     EmphasisPoint,
@@ -35,6 +36,7 @@ from src.schemas.storyboard import (
     Scene,
     SceneState,
     StoryboardJSON,
+    TimeInterval,
     Transformation,
     VisualBeat,
     VisualIntent,
@@ -58,6 +60,8 @@ __all__ = [
     "ConceptHierarchy",
     "ObjectStyle",
     "MathematicalObject",
+    "BBox",
+    "TimeInterval",
     "Transformation",
     "EmphasisPoint",
     "SceneState",

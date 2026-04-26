@@ -41,6 +41,7 @@ from src.schemas.storyboard import (
     VisualIntent,
 )
 from src.utils.manim_engine_contract import build_visual_intent_contract_prompt, CANONICAL_RENDER_HINTS, normalize_render_hint
+from src.utils.manim_primitives import catalog_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,7 @@ class ScriptArchitectAgent(Agent):
             )
 
         engine_contract = build_visual_intent_contract_prompt()
+        catalog_block = catalog_for_prompt()
 
         prompt = (
             "You are a 3Blue1Brown animation architect.\n\n"
@@ -376,6 +378,19 @@ class ScriptArchitectAgent(Agent):
             f"TIMING: {word_count} words at ~3 wps => visuals should fill ~{target}s.\n"
             f"{review_block}"
             f"{engine_contract}\n"
+            "CLOSED VOCABULARY:\n"
+            f"{catalog_block}\n\n"
+            "For every mathematical_object you emit, set `primitive` to one of "
+            "the MOBJECT names above and `args` to its kwargs. Free-form "
+            "`content` is ONLY permitted for MathTex / Tex / Text (where it "
+            "goes into the `tex` or `text` arg).\n\n"
+            "LAYOUT (x, y, t):\n"
+            "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
+            "    object's intended position in Manim units AND `interval` =\n"
+            "    {t_in, t_out} — when in scene-time the object is visible.\n"
+            "  - SAFE AREA: keep bbox.x in [-6.5, 6.5] and bbox.y in [-3.5, 3.5].\n"
+            "  - Two objects may share the same (x, y) only if their intervals\n"
+            "    are disjoint (one fades out before the other appears).\n\n"
             "Return JSON with keys: objects (list), transformations (list), "
             "beats (list), scene_state_in (object), scene_state_out (object), "
             "emphasis_points (list)."
