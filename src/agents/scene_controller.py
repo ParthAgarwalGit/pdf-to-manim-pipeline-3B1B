@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.animation_code import AnimationCodeObject
+from src.schemas.scene_layout import SceneLayout
 from src.schemas.scene_processing import (
     FailedScene,
     SceneProcessingInput,
@@ -23,44 +24,53 @@ from src.schemas.storyboard import Scene, StoryboardJSON
 
 class SceneControllerInput(AgentInput):
     """Input for Scene Controller Agent.
-    
+
     Attributes:
         storyboard: Sanitized StoryboardJSON object
         output_directory: Path to output directory for generated files
         animation_generator: Animation Generator agent instance (for scene processing)
+        layout_planner: Optional SceneLayoutPlannerAgent instance
+        layout_validator: Optional LayoutValidatorAgent instance
     """
-    
+
     def __init__(
         self,
         storyboard: StoryboardJSON,
         output_directory: str,
         animation_generator: Optional[Any] = None,
         scene_feedback: Optional[Dict[str, List[str]]] = None,
+        layout_planner: Optional[Any] = None,
+        layout_validator: Optional[Any] = None,
     ):
         self.storyboard = storyboard
         self.output_directory = output_directory
         self.animation_generator = animation_generator
         self.scene_feedback = scene_feedback or {}
+        self.layout_planner = layout_planner
+        self.layout_validator = layout_validator
 
 
 class SceneControllerOutput(AgentOutput):
     """Output from Scene Controller Agent.
-    
+
     Attributes:
         report: Scene processing report with success/failure statistics
         animation_code_objects: List of successfully generated animation code objects
         shared_context: Final shared context after all scenes processed
+        scene_layouts: Validated SceneLayout for each successfully processed scene
     """
-    
+
     def __init__(
         self,
         report: SceneProcessingReport,
         animation_code_objects: List[AnimationCodeObject],
-        shared_context: SharedContext
+        shared_context: SharedContext,
+        scene_layouts: Optional[List[SceneLayout]] = None,
     ):
         self.report = report
         self.animation_code_objects = animation_code_objects
         self.shared_context = shared_context
+        self.scene_layouts: List[SceneLayout] = scene_layouts or []
 
 
 class SceneControllerAgent(Agent):
@@ -76,13 +86,15 @@ class SceneControllerAgent(Agent):
     - Generates scene processing report with success/failure statistics
     """
     
-    def __init__(self, max_retries_per_scene: int = 3):
+    def __init__(self, max_retries_per_scene: int = 3, max_layout_retries: int = 3):
         """Initialize Scene Controller Agent.
-        
+
         Args:
             max_retries_per_scene: Maximum retry attempts for individual scene generation
+            max_layout_retries: Maximum attempts to get an overlap-free layout
         """
         self.max_retries_per_scene = max_retries_per_scene
+        self.max_layout_retries = max_layout_retries
     
     def execute(self, input_data: SceneControllerInput) -> SceneControllerOutput:
         """Execute scene iteration and processing.
@@ -107,31 +119,45 @@ class SceneControllerAgent(Agent):
         output_directory = input_data.output_directory
         animation_generator = input_data.animation_generator
         scene_feedback = input_data.scene_feedback or {}
-        
+        layout_planner = input_data.layout_planner
+        layout_validator = input_data.layout_validator
+
         # Extract scene array
         scenes = storyboard.scenes
         total_scenes = len(scenes)
-        
+
         # Initialize shared context
         shared_context = self._initialize_context(storyboard)
-        
+
         # Track results
         animation_code_objects: List[AnimationCodeObject] = []
+        scene_layouts: List[SceneLayout] = []
         failed_scenes: List[FailedScene] = []
-        
+
         # Iterate over scenes in deterministic order (Requirements 10.2, 10.3)
-        # Process scenes by array index (0 to N-1), no shuffling or reordering
         for scene_index, scene in enumerate(scenes):
             try:
-                # Construct scene processing input
                 scene_spec = self._scene_to_spec(scene)
+
+                # ── Phase 1: Layout planning (evaluator loop) ──────────
+                scene_layout: Optional[SceneLayout] = None
+                if layout_planner is not None:
+                    scene_layout = self._plan_scene_layout(
+                        layout_planner,
+                        layout_validator,
+                        scene_spec,
+                        scene_index,
+                        shared_context,
+                    )
+
+                # ── Phase 2: Animation code generation ────────────────
                 processing_input = SceneProcessingInput(
                     scene_spec=scene_spec,
-                    context=copy.deepcopy(shared_context),  # Pass read-only copy
-                    scene_index=scene_index
+                    context=copy.deepcopy(shared_context),
+                    scene_index=scene_index,
+                    scene_layout=scene_layout,
                 )
-                
-                # Process scene with Animation Generator
+
                 if animation_generator is not None:
                     animation_code = self._process_scene_with_generator(
                         animation_generator,
@@ -140,20 +166,20 @@ class SceneControllerAgent(Agent):
                         review_feedback=scene_feedback.get(scene.scene_id, []),
                     )
                 else:
-                    # Mock implementation for testing without Animation Generator
                     animation_code = self._mock_process_scene(processing_input)
-                
-                # Success: update context and collect result
+
+                # Success: update context and collect results
                 self._update_context(shared_context, scene, scene_spec)
                 animation_code_objects.append(animation_code)
-                
+                if scene_layout is not None:
+                    scene_layouts.append(scene_layout)
+
             except Exception as e:
-                # Failure: log and continue to next scene
                 failed_scenes.append(FailedScene(
                     scene_id=scene.scene_id,
                     error=str(e)
                 ))
-        
+
         # Generate scene processing report
         successful_scenes = total_scenes - len(failed_scenes)
         report = SceneProcessingReport(
@@ -162,11 +188,12 @@ class SceneControllerAgent(Agent):
             failed_scenes=failed_scenes,
             output_directory=output_directory
         )
-        
+
         return SceneControllerOutput(
             report=report,
             animation_code_objects=animation_code_objects,
-            shared_context=shared_context
+            shared_context=shared_context,
+            scene_layouts=scene_layouts,
         )
     
     def validate_input(self, input_data: AgentInput) -> bool:
@@ -246,6 +273,50 @@ class SceneControllerAgent(Agent):
             duration_estimate=scene.duration_estimate
         )
     
+    def _plan_scene_layout(
+        self,
+        layout_planner: Any,
+        layout_validator: Optional[Any],
+        scene_spec: SceneSpec,
+        scene_index: int,
+        context: SharedContext,
+    ) -> SceneLayout:
+        """Run the layout planning evaluator loop.
+
+        Calls the layout planner, validates the result, and retries with
+        violation feedback until the layout is clean or retries are exhausted.
+        Returns the last layout even if violations remain (best effort).
+        """
+        from src.agents.layout_validator import LayoutValidationInput
+        from src.agents.scene_layout_planner import SceneLayoutPlannerInput
+
+        violation_feedback: List[str] = []
+        scene_layout: Optional[SceneLayout] = None
+
+        for attempt in range(self.max_layout_retries):
+            plan_input = SceneLayoutPlannerInput(
+                scene_spec=scene_spec,
+                scene_index=scene_index,
+                context=context,
+                violation_feedback=violation_feedback,
+            )
+            plan_output = layout_planner.execute(plan_input)
+            scene_layout = plan_output.scene_layout
+
+            if layout_validator is None:
+                break  # No validator — accept layout as-is
+
+            val_result = layout_validator.execute(
+                LayoutValidationInput(scene_layout=scene_layout)
+            )
+            if val_result.is_valid:
+                break  # Clean layout — proceed to code generation
+
+            # Prepare feedback for next attempt
+            violation_feedback = [v.description for v in val_result.violations]
+
+        return scene_layout  # type: ignore[return-value]  # always set after ≥1 iteration
+
     def _process_scene_with_generator(
         self,
         animation_generator: Any,
@@ -367,3 +438,83 @@ class SceneControllerAgent(Agent):
                         # Store simple variable bindings (e.g., "x", "y", "f(x)")
                         if len(var_name) < 20:  # Reasonable variable name length
                             context.variable_bindings[var_name] = content
+
+        # Propagate helper-friendly continuity state from scene_state_out so
+        # subsequent scenes can reuse coordinate systems, notation, and characters
+        # without re-creating them from scratch.
+        scene_state_out = visual_intent.scene_state_out
+        context.coordinate_system_bindings.update(scene_state_out.coordinate_systems)
+        context.notation_registry.update(scene_state_out.notation_bindings)
+        context.character_registry.update(scene_state_out.character_roles)
+        # Propagate color bindings for cross-scene color consistency
+        if hasattr(scene_state_out, "color_bindings"):
+            context.color_bindings.update(
+                getattr(scene_state_out, "color_bindings", {})
+            )
+
+        # Narrative continuity (Task 6 of the unified-script-chunked-render plan).
+        # Each successful scene contributes a deterministic summary, any newly
+        # introduced concepts, and a live-object snapshot so the NEXT chunk's
+        # prompts can reference (not redefine) what the viewer has already seen.
+        nc = context.narrative
+        nc.prior_scene_summaries.append(self._summarize_scene_for_narrative(scene))
+        for concept in self._extract_introduced_concepts(scene):
+            if concept not in nc.concepts_introduced:
+                nc.concepts_introduced.append(concept)
+        nc.running_storyline = self._update_running_storyline(nc.running_storyline, scene)
+        nc.live_objects_on_screen = self._compute_live_objects(scene)
+
+    def _summarize_scene_for_narrative(self, scene: Scene) -> str:
+        """Deterministic short scene summary (no LLM call).
+
+        First sentence of the narration, optionally tagged with the
+        scene's concept_id so downstream prompts can quickly skim the
+        ledger.
+        """
+        first_sentence = scene.narration.split(".")[0].strip() if scene.narration else ""
+        summary = first_sentence[:160]
+        if scene.concept_id:
+            summary = f"[{scene.concept_id}] {summary}"
+        return summary
+
+    def _extract_introduced_concepts(self, scene: Scene) -> List[str]:
+        """Concepts first introduced in this scene.
+
+        Reads from ``Scene.source_beats`` (set by the chunker in Task 4).
+        Falls back to ``scene.concept_id`` for legacy scenes / hand-built
+        test storyboards that have no source_beats attached.
+        """
+        beats = getattr(scene, "source_beats", None) or []
+        if beats:
+            out: List[str] = []
+            for b in beats:
+                for c in b.introduces_concepts:
+                    if c not in out:
+                        out.append(c)
+            return out
+        return [scene.concept_id] if scene.concept_id else []
+
+    def _update_running_storyline(self, prior: str, scene: Scene) -> str:
+        """Append a one-sentence beat to the storyline; cap at three sentences."""
+        new_sentence = self._summarize_scene_for_narrative(scene).rstrip(".")
+        if not new_sentence:
+            return prior
+        sentences = [s.strip() for s in prior.split(".") if s.strip()]
+        sentences.append(new_sentence)
+        return ". ".join(sentences[-3:]) + "."
+
+    def _compute_live_objects(self, scene: Scene) -> Dict[str, str]:
+        """Objects still visible at the END of this scene.
+
+        Looks up each id in ``scene_state_out.active_object_ids`` against the
+        scene's ``mathematical_objects`` so the NEXT chunk's planner sees a
+        short, human-readable description it can carry forward.
+        """
+        visual = scene.visual_intent
+        active = set(visual.scene_state_out.active_object_ids or [])
+        out: Dict[str, str] = {}
+        for obj in visual.mathematical_objects:
+            if obj.object_id in active:
+                content = (obj.content or "")[:60]
+                out[obj.object_id] = f"{obj.object_type}: {content}"
+        return out

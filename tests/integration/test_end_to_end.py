@@ -861,5 +861,209 @@ class TestPartialSuccessScenarios:
         )
 
 
+class TestSmokePDFFixture:
+    """Smoke test using the real fixture PDF in dry-run mode.
+
+    Verifies that the pipeline can ingest a real PDF and produce planning
+    artifacts (storyboard, narration script, manifest) without needing
+    API keys or Manim rendering.
+    """
+
+    FIXTURE_PDF = Path(__file__).resolve().parent.parent / "fixtures" / "test_trig_3pages.pdf"
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parent.parent / "fixtures" / "test_trig_3pages.pdf").exists(),
+        reason="Fixture PDF not present",
+    )
+    @patch("src.orchestrator.pipeline.ScriptArchitectAgent")
+    @patch("src.orchestrator.pipeline.VisionOCRAgent")
+    def test_small_pdf_pipeline_smoke(self, MockVisionOCR, MockScriptArch, tmp_path):
+        """Dry-run a real PDF and assert planning artifacts + manifest."""
+        config = PipelineConfig(
+            base_output_dir=str(tmp_path),
+            dry_run=True,
+        )
+        orchestrator = Orchestrator(config=config)
+
+        # Mock only the LLM-dependent agents; let ingestion/validation run for real.
+        ocr_output = OCROutput(
+            pdf_metadata=PDFMetadata(
+                filename="test_trig_3pages.pdf",
+                page_count=3,
+                file_size_bytes=self.FIXTURE_PDF.stat().st_size,
+            ),
+            pages=[
+                Page(
+                    page_number=i,
+                    text_blocks=[
+                        TextBlock(
+                            text=f"Trigonometry page {i}",
+                            bounding_box=BoundingBox(x=0, y=0, width=200, height=30),
+                            reading_order=0,
+                            confidence=0.95,
+                        )
+                    ],
+                    math_expressions=[],
+                    diagrams=[],
+                )
+                for i in range(1, 4)
+            ],
+        )
+        orchestrator.vision_ocr_agent.execute = Mock(return_value=ocr_output)
+
+        storyboard = StoryboardJSON(
+            pdf_metadata=PDFMetadataStoryboard(filename="test_trig_3pages.pdf", page_count=3),
+            configuration=Configuration(
+                verbosity="medium", depth="intermediate", audience="undergraduate"
+            ),
+            concept_hierarchy=[],
+            scenes=[
+                Scene(
+                    scene_id=f"scene_{i:03d}",
+                    scene_index=i,
+                    concept_id=f"trig_{i}",
+                    narration=f"Scene {i} narration about trigonometry.",
+                    visual_intent=VisualIntent(
+                        mathematical_objects=[], transformations=[], emphasis_points=[]
+                    ),
+                    duration_estimate=25.0,
+                )
+                for i in range(3)
+            ],
+        )
+        orchestrator.script_architect_agent.execute = Mock(return_value=storyboard)
+        orchestrator.json_sanitizer_agent.execute = Mock(
+            return_value=Mock(storyboard=storyboard)
+        )
+
+        # Execute dry-run pipeline
+        manifest = orchestrator.run_pipeline(str(self.FIXTURE_PDF), event_source="local")
+
+        # --- Assertions ---
+        assert manifest is not None
+        assert manifest.output_directory is not None
+
+        # Manifest must be written to disk
+        out_dir = Path(manifest.output_directory)
+        assert (out_dir / "manifest.json").exists(), "manifest.json missing from output"
+
+        # Planning artifacts should be present in manifest file list
+        file_types = {f.type for f in manifest.files}
+        assert "storyboard" in file_types
+        assert "manifest" in file_types
+
+        # Dry-run should NOT produce rendered videos or final video
+        assert manifest.final_video_path is None
+        assert "scene_video" not in file_types
+        assert "final_video" not in file_types
+
+        # RunConfig should record dry_run=True
+        if manifest.run_config is not None:
+            assert manifest.run_config.dry_run is True
+
+
+# ============================================================================
+# Task 10: Redundancy regression — no concept introduced more than once
+# ============================================================================
+
+class TestNoRedundantConceptIntroductions:
+    """Guards the unified-script invariant: a single concept label is taught
+    at most once across the entire chunked storyboard."""
+
+    @staticmethod
+    def _ocr_output(filename: str = "redundancy_fixture.pdf") -> OCROutput:
+        return OCROutput(
+            pdf_metadata=PDFMetadata(
+                filename=filename, page_count=1, file_size_bytes=1000,
+            ),
+            pages=[
+                Page(
+                    page_number=1,
+                    text_blocks=[
+                        TextBlock(
+                            text="Sine and cosine on the unit circle.",
+                            bounding_box=BoundingBox(x=0, y=0, width=200, height=30),
+                            reading_order=0,
+                            confidence=0.95,
+                        )
+                    ],
+                    math_expressions=[],
+                    diagrams=[],
+                )
+            ],
+        )
+
+    def test_chunker_preserves_first_introduction_invariant(self, monkeypatch):
+        """Direct chunker test: any concept label appears in
+        ``introduces_concepts`` of exactly one beat across the whole script."""
+        from src.agents.script_architect import ScriptArchitectAgent
+        from src.schemas.video_script import Beat, VideoScript
+
+        # Hand-craft a script with deliberately overlapping concepts in their
+        # narration. The contract is that only the FIRST beat introducing a
+        # concept marks it; later beats may reference it via narration.
+        script = VideoScript(beats=[
+            Beat(
+                beat_id="beat_001",
+                narration=" ".join(["sine"] * 80),
+                visual_hint="unit circle",
+                introduces_concepts=["sine"],
+            ),
+            Beat(
+                beat_id="beat_002",
+                narration=" ".join(["cosine"] * 80),
+                visual_hint="unit circle",
+                introduces_concepts=["cosine"],
+                references_prior_beats=["beat_001"],
+            ),
+            Beat(
+                beat_id="beat_003",
+                narration=" ".join(["compare"] * 80),
+                visual_hint="unit circle",
+                introduces_concepts=[],  # references both, introduces nothing
+                references_prior_beats=["beat_001", "beat_002"],
+            ),
+        ])
+
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        scenes = agent._chunk_script_into_scenes(script)
+
+        seen: dict[str, str] = {}
+        for scene in scenes:
+            for beat in scene.source_beats:
+                for concept in beat.introduces_concepts:
+                    assert concept not in seen, (
+                        f"concept {concept!r} introduced twice — first in "
+                        f"{seen[concept]}, again in {beat.beat_id}"
+                    )
+                    seen[concept] = beat.beat_id
+
+    def test_full_script_architect_storyboard_has_no_duplicate_concepts(self, monkeypatch):
+        """End-to-end against ScriptArchitectAgent (mock-fallback path):
+        the resulting storyboard must satisfy the introduce-once invariant
+        across every scene's source_beats."""
+        from src.agents.script_architect import ScriptArchitectAgent, ScriptArchitectInput
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        agent = ScriptArchitectAgent()  # mock fallback (no API key)
+
+        ocr = self._ocr_output()
+        config = Configuration(
+            verbosity="medium", depth="intermediate", audience="undergraduate",
+        )
+
+        storyboard = agent.execute(ScriptArchitectInput(ocr_output=ocr, configuration=config))
+
+        seen: dict[str, str] = {}
+        for scene in storyboard.scenes:
+            for beat in scene.source_beats:
+                for concept in beat.introduces_concepts:
+                    assert concept not in seen, (
+                        f"concept {concept!r} introduced twice — first in "
+                        f"scene {seen[concept]!r}, again in scene {scene.scene_id!r}"
+                    )
+                    seen[concept] = scene.scene_id
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

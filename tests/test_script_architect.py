@@ -1,5 +1,6 @@
 """Unit tests for Script/Storyboard Architect Agent"""
 
+import json
 import pytest
 from datetime import datetime
 
@@ -168,281 +169,14 @@ class TestScriptArchitectAgent:
             agent.execute("invalid")
         
         assert exc_info.value.error_code == "INVALID_INPUT"
-    
-    def test_concept_identification(self, agent, sample_ocr_output, default_config):
-        """Test concept extraction from OCR output"""
-        concepts = agent._identify_concepts(sample_ocr_output, default_config)
-        
-        assert len(concepts) > 0
-        
-        # Check that definitions are identified
-        definition_concepts = [c for c in concepts if c["concept_type"] == "definition"]
-        assert len(definition_concepts) > 0
-        
-        # Check that theorems are identified
-        theorem_concepts = [c for c in concepts if c["concept_type"] == "theorem"]
-        assert len(theorem_concepts) > 0
-        
-        # Check that examples are identified
-        example_concepts = [c for c in concepts if c["concept_type"] == "example"]
-        assert len(example_concepts) > 0
-        
-        # Verify concept structure
-        for concept in concepts:
-            assert "concept_id" in concept
-            assert "concept_name" in concept
-            assert "concept_type" in concept
-            assert "content" in concept
-            assert "page_number" in concept
-            assert "dependencies" in concept
-    
-    def test_concept_identification_no_proofs_for_introductory(self, agent, sample_ocr_output, introductory_config):
-        """Test that proofs are skipped for introductory depth"""
-        # Add a proof to the OCR output
-        sample_ocr_output.pages[1].text_blocks.append(
-            TextBlock(
-                text="Proof: We prove this by induction.",
-                bounding_box=BoundingBox(x=100, y=200, width=400, height=30),
-                reading_order=2,
-                confidence=0.95
-            )
-        )
-        
-        concepts = agent._identify_concepts(sample_ocr_output, introductory_config)
-        
-        # Proofs should not be extracted for introductory depth
-        proof_concepts = [c for c in concepts if c["concept_type"] == "proof"]
-        assert len(proof_concepts) == 0
-    
-    def test_concept_identification_includes_proofs_for_advanced(self, agent, sample_ocr_output, high_verbosity_config):
-        """Test that proofs are included for advanced depth"""
-        # Add a proof to the OCR output
-        sample_ocr_output.pages[1].text_blocks.append(
-            TextBlock(
-                text="Proof: We prove this by induction.",
-                bounding_box=BoundingBox(x=100, y=200, width=400, height=30),
-                reading_order=2,
-                confidence=0.95
-            )
-        )
-        
-        concepts = agent._identify_concepts(sample_ocr_output, high_verbosity_config)
-        
-        # Proofs should be extracted for advanced depth
-        proof_concepts = [c for c in concepts if c["concept_type"] == "proof"]
-        assert len(proof_concepts) > 0
-    
-    def test_concept_identification_empty_content(self, agent, default_config):
-        """Test concept identification with empty content creates default concept"""
-        empty_ocr = OCROutput(
-            pdf_metadata=PDFMetadata(
-                filename="empty.pdf",
-                page_count=1,
-                file_size_bytes=1000
-            ),
-            pages=[
-                Page(
-                    page_number=1,
-                    text_blocks=[],
-                    math_expressions=[],
-                    diagrams=[]
-                )
-            ]
-        )
-        
-        concepts = agent._identify_concepts(empty_ocr, default_config)
-        
-        # Should create a default introduction concept
-        assert len(concepts) == 1
-        assert concepts[0]["concept_type"] == "introduction"
-    
-    def test_dependency_graph_building(self, agent, sample_ocr_output, default_config):
-        """Test dependency graph construction"""
-        concepts = agent._identify_concepts(sample_ocr_output, default_config)
-        graph = agent._build_dependency_graph(concepts, sample_ocr_output)
-        
-        # Graph should have entries for all concepts
-        assert len(graph) == len(concepts)
-        
-        # All concept IDs should be in graph
-        for concept in concepts:
-            assert concept["concept_id"] in graph
-    
-    def test_topological_sort_no_cycles(self, agent):
-        """Test topological sort with acyclic graph"""
-        graph = {
-            "A": ["B", "C"],
-            "B": ["D"],
-            "C": ["D"],
-            "D": []
-        }
-        
-        sorted_order = agent._topological_sort(graph)
-        
-        assert len(sorted_order) == 4
-        # A should come before B and C
-        assert sorted_order.index("A") < sorted_order.index("B")
-        assert sorted_order.index("A") < sorted_order.index("C")
-        # B and C should come before D
-        assert sorted_order.index("B") < sorted_order.index("D")
-        assert sorted_order.index("C") < sorted_order.index("D")
-    
-    def test_topological_sort_with_cycle(self, agent):
-        """Test topological sort handles cycles gracefully"""
-        graph = {
-            "A": ["B"],
-            "B": ["C"],
-            "C": ["A"]  # Creates a cycle
-        }
-        
-        sorted_order = agent._topological_sort(graph)
-        
-        # Should still return all nodes (cycle broken)
-        assert len(sorted_order) == 3
-        assert set(sorted_order) == {"A", "B", "C"}
-    
-    def test_topological_sort_empty_graph(self, agent):
-        """Test topological sort with empty graph"""
-        graph = {}
-        sorted_order = agent._topological_sort(graph)
-        assert sorted_order == []
-    
-    def test_scene_decomposition(self, agent, sample_ocr_output, default_config):
-        """Test scene decomposition creates scenes for all concepts"""
-        concepts = agent._identify_concepts(sample_ocr_output, default_config)
-        graph = agent._build_dependency_graph(concepts, sample_ocr_output)
-        ordered_concepts = agent._topological_sort(graph)
-        
-        scenes = agent._decompose_into_scenes(ordered_concepts, sample_ocr_output, default_config)
-        
-        # Should create one scene per concept
-        assert len(scenes) == len(ordered_concepts)
-        
-        # Verify scene structure
-        for i, scene in enumerate(scenes):
-            assert scene.scene_id == f"scene_{i + 1:03d}"
-            assert scene.scene_index == i
-            assert scene.narration is not None
-            assert len(scene.narration) > 0
-            assert scene.visual_intent is not None
-            assert scene.duration_estimate > 0
-    
-    def test_narration_generation_verbosity_low(self, agent, sample_ocr_output, low_verbosity_config):
-        """Test narration generation with low verbosity"""
-        narration = agent._generate_narration("concept_001", low_verbosity_config, sample_ocr_output)
-        
-        assert len(narration) > 0
-        # Low verbosity should produce shorter narration
-        assert len(narration.split()) < 50
-    
-    def test_narration_generation_verbosity_high(self, agent, sample_ocr_output, high_verbosity_config):
-        """Test narration generation with high verbosity"""
-        narration = agent._generate_narration("concept_001", high_verbosity_config, sample_ocr_output)
-        
-        assert len(narration) > 0
-        # High verbosity should produce longer narration
-        assert len(narration.split()) > 30
-    
-    def test_narration_generation_audience_adjustment(self, agent, sample_ocr_output):
-        """Test narration adjusts based on audience level"""
-        high_school_config = Configuration(
-            verbosity="medium",
-            depth="introductory",
-            audience="high-school"
-        )
-        graduate_config = Configuration(
-            verbosity="medium",
-            depth="advanced",
-            audience="graduate"
-        )
-        
-        hs_narration = agent._generate_narration("concept_001", high_school_config, sample_ocr_output)
-        grad_narration = agent._generate_narration("concept_001", graduate_config, sample_ocr_output)
-        
-        # Both should be non-empty
-        assert len(hs_narration) > 0
-        assert len(grad_narration) > 0
-        
-        # Content should differ based on audience
-        assert "everyday life" in hs_narration.lower() or "familiar examples" in hs_narration.lower()
-        assert "theoretical" in grad_narration.lower() or "generalizations" in grad_narration.lower()
-    
-    def test_visual_intent_generation(self, agent, sample_ocr_output, default_config):
-        """Test visual intent generation"""
-        visual_intent = agent._generate_visual_intent("concept_001", default_config, sample_ocr_output)
-        
-        assert visual_intent is not None
-        assert len(visual_intent.mathematical_objects) > 0
-        assert len(visual_intent.transformations) > 0
-        
-        # Verify mathematical object structure
-        for obj in visual_intent.mathematical_objects:
-            assert obj.object_type in ["equation", "graph", "geometric_shape", "axes", "text"]
-            assert obj.content is not None
-        
-        # Verify transformation structure
-        for transform in visual_intent.transformations:
-            assert transform.transformation_type in ["morph", "highlight", "move", "fade_in", "fade_out", "scale"]
-            assert transform.timing >= 0
-    
-    def test_duration_estimation(self, agent):
-        """Test scene duration estimation"""
-        short_narration = "This is a short narration."
-        long_narration = " ".join(["word"] * 100)  # 100 words
-        
-        from src.schemas.storyboard import VisualIntent, MathematicalObject, Transformation, ObjectStyle
-        
-        simple_visual = VisualIntent(
-            mathematical_objects=[
-                MathematicalObject(object_type="equation", content="x=1", style=ObjectStyle())
-            ],
-            transformations=[
-                Transformation(transformation_type="fade_in", target_object="eq", parameters={}, timing=0.5)
-            ]
-        )
-        
-        complex_visual = VisualIntent(
-            mathematical_objects=[
-                MathematicalObject(object_type="equation", content="x=1", style=ObjectStyle())
-            ],
-            transformations=[
-                Transformation(transformation_type="fade_in", target_object="eq", parameters={}, timing=0.5),
-                Transformation(transformation_type="morph", target_object="eq", parameters={}, timing=2.0),
-                Transformation(transformation_type="highlight", target_object="eq", parameters={}, timing=4.0),
-            ]
-        )
-        
-        short_duration = agent._estimate_duration(short_narration, simple_visual)
-        long_duration = agent._estimate_duration(long_narration, complex_visual)
-        
-        # Short narration should have shorter duration
-        assert short_duration < long_duration
-        
-        # Durations should be within bounds
-        assert agent.MIN_SCENE_DURATION <= short_duration <= agent.MAX_SCENE_DURATION
-        assert agent.MIN_SCENE_DURATION <= long_duration <= agent.MAX_SCENE_DURATION
-    
-    def test_storyboard_assembly(self, agent, sample_ocr_output, default_config):
-        """Test complete storyboard assembly"""
-        concepts = agent._identify_concepts(sample_ocr_output, default_config)
-        graph = agent._build_dependency_graph(concepts, sample_ocr_output)
-        ordered_concepts = agent._topological_sort(graph)
-        scenes = agent._decompose_into_scenes(ordered_concepts, sample_ocr_output, default_config)
-        
-        storyboard = agent._assemble_storyboard(sample_ocr_output, default_config, concepts, scenes)
-        
-        assert isinstance(storyboard, StoryboardJSON)
-        assert storyboard.pdf_metadata.filename == "test_document.pdf"
-        assert storyboard.configuration.verbosity == "medium"
-        assert len(storyboard.concept_hierarchy) == len(concepts)
-        assert len(storyboard.scenes) == len(scenes)
-        
-        # Verify concept hierarchy structure
-        for concept_hier in storyboard.concept_hierarchy:
-            assert concept_hier.concept_id is not None
-            assert concept_hier.concept_name is not None
-            assert isinstance(concept_hier.dependencies, list)
-    
+
+    # NOTE: tests for the deleted per-concept extractor / topological sort /
+    # per-concept narration & visual generation have been removed as part of
+    # Task 5 in docs/superpowers/plans/2026-04-26-unified-script-chunked-render.md.
+    # The unified-script flow is exercised in TestGenerateVideoScript and
+    # TestChunker; end-to-end execute() behaviour is exercised by
+    # test_execute_basic / test_scene_id_uniqueness / test_conceptual_continuity below.
+
     def test_scene_id_uniqueness(self, agent, sample_ocr_output, default_config):
         """Test that all scene IDs are unique"""
         input_data = ScriptArchitectInput(sample_ocr_output, default_config)
@@ -544,6 +278,352 @@ class TestScriptArchitectInput:
         
         assert input_data.ocr_output == ocr_output
         assert input_data.configuration == config
+
+
+class TestGenerateVideoScript:
+    """Tests for the unified-script LLM call (Task 3 in
+    docs/superpowers/plans/2026-04-26-unified-script-chunked-render.md)."""
+
+    def test_generate_video_script_returns_videoscript_with_ledger(self, monkeypatch):
+        """One LLM call → VideoScript with concept ledger preserved."""
+        from src.schemas.video_script import VideoScript
+        from tests.fixtures.ocr_fixtures import minimal_trig_ocr_output
+
+        fake_response = {
+            "title": "Sine, Cosine, and the Unit Circle",
+            "beats": [
+                {
+                    "beat_id": "beat_001",
+                    "narration": "Sine measures the height of a rotating point on the unit circle.",
+                    "visual_hint": "Unit circle with a rotating radius; a y-coordinate trace.",
+                    "introduces_concepts": ["unit_circle", "sine"],
+                    "references_prior_beats": [],
+                },
+                {
+                    "beat_id": "beat_002",
+                    "narration": "Cosine measures the same point's horizontal coordinate.",
+                    "visual_hint": "Same unit circle; project the point onto the x-axis.",
+                    "introduces_concepts": ["cosine"],
+                    "references_prior_beats": ["beat_001"],
+                },
+            ],
+        }
+
+        class _FakeChoice:
+            def __init__(self, content):
+                self.message = type("M", (), {"content": content})
+
+        class _FakeResp:
+            def __init__(self, content):
+                self.choices = [_FakeChoice(content)]
+
+        class _FakeCompletions:
+            @staticmethod
+            def create(**kw):
+                return _FakeResp(json.dumps(fake_response))
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+        agent.client = _FakeClient()
+
+        ocr = minimal_trig_ocr_output()
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+
+        # Call _generate_video_script directly (Task 3 method)
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+        script = agent._generate_video_script(ocr, config, review_feedback=[])
+
+        assert isinstance(script, VideoScript)
+        assert script.concept_ledger() == ["unit_circle", "sine", "cosine"]
+        assert len(script.beats) == 2
+        assert script.beats[1].references_prior_beats == ["beat_001"]
+
+    def test_generate_video_script_falls_back_when_no_api_key(self, monkeypatch):
+        from src.schemas.video_script import VideoScript
+        from tests.fixtures.ocr_fixtures import minimal_trig_ocr_output
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+        agent.client = None
+
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+        script = agent._generate_video_script(minimal_trig_ocr_output(), config, review_feedback=[])
+        assert isinstance(script, VideoScript)
+        assert len(script.beats) >= 1
+
+    def test_generate_video_script_strict_raises_without_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from tests.fixtures.ocr_fixtures import minimal_trig_ocr_output
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = True
+        agent.client = None
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+        with pytest.raises(AgentExecutionError, match="MISSING_API_KEY"):
+            agent._generate_video_script(minimal_trig_ocr_output(), config, review_feedback=[])
+
+    def test_concept_canonicalization_collapses_aliases(self):
+        """F1 mitigation — 'Sine Function', 'sin', 'sine_function' all collapse."""
+        from src.agents.script_architect import _canonicalize_concept
+        assert _canonicalize_concept("Sine Function") == "sine"
+        assert _canonicalize_concept("sin") == "sine"
+        assert _canonicalize_concept("sine_function") == "sine"
+        assert _canonicalize_concept("THE  Unit-Circle") == "unit_circle"
+        assert _canonicalize_concept("trig functions") == "trigonometric_function"
+        # Unknown labels pass through normalized
+        assert _canonicalize_concept("Some Novel Concept") == "some_novel_concept"
+
+
+class TestChunker:
+    """Tests for the deterministic VideoScript → List[Scene] chunker (Task 4)."""
+
+    def _make_agent(self):
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        # Force the constants the chunker reads
+        return agent
+
+    def test_chunker_groups_beats_within_duration_window(self):
+        from src.schemas.video_script import VideoScript, Beat
+        # Each beat ≈ 30 words / 3 wps ≈ 10 s. Six beats ≈ 60 s.
+        beats = [
+            Beat(
+                beat_id=f"beat_{i:03d}",
+                narration=" ".join(["word"] * 30),
+                visual_hint="hint",
+                introduces_concepts=[f"c{i}"],
+            )
+            for i in range(1, 7)
+        ]
+        script = VideoScript(beats=beats)
+        agent = self._make_agent()
+
+        scenes = agent._chunk_script_into_scenes(script)
+        assert 1 <= len(scenes) <= 3
+        # Scene IDs are sequential
+        assert [s.scene_id for s in scenes] == [f"scene_{i+1:03d}" for i in range(len(scenes))]
+        # Every beat appears in exactly one scene's source_beats
+        all_beat_ids = []
+        for s in scenes:
+            all_beat_ids.extend(b.beat_id for b in s.source_beats)
+        assert all_beat_ids == [b.beat_id for b in beats]
+
+    def test_chunker_never_splits_a_beat(self):
+        """A beat is the atomic unit. Even if it overshoots MAX_SCENE_DURATION,
+        the chunker must keep it whole and log a warning (F3)."""
+        from src.schemas.video_script import VideoScript, Beat
+        long_beat = Beat(
+            beat_id="beat_001",
+            narration=" ".join(["word"] * 600),  # ≈ 200 s — exceeds MAX_SCENE_DURATION (90s)
+            visual_hint="hint",
+            introduces_concepts=["x"],
+        )
+        agent = self._make_agent()
+        scenes = agent._chunk_script_into_scenes(VideoScript(beats=[long_beat]))
+        assert len(scenes) == 1
+        assert scenes[0].narration.count("word") == 600
+        # The atomic beat survives intact
+        assert scenes[0].source_beats[0].beat_id == "beat_001"
+
+    def test_chunker_logs_warning_for_oversized_beat(self, caplog):
+        """F3 mitigation: an oversized beat triggers a WARNING naming the beat_id."""
+        import logging
+        from src.schemas.video_script import VideoScript, Beat
+        oversized = Beat(
+            beat_id="beat_huge",
+            narration=" ".join(["word"] * 600),
+            visual_hint="hint",
+        )
+        with caplog.at_level(logging.WARNING, logger="src.agents.script_architect"):
+            self._make_agent()._chunk_script_into_scenes(VideoScript(beats=[oversized]))
+        assert any("beat_huge" in r.getMessage() for r in caplog.records), \
+            f"Expected a warning naming beat_huge, got: {[r.getMessage() for r in caplog.records]}"
+
+    def test_chunker_dependencies_form_single_step_chain(self):
+        from src.schemas.video_script import VideoScript, Beat
+        beats = [
+            Beat(beat_id=f"beat_{i:03d}", narration=" ".join(["word"] * 30), visual_hint="h")
+            for i in range(1, 7)
+        ]
+        scenes = self._make_agent()._chunk_script_into_scenes(VideoScript(beats=beats))
+        assert scenes[0].dependencies == []
+        for prev, cur in zip(scenes, scenes[1:]):
+            assert cur.dependencies == [prev.scene_id]
+
+    def test_chunker_preserves_beat_data_via_pydantic_roundtrip(self):
+        """F5 mitigation — source_beats survive Scene.model_dump()."""
+        from src.schemas.storyboard import Scene
+        from src.schemas.video_script import VideoScript, Beat
+        beats = [
+            Beat(beat_id="b1", narration=" ".join(["w"] * 30), visual_hint="h", introduces_concepts=["x"]),
+            Beat(beat_id="b2", narration=" ".join(["w"] * 30), visual_hint="h", introduces_concepts=["y"]),
+        ]
+        scenes = self._make_agent()._chunk_script_into_scenes(VideoScript(beats=beats))
+        for s in scenes:
+            roundtripped = Scene.model_validate(s.model_dump())
+            assert [b.beat_id for b in roundtripped.source_beats] == [b.beat_id for b in s.source_beats]
+
+
+class TestVisualIntentForChunk:
+    """Task 7: per-chunk visual planner uses NarrativeContext, never the full PDF."""
+
+    def _make_agent_with_fake_client(self, captured: dict, response_json: str):
+        """Build an agent whose chat client captures the prompt and returns
+        a canned JSON visual intent."""
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+
+        class _Resp:
+            def __init__(self, content: str):
+                self.choices = [type("C", (), {"message": type("M", (), {"content": content})})]
+
+        class _Completions:
+            def create(self, *, messages, **_kw):
+                captured["prompt"] = messages[0]["content"]
+                return _Resp(response_json)
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+        agent.client = _Client()
+        return agent
+
+    def test_visual_intent_prompt_excludes_full_pdf_and_ocr(self, monkeypatch):
+        """The per-chunk planner must receive only the chunk narration +
+        briefing — never the raw PDF text or OCR dump."""
+        from src.schemas.storyboard import Configuration
+        from src.schemas.video_script import VideoScript, Beat
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+        captured: dict = {}
+        agent = self._make_agent_with_fake_client(
+            captured,
+            '{"objects": [], "transformations": [], "beats": [], '
+            '"scene_state_in": {}, "scene_state_out": {}, "emphasis_points": []}',
+        )
+
+        script = VideoScript(beats=[
+            Beat(
+                beat_id="beat_001",
+                narration="explain sine on the unit circle",
+                visual_hint="unit circle with rotating radius",
+                introduces_concepts=["sine"],
+            ),
+        ])
+        scene = agent._chunk_script_into_scenes(script)[0]
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+
+        agent._generate_visual_intent_for_chunk(scene, script, config, [])
+
+        prompt = captured["prompt"]
+        assert "explain sine on the unit circle" in prompt
+        assert "unit circle with rotating radius" in prompt
+        # The prompt must not name the source-material dump that the script
+        # generator alone is allowed to see.
+        assert "PDF" not in prompt
+        assert "OCR" not in prompt
+
+    def test_visual_intent_prompt_lists_concepts_already_introduced(self, monkeypatch):
+        """For chunks past the first, the prompt must enumerate concepts
+        introduced by *earlier* beats so the LLM references — not redefines —
+        them."""
+        from src.schemas.storyboard import Configuration
+        from src.schemas.video_script import VideoScript, Beat
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+        captured: dict = {}
+        agent = self._make_agent_with_fake_client(
+            captured,
+            '{"objects": [], "transformations": [], "beats": [], '
+            '"scene_state_in": {}, "scene_state_out": {}, "emphasis_points": []}',
+        )
+
+        # Two beats long enough to land in separate chunks.
+        long_narration = " ".join(["word"] * 250)  # ≈ 83 s — forces own chunk
+        script = VideoScript(beats=[
+            Beat(
+                beat_id="beat_001",
+                narration=long_narration,
+                visual_hint="circle",
+                introduces_concepts=["sine"],
+            ),
+            Beat(
+                beat_id="beat_002",
+                narration="now we look at cosine",
+                visual_hint="horizontal projection",
+                introduces_concepts=["cosine"],
+            ),
+        ])
+        scenes = agent._chunk_script_into_scenes(script)
+        assert len(scenes) >= 2, "test setup expected ≥2 chunks"
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+
+        agent._generate_visual_intent_for_chunk(scenes[1], script, config, [])
+
+        prompt = captured["prompt"]
+        # The cosine chunk's prompt must mention sine as already-introduced.
+        assert "sine" in prompt.lower()
+        assert "already" in prompt.lower() or "earlier" in prompt.lower()
+        # And must NOT claim cosine has already been introduced.
+        below_already = prompt.lower().split("already", 1)
+        if len(below_already) > 1:
+            # If we found an "already" section, cosine should not be in the
+            # earlier-concepts block — only sine is.
+            assert "cosine" not in below_already[1].split("\n\n")[0]
+
+    def test_visual_intent_falls_back_when_no_api_key(self, monkeypatch):
+        """Without OPENAI_API_KEY the planner uses the deterministic fallback
+        (and the test does not need a fake client at all)."""
+        from src.schemas.storyboard import Configuration
+        from src.schemas.video_script import VideoScript, Beat
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+        agent.client = None
+
+        script = VideoScript(beats=[
+            Beat(beat_id="beat_001", narration="some narration about sine",
+                 visual_hint="hint", introduces_concepts=["sine"]),
+        ])
+        scene = agent._chunk_script_into_scenes(script)[0]
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+
+        out = agent._generate_visual_intent_for_chunk(scene, script, config, [])
+        # Fallback intent always produces at least one object (the title text).
+        assert len(out.mathematical_objects) >= 1
+
+    def test_visual_intent_falls_back_when_llm_returns_empty(self, monkeypatch):
+        """If the LLM returns an empty object list, fall back to the
+        deterministic intent rather than shipping a blank scene."""
+        from src.schemas.storyboard import Configuration
+        from src.schemas.video_script import VideoScript, Beat
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+        captured: dict = {}
+        agent = self._make_agent_with_fake_client(
+            captured,
+            '{"objects": [], "transformations": [], "beats": [], '
+            '"scene_state_in": {}, "scene_state_out": {}, "emphasis_points": []}',
+        )
+
+        script = VideoScript(beats=[
+            Beat(beat_id="beat_001", narration="explain sine", visual_hint="circle",
+                 introduces_concepts=["sine"]),
+        ])
+        scene = agent._chunk_script_into_scenes(script)[0]
+        config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+
+        out = agent._generate_visual_intent_for_chunk(scene, script, config, [])
+        assert len(out.mathematical_objects) >= 1
 
 
 if __name__ == "__main__":

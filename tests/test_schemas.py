@@ -443,13 +443,35 @@ class TestStoryboard:
     
     def test_mathematical_object_valid_types(self):
         """Test all valid object types are accepted."""
-        valid_types = ['equation', 'graph', 'geometric_shape', 'axes', 'text']
+        valid_types = ['equation', 'graph', 'geometric_shape', 'axes', 'text', 'pi_creature']
         for obj_type in valid_types:
             obj = MathematicalObject(
                 object_type=obj_type,
                 content="test content"
             )
             assert obj.object_type == obj_type
+
+    def test_mathematical_object_aliases_normalize_to_canonical_types(self):
+        """Test common LLM aliases normalize into the canonical schema."""
+        obj = MathematicalObject(
+            object_type="pi_character",
+            content="Teacher beat",
+            render_hint="pi_creature_teacher",
+        )
+        assert obj.object_type == "pi_creature"
+        assert obj.render_hint == "PiCreatureTeacher"
+
+    def test_engine_contract_normalizes_broader_render_hints(self):
+        """Broader engine-backed render hints should normalize cleanly."""
+        obj = MathematicalObject(
+            object_id="axes_main",
+            object_role="shared_axes",
+            object_type="axes",
+            render_hint="complex_plane",
+            content="main coordinate frame",
+            style=ObjectStyle(),
+        )
+        assert obj.render_hint == "ComplexPlane"
     
     def test_mathematical_object_default_style(self):
         """Test that MathematicalObject style defaults to empty ObjectStyle."""
@@ -498,6 +520,18 @@ class TestStoryboard:
             timing=0.5
         )
         assert trans.parameters == {}
+
+    def test_transformation_accepts_engine_animation_aliases_but_normalizes_family(self):
+        """Engine-level animation aliases should normalize to canonical families."""
+        trans = Transformation(
+            transformation_type="ReplacementTransform",
+            source_object_id="eq_old",
+            target_object_id="eq_new",
+            continuity_action="transform",
+            beat_id="beat_001",
+            timing=1.0,
+        )
+        assert trans.transformation_type == "morph"
     
     def test_emphasis_point_negative_timestamp(self):
         """Test that negative timestamp raises error."""
@@ -893,6 +927,132 @@ class TestSceneProcessing:
         assert context.concept_definitions == {}
         assert context.variable_bindings == {}
         assert isinstance(context.visual_style, VisualStyle)
+
+    # ── NarrativeContext (Task 1 — additive) ─────────────────────────
+
+    def test_narrative_context_defaults_are_empty(self):
+        from src.schemas.scene_processing import NarrativeContext
+        nc = NarrativeContext()
+        assert nc.prior_scene_summaries == []
+        assert nc.concepts_introduced == []
+        assert nc.running_storyline == ""
+        assert nc.live_objects_on_screen == {}
+        assert nc.prior_equations == []  # F8: track prior equations for visual-layer dedup
+
+    def test_narrative_context_appends_preserve_order(self):
+        from src.schemas.scene_processing import NarrativeContext
+        nc = NarrativeContext()
+        nc.prior_scene_summaries.append("Introduced sine on the unit circle.")
+        nc.concepts_introduced.append("sine")
+        nc.live_objects_on_screen["unit_circle"] = "Circle(radius=2)"
+        nc.prior_equations.append(r"\sin(\theta)")
+        assert nc.prior_scene_summaries == ["Introduced sine on the unit circle."]
+        assert "sine" in nc.concepts_introduced
+        assert nc.live_objects_on_screen["unit_circle"] == "Circle(radius=2)"
+        assert nc.prior_equations == [r"\sin(\theta)"]
+
+    def test_shared_context_carries_narrative_context_default(self):
+        from src.schemas.scene_processing import NarrativeContext
+        ctx = SharedContext()
+        assert isinstance(ctx.narrative, NarrativeContext)
+        assert ctx.narrative.concepts_introduced == []
+        assert ctx.narrative.prior_equations == []
+
+    def test_narrative_context_roundtrips_through_pydantic_dump(self):
+        """NarrativeContext must survive model_dump → model_validate roundtrip
+        so the dry_run / persistence paths don't drop it on disk."""
+        from src.schemas.scene_processing import NarrativeContext
+        nc = NarrativeContext(
+            prior_scene_summaries=["a", "b"],
+            concepts_introduced=["x", "y"],
+            running_storyline="brief storyline.",
+            live_objects_on_screen={"obj_0": "Circle"},
+            prior_equations=[r"a^2+b^2=c^2"],
+        )
+        dumped = nc.model_dump()
+        restored = NarrativeContext.model_validate(dumped)
+        assert restored == nc
+
+
+class TestVideoScript:
+    """Tests for the unified-script schemas (Task 2)."""
+
+    def test_beat_validates_required_fields(self):
+        from src.schemas.video_script import Beat
+        b = Beat(
+            beat_id="beat_001",
+            narration="A sine wave traces the y-coordinate of a point on a unit circle.",
+            visual_hint="Show a unit circle with a rotating radius and a graph next to it.",
+            introduces_concepts=["sine", "unit_circle"],
+            references_prior_beats=[],
+        )
+        assert b.beat_id == "beat_001"
+        assert "sine" in b.introduces_concepts
+
+    def test_video_script_concept_ledger_dedupes_and_preserves_first_intro_order(self):
+        from src.schemas.video_script import VideoScript, Beat
+        script = VideoScript(beats=[
+            Beat(beat_id="beat_001", narration="...", visual_hint="...",
+                 introduces_concepts=["sine"]),
+            Beat(beat_id="beat_002", narration="...", visual_hint="...",
+                 introduces_concepts=["cosine", "sine"]),  # sine repeated → ignored
+        ])
+        assert script.concept_ledger() == ["sine", "cosine"]
+
+    def test_video_script_rejects_duplicate_beat_ids(self):
+        from pydantic import ValidationError as _VE
+        from src.schemas.video_script import VideoScript, Beat
+        with pytest.raises(_VE):
+            VideoScript(beats=[
+                Beat(beat_id="beat_001", narration="a", visual_hint="x"),
+                Beat(beat_id="beat_001", narration="b", visual_hint="y"),
+            ])
+
+    def test_video_script_drops_unknown_back_references(self):
+        """F7 mitigation: invalid references_prior_beats must be dropped, not raised."""
+        import logging
+        from src.schemas.video_script import VideoScript, Beat
+        with self._capture_warnings("src.schemas.video_script") as records:
+            script = VideoScript(beats=[
+                Beat(beat_id="beat_001", narration="a", visual_hint="x",
+                     references_prior_beats=["beat_999"]),
+            ])
+        assert script.beats[0].references_prior_beats == []
+        assert any("beat_999" in r.getMessage() for r in records)
+
+    def test_video_script_drops_forward_back_references(self):
+        """A beat cannot reference a later beat — drop those too."""
+        from src.schemas.video_script import VideoScript, Beat
+        with self._capture_warnings("src.schemas.video_script"):
+            script = VideoScript(beats=[
+                Beat(beat_id="beat_001", narration="a", visual_hint="x",
+                     references_prior_beats=["beat_002"]),  # forward — invalid
+                Beat(beat_id="beat_002", narration="b", visual_hint="y"),
+            ])
+        assert script.beats[0].references_prior_beats == []
+
+    @staticmethod
+    def _capture_warnings(logger_name):
+        """Context manager that captures WARNING records from a logger."""
+        import logging
+
+        class _LogCapture:
+            def __enter__(self_inner):
+                self_inner.records = []
+                self_inner.handler = logging.Handler(level=logging.WARNING)
+                self_inner.handler.emit = lambda r: self_inner.records.append(r)
+                self_inner.logger = logging.getLogger(logger_name)
+                self_inner._old_level = self_inner.logger.level
+                self_inner.logger.setLevel(logging.WARNING)
+                self_inner.logger.addHandler(self_inner.handler)
+                return self_inner.records
+
+            def __exit__(self_inner, *a):
+                self_inner.logger.removeHandler(self_inner.handler)
+                self_inner.logger.setLevel(self_inner._old_level)
+                return False
+
+        return _LogCapture()
     
     def test_scene_spec_empty_scene_id_raises_error(self):
         """Test that empty scene_id raises error."""
@@ -940,7 +1100,10 @@ class TestSceneProcessing:
         scene_spec = SceneSpec(
             scene_id="scene_001",
             narration="Test narration",
-            visual_intent={},
+            visual_intent={
+                "mathematical_objects": [],
+                "transformations": []
+            },
             duration_estimate=30.0
         )
         context = SharedContext()
@@ -1226,7 +1389,7 @@ class TestOutputManifest:
     def test_consistent_success_rate_accepted(self):
         """Test that consistent success rate is accepted."""
         from src.schemas.output_manifest import OutputFile
-        
+
         manifest = OutputManifest(
             output_directory="/path/to/output",
             files=[],
@@ -1238,11 +1401,11 @@ class TestOutputManifest:
             failed_scenes=[]
         )
         assert manifest.scene_success_rate == 0.7
-    
+
     def test_output_manifest_default_failed_scenes(self):
         """Test that failed_scenes defaults to empty list."""
         from src.schemas.output_manifest import OutputFile
-        
+
         manifest = OutputManifest(
             output_directory="/path/to/output",
             files=[],
@@ -1253,11 +1416,11 @@ class TestOutputManifest:
             successful_scenes=1
         )
         assert manifest.failed_scenes == []
-    
+
     def test_failed_scene_manifest_fields(self):
         """Test FailedSceneManifest has required fields."""
         from src.schemas.output_manifest import FailedSceneManifest
-        
+
         failed = FailedSceneManifest(
             scene_id="scene_001",
             error="Test error"
@@ -1265,3 +1428,63 @@ class TestOutputManifest:
         assert failed.scene_id == "scene_001"
         assert failed.error == "Test error"
 
+
+# ---------------------------------------------------------------------------
+# Tests for 3B1B Quality Contract constants (Part 3 Task 1)
+# ---------------------------------------------------------------------------
+
+class TestTimingContract:
+    """Tests for TIMING_CONTRACT, WAIT_CONTRACT, and COLOR_PALETTE constants."""
+
+    def test_timing_contract_covers_all_animation_hints(self):
+        """Every canonical animation hint should have a timing entry."""
+        from src.utils.manim_engine_contract import (
+            TIMING_CONTRACT, CANONICAL_ANIMATION_HINTS,
+        )
+        for anim in CANONICAL_ANIMATION_HINTS:
+            if anim in TIMING_CONTRACT:
+                lo, hi = TIMING_CONTRACT[anim]
+                assert 0 < lo <= hi, f"{anim}: min {lo} > max {hi}"
+
+    def test_timing_contract_values_are_positive_tuples(self):
+        from src.utils.manim_engine_contract import TIMING_CONTRACT
+        for anim, (lo, hi) in TIMING_CONTRACT.items():
+            assert isinstance(lo, (int, float))
+            assert isinstance(hi, (int, float))
+            assert lo > 0, f"{anim} min must be positive"
+            assert hi >= lo, f"{anim} max must be >= min"
+
+    def test_wait_contract_has_required_keys(self):
+        from src.utils.manim_engine_contract import WAIT_CONTRACT
+        required = {
+            "between_animations",
+            "after_major_reveal",
+            "scene_breathing_room",
+            "after_transform",
+        }
+        assert required.issubset(set(WAIT_CONTRACT.keys()))
+        for key, val in WAIT_CONTRACT.items():
+            assert val > 0, f"WAIT_CONTRACT[{key}] must be positive"
+
+    def test_color_palette_has_semantic_aliases(self):
+        from src.utils.manim_engine_contract import THREE_BLUE_ONE_BROWN_PALETTE
+        for alias in ("PRIMARY", "SECONDARY", "ACCENT", "WARNING", "BACKGROUND"):
+            assert alias in THREE_BLUE_ONE_BROWN_PALETTE
+            assert THREE_BLUE_ONE_BROWN_PALETTE[alias].startswith("#")
+
+    def test_color_cycle_has_enough_entries(self):
+        from src.utils.manim_engine_contract import COLOR_CYCLE
+        assert len(COLOR_CYCLE) >= 8, "Need enough colors for variable assignment"
+        for c in COLOR_CYCLE:
+            assert c.startswith("#") and len(c) == 7
+
+    def test_build_3b1b_quality_prompt_returns_string(self):
+        from src.utils.manim_engine_contract import build_3b1b_quality_prompt
+        prompt = build_3b1b_quality_prompt()
+        assert isinstance(prompt, str)
+        assert "TIMING CONSTRAINTS" in prompt
+        assert "PROGRESSIVE REVEAL" in prompt
+        assert "COLOR CONSISTENCY" in prompt
+        assert "SMOOTH MORPHING" in prompt
+        assert "ANTI-PATTERNS" in prompt
+        assert "BREATHING ROOM" in prompt

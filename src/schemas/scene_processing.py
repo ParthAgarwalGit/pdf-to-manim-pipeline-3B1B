@@ -1,10 +1,13 @@
 """Scene processing schemas for Scene Controller."""
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.schemas.storyboard import VisualIntent
+
+if TYPE_CHECKING:
+    from src.schemas.scene_layout import SceneLayout
 
 
 class VisualStyle(BaseModel):
@@ -27,14 +30,61 @@ class VisualStyle(BaseModel):
     )
 
 
+class NarrativeContext(BaseModel):
+    """Tracks what the viewer has already seen so later scenes do not re-explain.
+
+    The Scene Controller updates this after each successful scene. Per-scene
+    LLM prompts read it to know which concepts to *reference* (not redefine)
+    and which on-screen objects to carry forward.
+
+    Field semantics:
+      - prior_scene_summaries: one short summary per prior scene, in order.
+        Bounded to keep token cost flat across long videos (see F4 mitigation
+        in 2026-04-26-unified-script-chunked-render plan).
+      - concepts_introduced: canonical concept labels already taught;
+        first-introduction order; uncapped (small per entry, load-bearing for
+        the dedup rule).
+      - running_storyline: 2-3 sentence rolling synopsis.
+      - live_objects_on_screen: object_id -> short description of objects
+        still visible at the END of the most recent scene.
+      - prior_equations: LaTeX of equations that have already appeared so the
+        visual planner can mark re-appearances as continuity_action="reuse"
+        instead of redefining them (F8 mitigation).
+    """
+
+    prior_scene_summaries: List[str] = Field(
+        default_factory=list,
+        description="One short summary per prior scene, in order"
+    )
+    concepts_introduced: List[str] = Field(
+        default_factory=list,
+        description="Canonical concept labels the viewer has already been taught"
+    )
+    running_storyline: str = Field(
+        default="",
+        description="2-3 sentence rolling synopsis of the video so far"
+    )
+    live_objects_on_screen: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of object_id -> short description of objects visible "
+                    "at the END of the most recent scene (carried into next chunk)"
+    )
+    prior_equations: List[str] = Field(
+        default_factory=list,
+        description="LaTeX of equations already shown; used to dedupe the "
+                    "visual layer when concepts are referenced again"
+    )
+
+
 class SharedContext(BaseModel):
     """
     Shared context propagated across scene processing.
-    
+
     Contains concept definitions, visual style, and variable bindings
-    accumulated from previous scenes.
+    accumulated from previous scenes, plus helper-friendly registries for
+    coordinate systems, notation objects, and character roles.
     """
-    
+
     concept_definitions: Dict[str, str] = Field(
         default_factory=dict,
         description="Mapping of concept_id to definition text"
@@ -46,6 +96,28 @@ class SharedContext(BaseModel):
     variable_bindings: Dict[str, str] = Field(
         default_factory=dict,
         description="Mapping of variable names to values or references"
+    )
+    coordinate_system_bindings: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of coordinate_system_id to semantic kind (e.g. 'number_plane')"
+    )
+    notation_registry: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of notation_key to object_id for stable notation reuse"
+    )
+    character_registry: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of character_role to object_id for persistent Pi creatures"
+    )
+    color_bindings: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of variable name to hex color for cross-scene color consistency"
+    )
+    narrative: NarrativeContext = Field(
+        default_factory=NarrativeContext,
+        description="Narrative continuity state propagated across scenes — "
+                    "what the viewer has already seen, which concepts have been taught, "
+                    "and which objects carry over visually"
     )
 
 
@@ -84,10 +156,11 @@ class SceneSpec(BaseModel):
 class SceneProcessingInput(BaseModel):
     """
     Input to Animation Code Generator for a single scene.
-    
-    Contains scene specification, shared context, and scene index.
+
+    Contains scene specification, shared context, scene index, and an
+    optional pre-validated layout (bounding boxes per object).
     """
-    
+
     scene_spec: SceneSpec = Field(
         ...,
         description="Scene specification from storyboard"
@@ -100,6 +173,10 @@ class SceneProcessingInput(BaseModel):
         ...,
         ge=0,
         description="Sequential index of the scene in the array"
+    )
+    scene_layout: Optional[Any] = Field(
+        None,
+        description="Pre-validated SceneLayout with bounding boxes for each object",
     )
     
     model_config = ConfigDict(

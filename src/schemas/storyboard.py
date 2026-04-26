@@ -4,6 +4,17 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.schemas.video_script import Beat
+from src.utils.manim_engine_contract import (
+    CANONICAL_CAMERA_ACTIONS,
+    CANONICAL_CHARACTER_ROLES,
+    CANONICAL_CONTINUITY_ACTIONS,
+    CANONICAL_OBJECT_TYPES,
+    CANONICAL_RENDER_HINTS,
+    normalize_object_type,
+    normalize_render_hint,
+)
+
 
 class PDFMetadataStoryboard(BaseModel):
     """Metadata about the source PDF (simplified for storyboard)."""
@@ -82,14 +93,49 @@ class ObjectStyle(BaseModel):
 
 class MathematicalObject(BaseModel):
     """Mathematical object to be animated in a scene."""
-    
+
+    object_id: Optional[str] = Field(
+        None,
+        description="Stable identifier for continuity-aware planning and compilation"
+    )
+    object_role: Optional[str] = Field(
+        None,
+        description="Semantic role such as main_equation, shared_axes, teacher, or label"
+    )
     object_type: str = Field(
         ...,
-        description="Type of object (equation|graph|geometric_shape|axes|text)"
+        description=(
+            "Canonical object family "
+            "(equation|graph|geometric_shape|axes|text|pi_creature)"
+        )
     )
     content: str = Field(
         ...,
         description="LaTeX for equations, description for other types"
+    )
+    coordinate_system_id: Optional[str] = Field(
+        None,
+        description="Identifier for a shared coordinate system reused across beats/scenes"
+    )
+    notation_key: Optional[str] = Field(
+        None,
+        description="Stable symbolic identity for notation continuity"
+    )
+    character_role: Optional[str] = Field(
+        None,
+        description="Persistent character role when object_type is pi_creature"
+    )
+    persist_across_scenes: bool = Field(
+        default=False,
+        description="Whether this object should remain available to later scenes"
+    )
+    render_hint: Optional[str] = Field(
+        None,
+        description=(
+            "Optional preferred Manim primitive/helper such as "
+            "MathTex, Text, Axes, NumberPlane, Line, Arrow, Polygon, "
+            "Circle, Arc, PiCreatureTeacher, PiCreatureStudents, or SpeechBubble"
+        ),
     )
     style: ObjectStyle = Field(
         default_factory=ObjectStyle,
@@ -100,22 +146,58 @@ class MathematicalObject(BaseModel):
     @classmethod
     def validate_object_type(cls, v: str) -> str:
         """Validate object_type is one of the allowed values."""
-        allowed = {'equation', 'graph', 'geometric_shape', 'axes', 'text'}
-        if v not in allowed:
+        canonical = normalize_object_type(v)
+        allowed = set(CANONICAL_OBJECT_TYPES)
+        if canonical not in allowed:
             raise ValueError(f"object_type must be one of {allowed}, got '{v}'")
+        return canonical
+
+    @field_validator('character_role')
+    @classmethod
+    def validate_character_role(cls, v: Optional[str]) -> Optional[str]:
+        """Validate persistent character roles against the canonical enum."""
+        if v is None:
+            return None
+        allowed = set(CANONICAL_CHARACTER_ROLES)
+        if v not in allowed:
+            raise ValueError(f"character_role must be one of {allowed}, got '{v}'")
         return v
+
+    @field_validator('render_hint')
+    @classmethod
+    def validate_render_hint(cls, v: Optional[str]) -> Optional[str]:
+        """Validate render_hint is a recognized Manim primitive/helper."""
+        hint = normalize_render_hint(v)
+        if hint is None:
+            return None
+        allowed = set(CANONICAL_RENDER_HINTS)
+        if hint not in allowed:
+            raise ValueError(f"render_hint must be one of {allowed}, got '{v}'")
+        return hint
 
 
 class Transformation(BaseModel):
     """Animation transformation to apply to a mathematical object."""
-    
+
     transformation_type: str = Field(
         ...,
         description="Type of transformation (morph|highlight|move|fade_in|fade_out|scale)"
     )
-    target_object: str = Field(
+    source_object_id: str = Field(
         ...,
-        description="Reference to the mathematical object to transform"
+        description="Stable object id for the object the transformation starts from"
+    )
+    target_object_id: Optional[str] = Field(
+        None,
+        description="Stable object id for the object the transformation targets, when applicable"
+    )
+    continuity_action: str = Field(
+        default="transform",
+        description="Semantic lifecycle action (create|reuse|transform|remove|highlight)"
+    )
+    beat_id: str = Field(
+        default="beat_000",
+        description="Beat identifier tying this transformation to a visual beat"
     )
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
@@ -172,9 +254,36 @@ class Transformation(BaseModel):
 
         allowed = {'morph', 'highlight', 'move', 'fade_in', 'fade_out', 'scale'}
         if canonical not in allowed:
-            # Last resort: default to fade_in rather than crashing
-            canonical = 'fade_in'
+            raise ValueError(f"transformation_type must be one of {allowed}, got '{v}'")
         return canonical
+
+    @field_validator('continuity_action')
+    @classmethod
+    def validate_continuity_action(cls, v: str) -> str:
+        """Validate semantic continuity actions."""
+        allowed = set(CANONICAL_CONTINUITY_ACTIONS)
+        if v not in allowed:
+            raise ValueError(f"continuity_action must be one of {allowed}, got '{v}'")
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_target_object(cls, data: Any) -> Any:
+        """Support legacy target_object inputs while the pipeline migrates."""
+        if not isinstance(data, dict):
+            return data
+        if "source_object_id" not in data and "target_object" in data:
+            data["source_object_id"] = data["target_object"]
+        if "target_object_id" not in data and "target_object" in data:
+            data["target_object_id"] = data["target_object"]
+        if "animation_hint" in data and "parameters" not in data:
+            data["parameters"] = {"animation_hint": data["animation_hint"]}
+        return data
+
+    @property
+    def target_object(self) -> str:
+        """Backward-compatible alias used by older generator code."""
+        return self.source_object_id
 
 
 class EmphasisPoint(BaseModel):
@@ -191,6 +300,60 @@ class EmphasisPoint(BaseModel):
     )
 
 
+class SceneState(BaseModel):
+    """Explicit continuity boundary shared between scenes."""
+
+    active_object_ids: List[str] = Field(
+        default_factory=list,
+        description="Object ids that remain active at this boundary"
+    )
+    coordinate_systems: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of coordinate_system_id to semantic kind"
+    )
+    notation_bindings: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of notation_key to object_id"
+    )
+    character_roles: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of character_role to object_id"
+    )
+
+
+class VisualBeat(BaseModel):
+    """Beat-level visual unit aligned to the narration."""
+
+    beat_id: str = Field(..., description="Stable beat identifier")
+    narration_excerpt: str = Field(
+        default="",
+        description="Short narration excerpt anchoring the beat"
+    )
+    start_time: float = Field(..., ge=0.0, description="Beat start time in seconds")
+    end_time: float = Field(..., ge=0.0, description="Beat end time in seconds")
+    active_object_ids: List[str] = Field(
+        default_factory=list,
+        description="Objects expected to remain visible during this beat"
+    )
+    camera_action: str = Field(
+        default="static",
+        description="Camera action for this beat"
+    )
+    beat_goal: str = Field(
+        default="",
+        description="Narrative goal for the beat"
+    )
+
+    @field_validator('camera_action')
+    @classmethod
+    def validate_camera_action(cls, v: str) -> str:
+        """Validate beat-level camera directives."""
+        allowed = set(CANONICAL_CAMERA_ACTIONS)
+        if v not in allowed:
+            raise ValueError(f"camera_action must be one of {allowed}, got '{v}'")
+        return v
+
+
 class VisualIntent(BaseModel):
     """Visual intent specification for a scene."""
     
@@ -202,6 +365,18 @@ class VisualIntent(BaseModel):
         ...,
         description="Transformations to apply to objects"
     )
+    beats: List[VisualBeat] = Field(
+        default_factory=list,
+        description="Beat-by-beat structure aligned to narration timing"
+    )
+    scene_state_in: SceneState = Field(
+        default_factory=SceneState,
+        description="Continuity state entering the scene"
+    )
+    scene_state_out: SceneState = Field(
+        default_factory=SceneState,
+        description="Continuity state exiting the scene"
+    )
     emphasis_points: List[EmphasisPoint] = Field(
         default_factory=list,
         description="Points in time where content should be emphasized"
@@ -210,7 +385,7 @@ class VisualIntent(BaseModel):
 
 class Scene(BaseModel):
     """Single scene specification in the storyboard."""
-    
+
     scene_id: str = Field(..., description="Unique identifier for the scene")
     scene_index: int = Field(..., ge=0, description="Sequential index in the scene array")
     concept_id: str = Field(
@@ -235,7 +410,13 @@ class Scene(BaseModel):
         None,
         description="Difficulty level of the scene content"
     )
-    
+    source_beats: List[Beat] = Field(
+        default_factory=list,
+        description="The Beats from the unified VideoScript that were grouped "
+                    "into this scene by the chunker. Empty for legacy storyboards "
+                    "produced before Task 4 of the chunked-render plan."
+    )
+
     @field_validator('scene_id')
     @classmethod
     def validate_scene_id(cls, v: str) -> str:
@@ -256,10 +437,10 @@ class Scene(BaseModel):
 class StoryboardJSON(BaseModel):
     """
     Complete storyboard output from Script/Storyboard Architect.
-    
+
     Contains ordered scene specifications with narration and visual intent.
     """
-    
+
     pdf_metadata: PDFMetadataStoryboard = Field(
         ...,
         description="Metadata about the source PDF"
@@ -276,7 +457,7 @@ class StoryboardJSON(BaseModel):
         ...,
         description="Ordered array of scene specifications"
     )
-    
+
     @field_validator('scenes')
     @classmethod
     def validate_scenes_not_empty(cls, v: List[Scene]) -> List[Scene]:
@@ -284,7 +465,7 @@ class StoryboardJSON(BaseModel):
         if not v:
             raise ValueError("scenes list cannot be empty")
         return v
-    
+
     @field_validator('scenes')
     @classmethod
     def validate_scene_id_uniqueness(cls, v: List[Scene]) -> List[Scene]:
@@ -349,7 +530,7 @@ class StoryboardJSON(BaseModel):
                             "mathematical_objects": [
                                 {
                                     "object_type": "equation",
-                                    "content": "\\mathbb{R}^n",
+                                    "content": r"\mathbb{R}^n",
                                     "style": {"color": "blue", "position": "center"}
                                 }
                             ],
@@ -370,3 +551,20 @@ class StoryboardJSON(BaseModel):
             }
         }
     )
+
+
+# Sentinel that tells mypy / the old import that storyboard.py loaded cleanly.
+__all__ = [
+    "PDFMetadataStoryboard",
+    "Configuration",
+    "ConceptHierarchy",
+    "ObjectStyle",
+    "MathematicalObject",
+    "Transformation",
+    "EmphasisPoint",
+    "SceneState",
+    "VisualBeat",
+    "VisualIntent",
+    "Scene",
+    "StoryboardJSON",
+]

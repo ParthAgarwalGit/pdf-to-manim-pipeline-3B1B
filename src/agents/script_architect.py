@@ -10,11 +10,11 @@ concept extraction, dependency graph building, and data flow.
 
 import json
 import logging
-import re
-from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional, Set, Tuple
-import openai
 import os
+import re
+from typing import Any, Dict, List, Optional
+
+import openai
 
 
 from src.agents.base import (
@@ -34,12 +34,53 @@ from src.schemas.storyboard import (
     ObjectStyle,
     PDFMetadataStoryboard,
     Scene,
+    SceneState,
     StoryboardJSON,
     Transformation,
+    VisualBeat,
     VisualIntent,
 )
+from src.utils.manim_engine_contract import build_visual_intent_contract_prompt, CANONICAL_RENDER_HINTS, normalize_render_hint
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# F1 mitigation — concept-label canonicalization
+#
+# The script LLM might emit "sine" in beat 1 and "Sine Function" in beat 4.
+# Without normalization both pass through the ledger as distinct concepts
+# and the dedup rule loses force. The alias map covers the common drift
+# patterns we have seen on real PDFs; extend conservatively.
+# ─────────────────────────────────────────────────────────────────────────
+
+_CONCEPT_ALIASES = {
+    "sin": "sine",
+    "cos": "cosine",
+    "tan": "tangent",
+    "sine_function": "sine",
+    "cosine_function": "cosine",
+    "tangent_function": "tangent",
+    "trig_function": "trigonometric_function",
+    "trig_functions": "trigonometric_function",
+    "trigonometric_functions": "trigonometric_function",
+    "unit_circ": "unit_circle",
+    "the_unit_circle": "unit_circle",
+}
+
+
+def _canonicalize_concept(label: str) -> str:
+    """Return a normalized canonical form of a concept label.
+
+    Lowercases, strips, replaces internal whitespace and dashes with
+    underscores, and applies the alias map.
+    """
+    if not label:
+        return ""
+    s = label.strip().lower().replace("-", "_")
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return _CONCEPT_ALIASES.get(s, s)
 
 
 class ScriptArchitectInput(AgentInput):
@@ -65,33 +106,29 @@ class ScriptArchitectInput(AgentInput):
 
 
 class ScriptArchitectAgent(Agent):
-    """Agent responsible for generating scene-based storyboards with narration
-    
-    The ScriptArchitectAgent performs the following operations:
-    1. Analyze OCR output to identify core concepts and dependencies
-    2. Build concept dependency graph and perform topological sort
-    3. Decompose content into atomic scenes (30-90 second target)
-    4. Generate narration emphasizing intuition over formalism
-    5. Specify visual intent for each scene
-    6. Apply configuration parameters (verbosity, depth, audience)
-    7. Output structured Storyboard JSON
-    
-    The agent uses temperature=0 for LLM calls to maximize determinism and
-    implements retry logic for invalid JSON generation.
-    
-    Determinism (Requirements 10.2, 10.3, 10.4):
-    - Concept extraction: Deterministic regex patterns
-    - Dependency graph: Deterministic based on concept types
-    - Topological sort: Kahn's algorithm (deterministic)
-    - Scene ID generation: Sequential numbering (scene_001, scene_002, ...)
-    - LLM calls: temperature=0 (when implemented)
+    """Agent that generates a chunked storyboard from a unified video script.
+
+    Pipeline (see docs/superpowers/plans/2026-04-26-unified-script-chunked-render.md):
+      1. _generate_video_script — single LLM call produces a continuous
+         narration arc with an explicit concept-introduction ledger.
+      2. _chunk_script_into_scenes — deterministic chunker groups beats
+         into ~30-90s scenes; beats are atomic.
+      3. _generate_visual_intent_for_chunk — per-chunk visual planner
+         (currently a deterministic fallback; Task 7 replaces it with an
+         LLM-driven planner that receives the narrative briefing instead
+         of the full PDF).
+      4. _assemble_storyboard_from_script — derives concept_hierarchy from
+         the script's ledger and packages everything into a StoryboardJSON.
+
+    Determinism: scene ids are sequential (scene_001, scene_002, ...). The
+    chunker is fully deterministic given the same VideoScript.
     """
     
     # Configuration constants
     MIN_SCENE_DURATION = 30.0  # Minimum scene duration in seconds
     MAX_SCENE_DURATION = 90.0  # Maximum scene duration in seconds
     TARGET_SCENE_DURATION = 60.0  # Target scene duration in seconds
-    WORDS_PER_SECOND = 2.5  # Average narration speed
+    WORDS_PER_SECOND = 3.0  # Average narration speed used by prompt + TTS estimates
     MAX_JSON_RETRIES = 3  # Maximum retries for invalid JSON
     
     # Default configuration values
@@ -122,722 +159,577 @@ class ScriptArchitectAgent(Agent):
             logger.warning("OPENAI_API_KEY not found. ScriptArchitect will use mock fallbacks.")
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
-        """Execute storyboard generation
-        
+        """Execute storyboard generation via the unified-script + chunker flow.
+
+        Phase 1 — Generate ONE continuous video script (single LLM call).
+        Phase 2 — Deterministically chunk beats into render-sized scenes.
+        Phase 3 — Per-chunk visual planner attaches a VisualIntent to each
+                  scene. Failures fall back per-chunk so one bad chunk
+                  doesn't abort the whole storyboard (F6 mitigation).
+
         Args:
             input_data: ScriptArchitectInput with OCR output and configuration
-            
+
         Returns:
-            StoryboardJSON object with ordered scene specifications
-            
+            StoryboardJSON object with chunked scene specifications and a
+            concept hierarchy derived from the script's ledger.
+
         Raises:
-            AgentExecutionError: For unrecoverable failures
+            AgentExecutionError: For unrecoverable failures.
         """
         if not self.validate_input(input_data):
             raise AgentExecutionError(
                 error_code="INVALID_INPUT",
                 message="Input must be a ScriptArchitectInput object",
-                context={"input_type": type(input_data).__name__}
+                context={"input_type": type(input_data).__name__},
             )
-        
+
         script_input: ScriptArchitectInput = input_data
         ocr_output = script_input.ocr_output
         config = script_input.configuration
         review_feedback = script_input.review_feedback or []
-        
+
         logger.info(f"Starting storyboard generation for: {ocr_output.pdf_metadata.filename}")
-        logger.info(f"Configuration: verbosity={config.verbosity}, depth={config.depth}, audience={config.audience}")
+        logger.info(
+            f"Configuration: verbosity={config.verbosity}, depth={config.depth}, "
+            f"audience={config.audience}"
+        )
         if review_feedback:
             logger.info(f"Applying {len(review_feedback)} storyboard revision hints")
-        
+
         try:
-            # Step 1: Identify core concepts from OCR output
-            concepts = self._identify_concepts(ocr_output, config)
-            logger.info(f"Identified {len(concepts)} core concepts")
-            
-            # Step 2: Build concept dependency graph
-            dependency_graph = self._build_dependency_graph(concepts, ocr_output)
-            logger.info(f"Built dependency graph with {len(dependency_graph)} nodes")
-            
-            # Step 3: Perform topological sort for pedagogical ordering
-            ordered_concepts = self._topological_sort(dependency_graph)
-            logger.info(f"Ordered {len(ordered_concepts)} concepts pedagogically")
-            
-            # Step 4: Decompose into atomic scenes
-            scenes = self._decompose_into_scenes(
-                ordered_concepts,
-                ocr_output,
-                config,
-                review_feedback=review_feedback,
+            # Phase 1: ONE unified video script.
+            video_script = self._generate_video_script(ocr_output, config, review_feedback)
+            logger.info(
+                f"Generated video script: {len(video_script.beats)} beats, "
+                f"{len(video_script.concept_ledger())} unique concepts"
             )
-            logger.info(f"Decomposed content into {len(scenes)} scenes")
-            
-            # Step 5: Assemble storyboard JSON
-            storyboard = self._assemble_storyboard(
-                ocr_output,
-                config,
-                concepts,
-                scenes
+
+            # Phase 2: deterministic chunker (Task 4).
+            scenes = self._chunk_script_into_scenes(video_script)
+            logger.info(f"Chunked script into {len(scenes)} scenes")
+
+            # Phase 3: per-chunk visual intent.
+            # Until Task 7 lands the chunk-aware visual planner, we use the
+            # narration-derived fallback so the pipeline produces a valid
+            # storyboard end-to-end. F6: any per-chunk failure is isolated
+            # and never aborts the whole storyboard.
+            visual_failures: List[Dict[str, str]] = []
+            for scene in scenes:
+                try:
+                    scene.visual_intent = self._generate_visual_intent_for_chunk(
+                        scene=scene,
+                        video_script=video_script,
+                        config=config,
+                        review_feedback=review_feedback,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Visual intent failed for %s: %s — falling back to narration-derived intent",
+                        scene.scene_id, exc,
+                    )
+                    scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
+                    visual_failures.append({"scene_id": scene.scene_id, "error": str(exc)})
+
+            if visual_failures:
+                logger.warning(
+                    "Visual intent fallback used for %d/%d scenes",
+                    len(visual_failures), len(scenes),
+                )
+
+            storyboard = self._assemble_storyboard_from_script(
+                ocr_output, config, video_script, scenes,
             )
-            
             logger.info(f"Storyboard generation completed: {len(scenes)} scenes")
             return storyboard
-            
+
+        except AgentExecutionError:
+            raise
         except Exception as e:
             raise AgentExecutionError(
                 error_code="STORYBOARD_GENERATION_FAILED",
                 message=f"Failed to generate storyboard: {str(e)}",
                 context={
                     "filename": ocr_output.pdf_metadata.filename,
-                    "error": str(e)
-                }
+                    "error": str(e),
+                },
             )
-    
-    def _identify_concepts(
+
+    def _assemble_storyboard_from_script(
         self,
-        ocr_output: OCROutput,
-        config: Configuration
-    ) -> List[Dict[str, Any]]:
-        """Identify core concepts from OCR output
-        
-        Analyzes text and math expressions to identify definitions, theorems,
-        proofs, examples, and other pedagogical concepts.
-        
-        Args:
-            ocr_output: OCR output with extracted content
-            config: Configuration parameters
-            
-        Returns:
-            List of concept dictionaries with id, name, type, content, dependencies
-        """
-        concepts: List[Dict[str, Any]] = []
-        concept_id_counter = 1
-        
-        # Patterns for identifying different concept types
-        definition_patterns = [
-            r'(?i)definition\s*\d*[:\.]?\s*(.+?)(?=\n|$)',
-            r'(?i)we define\s+(.+?)\s+as',
-            r'(?i)let\s+(.+?)\s+be\s+(?:a|an|the)',
-        ]
-        
-        theorem_patterns = [
-            r'(?i)theorem\s*\d*[:\.]?\s*(.+?)(?=\n|$)',
-            r'(?i)proposition\s*\d*[:\.]?\s*(.+?)(?=\n|$)',
-            r'(?i)lemma\s*\d*[:\.]?\s*(.+?)(?=\n|$)',
-            r'(?i)corollary\s*\d*[:\.]?\s*(.+?)(?=\n|$)',
-        ]
-        
-        proof_patterns = [
-            r'(?i)proof[:\.]?\s*(.+?)(?=\n|$)',
-            r'(?i)we prove\s+(.+?)(?=\n|$)',
-        ]
-        
-        example_patterns = [
-            r'(?i)example\s*\d*[:\.]?\s*(.+?)(?=\n|$)',
-            r'(?i)for example[,\s]+(.+?)(?=\n|$)',
-        ]
-        
-        # Extract concepts from each page
-        for page in ocr_output.pages:
-            # Combine all text blocks for analysis
-            page_text = " ".join(block.text for block in page.text_blocks)
-            
-            # Identify definitions
-            for pattern in definition_patterns:
-                matches = re.finditer(pattern, page_text)
-                for match in matches:
-                    concept_name = match.group(1).strip()[:100]  # Limit length
-                    if concept_name:
-                        concepts.append({
-                            "concept_id": f"concept_{concept_id_counter:03d}",
-                            "concept_name": concept_name,
-                            "concept_type": "definition",
-                            "content": match.group(0),
-                            "page_number": page.page_number,
-                            "dependencies": []
-                        })
-                        concept_id_counter += 1
-            
-            # Identify theorems
-            for pattern in theorem_patterns:
-                matches = re.finditer(pattern, page_text)
-                for match in matches:
-                    concept_name = match.group(1).strip()[:100]
-                    if concept_name:
-                        concepts.append({
-                            "concept_id": f"concept_{concept_id_counter:03d}",
-                            "concept_name": concept_name,
-                            "concept_type": "theorem",
-                            "content": match.group(0),
-                            "page_number": page.page_number,
-                            "dependencies": []
-                        })
-                        concept_id_counter += 1
-            
-            # Identify proofs (skip if depth is introductory)
-            if config.depth != "introductory":
-                for pattern in proof_patterns:
-                    matches = re.finditer(pattern, page_text)
-                    for match in matches:
-                        concept_name = match.group(1).strip()[:100]
-                        if concept_name:
-                            concepts.append({
-                                "concept_id": f"concept_{concept_id_counter:03d}",
-                                "concept_name": concept_name,
-                                "concept_type": "proof",
-                                "content": match.group(0),
-                                "page_number": page.page_number,
-                                "dependencies": []
-                            })
-                            concept_id_counter += 1
-            
-            # Identify examples
-            for pattern in example_patterns:
-                matches = re.finditer(pattern, page_text)
-                for match in matches:
-                    concept_name = match.group(1).strip()[:100]
-                    if concept_name:
-                        concepts.append({
-                            "concept_id": f"concept_{concept_id_counter:03d}",
-                            "concept_name": concept_name,
-                            "concept_type": "example",
-                            "content": match.group(0),
-                            "page_number": page.page_number,
-                            "dependencies": []
-                        })
-                        concept_id_counter += 1
-        
-        # If no concepts found, create a general introduction concept
-        if not concepts:
-            concepts.append({
-                "concept_id": "concept_001",
-                "concept_name": "Introduction",
-                "concept_type": "introduction",
-                "content": "General introduction to the document content",
-                "page_number": 1,
-                "dependencies": []
-            })
-        
-        return concepts
-    
-    def _build_dependency_graph(
-        self,
-        concepts: List[Dict[str, Any]],
-        ocr_output: OCROutput
-    ) -> Dict[str, List[str]]:
-        """Build concept dependency graph
-        
-        Analyzes concept relationships to determine which concepts depend on others.
-        Uses heuristics based on concept types and page ordering.
-        
-        Args:
-            concepts: List of identified concepts
-            ocr_output: OCR output for additional context
-            
-        Returns:
-            Adjacency list representation of dependency graph
-        """
-        graph: Dict[str, List[str]] = defaultdict(list)
-        
-        # Initialize graph with all concept IDs
-        for concept in concepts:
-            graph[concept["concept_id"]] = []
-        
-        # Build dependencies based on concept types and ordering
-        for i, concept in enumerate(concepts):
-            concept_id = concept["concept_id"]
-            concept_type = concept["concept_type"]
-            
-            # Definitions typically have no dependencies (foundational)
-            if concept_type == "definition":
-                # Check if this definition references earlier definitions
-                for j in range(i):
-                    earlier_concept = concepts[j]
-                    if earlier_concept["concept_type"] == "definition":
-                        # Simple heuristic: check if earlier concept name appears in current content
-                        if earlier_concept["concept_name"].lower() in concept["content"].lower():
-                            concept["dependencies"].append(earlier_concept["concept_id"])
-            
-            # Theorems depend on relevant definitions
-            elif concept_type == "theorem":
-                for j in range(i):
-                    earlier_concept = concepts[j]
-                    if earlier_concept["concept_type"] in ["definition", "theorem"]:
-                        # Check for name references
-                        if earlier_concept["concept_name"].lower() in concept["content"].lower():
-                            concept["dependencies"].append(earlier_concept["concept_id"])
-            
-            # Proofs depend on the theorem they prove
-            elif concept_type == "proof":
-                # Find the most recent theorem
-                for j in range(i - 1, -1, -1):
-                    earlier_concept = concepts[j]
-                    if earlier_concept["concept_type"] == "theorem":
-                        concept["dependencies"].append(earlier_concept["concept_id"])
-                        break
-            
-            # Examples depend on relevant definitions and theorems
-            elif concept_type == "example":
-                for j in range(i):
-                    earlier_concept = concepts[j]
-                    if earlier_concept["concept_type"] in ["definition", "theorem"]:
-                        if earlier_concept["concept_name"].lower() in concept["content"].lower():
-                            concept["dependencies"].append(earlier_concept["concept_id"])
-            
-            # Add dependencies to graph
-            for dep_id in concept["dependencies"]:
-                if dep_id in graph:
-                    graph[dep_id].append(concept_id)
-        
-        return graph
-    
-    def _topological_sort(
-        self,
-        graph: Dict[str, List[str]]
-    ) -> List[str]:
-        """Perform topological sort on dependency graph
-        
-        Uses Kahn's algorithm for topological sorting. Handles cycles by
-        breaking the weakest dependency (most recent edge).
-        
-        This operation is deterministic (Requirements 10.2, 10.3):
-        - Kahn's algorithm processes nodes in a deterministic order
-        - Cycle breaking uses alphabetical sorting for consistency
-        
-        Args:
-            graph: Adjacency list representation of dependency graph
-            
-        Returns:
-            List of concept IDs in pedagogical order
-        """
-        # Calculate in-degrees
-        in_degree: Dict[str, int] = {node: 0 for node in graph}
-        for node in graph:
-            for neighbor in graph[node]:
-                in_degree[neighbor] += 1
-        
-        # Initialize queue with nodes having no dependencies
-        queue = deque([node for node in graph if in_degree[node] == 0])
-        sorted_order: List[str] = []
-        
-        # Process nodes in topological order
-        while queue:
-            node = queue.popleft()
-            sorted_order.append(node)
-            
-            # Reduce in-degree for neighbors
-            for neighbor in graph[node]:
-                in_degree[neighbor] -= 1
-                if in_degree[neighbor] == 0:
-                    queue.append(neighbor)
-        
-        # Handle cycles: if not all nodes processed, there's a cycle
-        if len(sorted_order) < len(graph):
-            logger.warning("Dependency cycle detected, breaking weakest dependencies")
-            
-            # Find nodes still with dependencies (part of cycle)
-            remaining_nodes = [node for node in graph if node not in sorted_order]
-            
-            # Add remaining nodes in deterministic sorted order (break cycle)
-            # Sort alphabetically to ensure deterministic ordering
-            sorted_order.extend(sorted(remaining_nodes))
-        
-        return sorted_order
-    
-    def _decompose_into_scenes(
-        self,
-        ordered_concepts: List[str],
         ocr_output: OCROutput,
         config: Configuration,
-        review_feedback: Optional[List[str]] = None,
-    ) -> List[Scene]:
-        """Decompose content into atomic scenes
-        
-        Creates one scene per concept with narration, visual intent, and duration.
-        Applies configuration parameters to adjust content.
-        
-        Args:
-            ordered_concepts: List of concept IDs in pedagogical order
-            ocr_output: OCR output for content extraction
-            config: Configuration parameters
-            
-        Returns:
-            List of Scene objects
+        video_script,
+        scenes: List[Scene],
+    ) -> StoryboardJSON:
+        """Build a StoryboardJSON from a unified VideoScript + chunked scenes.
+
+        ``concept_hierarchy`` is derived from the script's deduped concept
+        ledger — one entry per canonical concept in first-introduction order,
+        with each concept depending on every concept introduced before it
+        (a flat dependency line that mirrors the linear narrative).
         """
-        scenes: List[Scene] = []
-        
-        # Build concept lookup
-        concept_map = {}
-        for page in ocr_output.pages:
-            page_text = " ".join(block.text for block in page.text_blocks)
-            # Store page text for concept lookup
-            concept_map[page.page_number] = page_text
-        
-        for scene_index, concept_id in enumerate(ordered_concepts):
-            # Generate scene for this concept
-            scene = self._generate_scene(
-                concept_id=concept_id,
-                scene_index=scene_index,
-                ocr_output=ocr_output,
-                config=config,
-                review_feedback=review_feedback,
+        pdf_metadata = PDFMetadataStoryboard(
+            filename=ocr_output.pdf_metadata.filename,
+            page_count=ocr_output.pdf_metadata.page_count,
+        )
+        ledger = video_script.concept_ledger()
+        concept_hierarchy = [
+            ConceptHierarchy(
+                concept_id=concept,
+                concept_name=concept.replace("_", " ").title(),
+                dependencies=ledger[:i],
             )
-            scenes.append(scene)
-        
-        return scenes
-    
-    def _generate_scene(
-        self,
-        concept_id: str,
-        scene_index: int,
-        ocr_output: OCROutput,
-        config: Configuration,
-        review_feedback: Optional[List[str]] = None,
-    ) -> Scene:
-        """Generate a single scene for a concept
-        
-        Args:
-            concept_id: ID of the concept for this scene
-            scene_index: Sequential index of the scene
-            ocr_output: OCR output for content
-            config: Configuration parameters
-            
-        Returns:
-            Scene object with narration and visual intent
-        """
-        # Generate scene ID deterministically from scene index
-        # Format: scene_001, scene_002, etc. (Requirements 10.2, 10.4)
-        scene_id = f"scene_{scene_index + 1:03d}"
-        
-        # Generate narration FIRST — this is the creative backbone
-        narration = self._generate_narration(
-            concept_id,
-            config,
-            ocr_output,
-            review_feedback=review_feedback,
+            for i, concept in enumerate(ledger)
+        ]
+        return StoryboardJSON(
+            pdf_metadata=pdf_metadata,
+            configuration=config,
+            concept_hierarchy=concept_hierarchy,
+            scenes=scenes,
         )
 
-        # Generate visual intent SECOND — pass narration so visuals match what's spoken
-        visual_intent = self._generate_visual_intent(
-            concept_id,
-            config,
-            ocr_output,
-            narration=narration,
-            review_feedback=review_feedback,
+    def _generate_visual_intent_for_chunk(
+        self,
+        scene: Scene,
+        video_script,
+        config: Configuration,
+        review_feedback: List[str],
+    ) -> VisualIntent:
+        """Plan visuals for one chunk via a chunk-scoped LLM call.
+
+        The prompt receives:
+          - the chunk's narration (audio for THIS scene only),
+          - the visual hints written by the script architect for this chunk,
+          - the list of concepts introduced in EARLIER chunks (the briefing —
+            the viewer has already seen these; reference, do not redefine),
+          - the engine contract (canonical object types, render hints,
+            continuity actions, …).
+
+        The full PDF / OCR text is intentionally NOT passed; that data is
+        the script generator's responsibility. Empty / malformed LLM output
+        falls back to the deterministic narration-derived intent so a single
+        bad chunk never aborts the storyboard (F6 mitigation).
+        """
+        if not os.getenv("OPENAI_API_KEY") or self.client is None:
+            if self.strict:
+                raise AgentExecutionError(
+                    "MISSING_API_KEY",
+                    "OPENAI_API_KEY is required in --strict mode for visual intent",
+                )
+            return self._generate_fallback_visual_intent(scene.narration)
+
+        chunk_beats = list(getattr(scene, "source_beats", []) or [])
+        chunk_concepts: List[str] = []
+        for b in chunk_beats:
+            for c in b.introduces_concepts:
+                if c not in chunk_concepts:
+                    chunk_concepts.append(c)
+
+        # Concepts taught in earlier chunks (everything before this scene's first beat).
+        chunk_beat_ids = {b.beat_id for b in chunk_beats}
+        earlier_concepts: List[str] = []
+        for b in video_script.beats:
+            if b.beat_id in chunk_beat_ids:
+                break
+            for c in b.introduces_concepts:
+                if c not in earlier_concepts and c not in chunk_concepts:
+                    earlier_concepts.append(c)
+
+        visual_hints = (
+            "\n".join(f"- {b.visual_hint}" for b in chunk_beats)
+            or "- (no specific hints)"
         )
 
-        # Duration is driven by narration word count (the source of truth)
-        duration = self._estimate_duration(narration, visual_intent)
-        
-        # Determine dependencies (previous scene if not first)
-        dependencies = []
-        if scene_index > 0:
-            dependencies.append(f"scene_{scene_index:03d}")
-        
-        return Scene(
-            scene_id=scene_id,
-            scene_index=scene_index,
-            concept_id=concept_id,
-            narration=narration,
-            visual_intent=visual_intent,
-            duration_estimate=duration,
-            dependencies=dependencies
+        word_count = len(scene.narration.split())
+        target = round(word_count / self.WORDS_PER_SECOND, 1)
+
+        review_block = ""
+        if review_feedback:
+            review_block = (
+                "\nREVISION FEEDBACK:\n"
+                + "\n".join(f"- {r}" for r in review_feedback[:8])
+                + "\n"
+            )
+
+        earlier_block = ""
+        if earlier_concepts:
+            earlier_block = (
+                "\nCONCEPTS ALREADY INTRODUCED in EARLIER scenes (the viewer has "
+                "seen these — reference them, do NOT redefine):\n"
+                + "\n".join(f"  - {c}" for c in earlier_concepts)
+                + "\n"
+            )
+
+        engine_contract = build_visual_intent_contract_prompt()
+
+        prompt = (
+            "You are a 3Blue1Brown animation architect.\n\n"
+            "--- CHUNK NARRATION (audio for THIS scene only) ---\n"
+            f"{scene.narration}\n"
+            "--- END NARRATION ---\n\n"
+            f"NEW CONCEPTS INTRODUCED IN THIS CHUNK: "
+            f"{', '.join(chunk_concepts) or '(none)'}\n"
+            f"{earlier_block}"
+            "VISUAL HINTS FROM THE SCRIPT WRITER:\n"
+            f"{visual_hints}\n\n"
+            f"TIMING: {word_count} words at ~3 wps => visuals should fill ~{target}s.\n"
+            f"{review_block}"
+            f"{engine_contract}\n"
+            "Return JSON with keys: objects (list), transformations (list), "
+            "beats (list), scene_state_in (object), scene_state_out (object), "
+            "emphasis_points (list)."
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-5",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(response.choices[0].message.content)
+        except Exception as exc:  # malformed JSON / API error -> deterministic fallback
+            logger.warning(
+                "Visual-intent LLM call failed for %s: %s. Using fallback.",
+                scene.scene_id, exc,
+            )
+            return self._generate_fallback_visual_intent(scene.narration)
+
+        return self._visual_intent_from_json(data, fallback_narration=scene.narration)
+
+    def _visual_intent_from_json(self, data: Dict[str, Any], fallback_narration: str) -> VisualIntent:
+        """Parse LLM JSON into a VisualIntent.
+
+        Accepts either ``objects`` or ``mathematical_objects`` for the object
+        list (LLMs drift between the two). Empty / malformed payloads fall
+        back to ``_generate_fallback_visual_intent`` so the pipeline never
+        ships a blank scene (F6 mitigation).
+        """
+        from src.schemas.storyboard import EmphasisPoint, SceneState, VisualBeat
+
+        if not isinstance(data, dict):
+            return self._generate_fallback_visual_intent(fallback_narration)
+
+        raw_objects = data.get("objects") or data.get("mathematical_objects") or []
+        raw_trans = data.get("transformations") or []
+        raw_beats = data.get("beats") or []
+        raw_emphasis = data.get("emphasis_points") or []
+        raw_in = data.get("scene_state_in") or {}
+        raw_out = data.get("scene_state_out") or {}
+
+        if not raw_objects:
+            # An empty visual intent is unrenderable — degrade to the
+            # narration-derived placeholder so the scene at least produces
+            # something on screen.
+            return self._generate_fallback_visual_intent(fallback_narration)
+
+        try:
+            objs = [MathematicalObject.model_validate(o) for o in raw_objects]
+            trans = [Transformation.model_validate(t) for t in raw_trans]
+            beats = [VisualBeat.model_validate(b) for b in raw_beats]
+            emphasis = [EmphasisPoint.model_validate(e) for e in raw_emphasis]
+            state_in = SceneState.model_validate(raw_in if isinstance(raw_in, dict) else {})
+            state_out = SceneState.model_validate(raw_out if isinstance(raw_out, dict) else {})
+        except Exception as exc:
+            logger.warning(
+                "Visual-intent JSON failed schema validation (%s); using fallback.",
+                exc,
+            )
+            return self._generate_fallback_visual_intent(fallback_narration)
+
+        return VisualIntent(
+            mathematical_objects=objs,
+            transformations=trans,
+            beats=beats,
+            scene_state_in=state_in,
+            scene_state_out=state_out,
+            emphasis_points=emphasis,
         )
     
-    def _generate_narration(
+    def _generate_video_script(
         self,
-        concept_id: str,
-        config: Configuration,
         ocr_output: OCROutput,
+        config: Configuration,
         review_feedback: Optional[List[str]] = None,
-    ) -> str:
-        """Generate narration text for a concept using LLM
-        
-        Args:
-            concept_id: ID of the concept
-            config: Configuration parameters
-            ocr_output: OCR output for content
-            
-        Returns:
-            Narration text string
+    ):
+        """Generate ONE continuous video script with a concept-introduction ledger.
+
+        This replaces the per-concept narration loop. The viewer sees a
+        single coherent storyline; later beats reference earlier ones instead
+        of re-explaining them.
+
+        F1 mitigation: every concept label is canonicalized via
+        ``_canonicalize_concept`` so aliases collapse before the
+        ``VideoScript`` ledger is built.
+
+        Returns a :class:`src.schemas.video_script.VideoScript`.
         """
-        # 1. Safety Check: If no API key, fall back to the old mock logic
+        from src.schemas.video_script import VideoScript, Beat
+
+        # Phase-1 fallback: no API key. Used by tests and offline runs.
         if not os.getenv("OPENAI_API_KEY"):
             if self.strict:
                 raise AgentExecutionError(
                     "MISSING_API_KEY",
-                    "OPENAI_API_KEY is required in --strict mode for narration generation"
+                    "OPENAI_API_KEY is required in --strict mode for video script generation",
                 )
-            logger.warning("No OpenAI API key found. Using mock narration.")
-            return self._generate_mock_narration_fallback(concept_id, config)
+            logger.warning("No OpenAI API key found — using mock VideoScript fallback.")
+            return self._mock_video_script_fallback(ocr_output, config)
 
-        try:
-            # 2. Extract Context — full OCR text + extracted math
-            context_text = ""
-            math_expressions = []
-            for page in ocr_output.pages:
-                context_text += " ".join(block.text for block in page.text_blocks) + "\n"
-                for expr in page.math_expressions:
-                    if not expr.extraction_failed:
-                        math_expressions.append(expr.latex)
+        # Build full source-material context — only this call sees the full PDF.
+        # Downstream chunks see only their slice + the narrative briefing
+        # (Tasks 7-8 enforce that).
+        source_text = ""
+        math_expressions: List[str] = []
+        for page in ocr_output.pages:
+            source_text += " ".join(b.text for b in page.text_blocks) + "\n"
+            for expr in page.math_expressions:
+                if not expr.extraction_failed:
+                    math_expressions.append(expr.latex)
 
-            math_block = ""
-            if math_expressions:
-                math_block = "\n--- KEY FORMULAS FROM THE PDF ---\n"
-                math_block += "\n".join(f"  • {e}" for e in math_expressions[:20])
-                math_block += "\n---------------------------------\n"
+        math_block = ""
+        if math_expressions:
+            math_block = (
+                "\n--- KEY FORMULAS ---\n"
+                + "\n".join(f"  • {e}" for e in math_expressions[:30])
+                + "\n"
+            )
 
-            # 3. Style nuances from config
-            verbosity_instruction = "Provide a balanced explanation."
-            if config.verbosity == "low":
-                verbosity_instruction = "Keep it concise. Focus ONLY on the fundamental idea."
-            elif config.verbosity == "high":
-                verbosity_instruction = "Be detailed. Connect this to previous concepts, explain why it's important, and explicitly mention how the visual elements help build intuition."
+        review_block = ""
+        if review_feedback:
+            review_block = (
+                "\nREVISION FEEDBACK:\n"
+                + "\n".join(f"- {r}" for r in review_feedback[:8])
+                + "\n"
+            )
 
-            audience_instruction = "Build understanding through clear, standard academic examples."
-            if config.audience == "high-school":
-                audience_instruction = "Use relatable, real-world examples from everyday life. Avoid dense jargon."
-            elif config.audience == "graduate":
-                audience_instruction = "Focus on theoretical implications, generalizations, and formal rigor."
+        audience_line = {
+            "high-school": "Use real-world analogies; avoid jargon.",
+            "graduate": "Lean into theoretical structure and generalizations.",
+        }.get(config.audience, "Balance intuition with mathematical structure.")
 
-            review_block = ""
-            if review_feedback:
-                review_block = "\nREVISION FEEDBACK FROM THE LAST QUALITY PASS:\n"
-                review_block += "\n".join(f"- {item}" for item in review_feedback[:8])
-                review_block += "\nAddress these issues directly in the revised narration.\n"
+        verbosity_line = {
+            "low": "Be terse — only the core ideas.",
+            "high": "Be detailed; explain why each step matters.",
+        }.get(config.verbosity, "Balanced explanation.")
 
-            # 4. Construct the Prompt — anchored to actual PDF content
-            prompt = f"""You are a world-class educational scriptwriter like Grant Sanderson (3Blue1Brown).
+        prompt = f"""You are a Grant Sanderson–style educational scriptwriter (3Blue1Brown).
 
---- SOURCE MATERIAL (extracted from the PDF) ---
-{context_text[:4000]}
+--- SOURCE MATERIAL ---
+{source_text[:8000]}
 {math_block}
 --- END SOURCE MATERIAL ---
 
-TASK: Write a narration script that EXPLAINS the content above.
+TASK: Write ONE continuous video script that explains the source material as a single
+coherent story. The output is a list of BEATS. Each beat is one paragraph of spoken
+narration paired with a short visual description.
 
-CRITICAL CONTENT RULES:
-1. You MUST reference the specific definitions, formulas, and examples from
-   the source material.  If the PDF defines foundational formulae to the concepts like sin θ = opposite / hypotenuse in trigonometry, then
-   your narration must state that exact relationship and explain it.
-2. Every formula listed above should be mentioned and explained intuitively.
-3. Build deeper understanding by connecting the formulas to visual intuition
-   (e.g. "sin θ equals the y-coordinate on the unit circle" if the PDF
-   covers unit circles).  This deeper insight is what makes it 3Blue1Brown.
-4. Do NOT invent examples that contradict or ignore the source material.
-   Extend and illustrate, but stay faithful. If a visually explainable example is present in the pdf, you MUST use it.
-5. EVERY concrete example you mention (like a specific triangle with
-   sides 6 and 10) MUST be something that can be animated. If you mention
-   it in words, the viewer will expect to see it on screen.
+CRITICAL RULES:
+1. Every concept is introduced AT MOST ONCE. Once introduced, later beats may
+   reference it but MUST NOT redefine or re-derive it.
+2. Beats build on each other. A later beat may say "recall the unit circle from
+   earlier" but must not re-explain what the unit circle is.
+3. Mark `introduces_concepts` for each beat with the canonical labels first
+   taught in that beat (e.g. "sine", "unit_circle"). Use lowercase, underscored.
+4. Mark `references_prior_beats` with the beat_ids whose visuals/ideas this
+   beat builds on.
+5. Cover every formula and definition in the source material exactly once.
+6. Aim for 8–20 beats total. Each beat MUST be 40–80 words of narration —
+   if a topic needs more, split into multiple beats with references_prior_beats.
 
-STYLE GUIDELINES:
-1. TONE: Friendly, conversational, and intuitive.
-2. VERBOSITY ({config.verbosity}): {verbosity_instruction}
-3. AUDIENCE ({config.audience}): {audience_instruction}
-4. FORMAT: Return ONLY the spoken text. No markdown, no "Scene 1:", no
-   stage directions, no headers.
-{review_block}
-"""
-
-            # 5. Call the API
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2, # Slight creativity allowed, but mostly deterministic
-            )
-            
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"Failed to generate narration via LLM: {e}")
-            return f"Error generating narration for {concept_id}. Please check logs."
-
-    def _generate_mock_narration_fallback(self, concept_id, config):
-        """Helper to keep the old mock logic accessible if API fails"""
-        base = f"Let's explore the concept of {concept_id}. "
-        if config.verbosity == "low": return base + "This is a fundamental idea."
-        if config.audience == "high-school": return base + "Imagine this in real life."
-        return base + "This concept is crucial."
-    
-    def _generate_visual_intent(
-        self,
-        concept_id: str,
-        config: Configuration,
-        ocr_output: OCROutput,
-        narration: str = "",
-        review_feedback: Optional[List[str]] = None,
-    ) -> VisualIntent:
-        """Generate visual intent for a concept, synchronized with narration.
-
-        The narration is the single source of truth. Visual intent must depict
-        exactly what the narration describes, in the same order and at matching
-        timestamps so that the final video and TTS audio stay in lock-step.
-
-        Args:
-            concept_id: ID of the concept
-            config: Configuration parameters
-            ocr_output: OCR output for math expressions
-            narration: The already-generated narration text for this scene.
-                       Visuals are planned to match this narration beat-by-beat.
-
-        Returns:
-            VisualIntent object with structured animation plan
-        """
-        # 1. Safety Check: Fallback if no API key
-        if not os.getenv("OPENAI_API_KEY"):
-            if self.strict:
-                raise AgentExecutionError(
-                    "MISSING_API_KEY",
-                    "OPENAI_API_KEY is required in --strict mode for visual intent generation"
-                )
-            logger.warning("No OpenAI API key found. Using mock visual intent.")
-            return self._generate_mock_visual_fallback(concept_id)
-
-        try:
-            # 2. Extract Math/Text Context from OCR
-            math_context = []
-            for page in ocr_output.pages:
-                for expr in page.math_expressions:
-                    if not expr.extraction_failed:
-                        math_context.append(expr.latex)
-
-            context_str = f"Available Math: {', '.join(math_context[:10])}" if math_context else "No math expressions extracted."
-
-            # 3. Compute timing budget from narration
-            word_count = len(narration.split())
-            tts_duration = round(word_count / 3.0, 1)  # ~3 words/sec for TTS
-
-            review_block = ""
-            if review_feedback:
-                review_block = "\nREVISION FEEDBACK TO INCORPORATE:\n"
-                review_block += "\n".join(f"- {item}" for item in review_feedback[:8])
-                review_block += "\n"
-
-            # 4. Construct the narration-aware prompt
-            prompt = f"""
-You are a 3Blue1Brown animation architect.
-
-CONCEPT: {concept_id}
-MATH CONTEXT: {context_str}
-
---- NARRATION (this is the AUDIO the viewer will hear) ---
-{narration[:4000]}
---- END NARRATION ---
-
-TIMING: The narration is ~{word_count} words. At ~3 words/sec TTS this
-will produce ~{tts_duration}s of audio. Your visual plan MUST fill
-exactly {tts_duration}s of screen time.
+STYLE:
+- Audience ({config.audience}): {audience_line}
+- Verbosity ({config.verbosity}): {verbosity_line}
+- Tone: Friendly, intuitive, conversational.
+- Visual hint per beat: 1–2 sentences describing what is on screen.
 {review_block}
 
-TASK — Plan Manim visuals that stay perfectly in sync with the narration:
-
-1. Split the narration into BEATS (logical paragraphs / sentences).
-   For each beat, specify the objects on screen and the animations.
-2. Every example or metaphor mentioned in the narration MUST have a
-   matching visual (equation, graph, geometric shape, or diagram).
-   If the narration contains a discussion-only aside with no natural
-   visual, use a "pi_character" object (a blue Pi character talking
-   to 3 smaller dark-brown Pi characters — 3Blue1Brown style).
-3. Objects must NOT overlap. Use these screen regions:
-   - "top": title / section headers
-   - "center": main equation or primary visual
-   - "bottom_left": axes / graphs
-   - "bottom_right": supplementary labels
-   - "right": side notes / explanations
-   When a region is reused, emit a FadeOut for the previous occupant first.
-4. Transformation timings must sum to ≈{tts_duration}s total, matching
-   the narration pace. Include self.wait() gaps for the narrator to speak
-   between animations.
-
-Return JSON in this EXACT schema:
+Return JSON in this EXACT shape:
 {{
+  "title": "...",
   "beats": [
     {{
-      "beat_index": 0,
-      "narration_excerpt": "first ~15 words of this beat...",
-      "start_time": 0.0,
-      "end_time": 12.0
-    }}
-  ],
-  "objects": [
-    {{
-      "id": "obj_0",
-      "type": "equation|text|graph|geometric_shape|pi_character",
-      "content": "LaTeX or description",
-      "color": "BLUE",
-      "position": "center|top|bottom_left|bottom_right|right"
-    }}
-  ],
-  "transformations": [
-    {{
-      "type": "Write|FadeIn|FadeOut|Transform|ReplacementTransform|Create|Indicate",
-      "target": "obj_0",
-      "timing": 1.0,
-      "beat_index": 0
-    }}
-  ],
-  "emphasis_points": [
-    {{
-      "timestamp": 2.0,
-      "description": "Focus on the exponent"
+      "beat_id": "beat_001",
+      "narration": "spoken text...",
+      "visual_hint": "what is on screen during this beat",
+      "introduces_concepts": ["concept_label", ...],
+      "references_prior_beats": ["beat_001", ...]
     }}
   ]
 }}
 """
 
-            # 5. Call LLM
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={ "type": "json_object" }
+        response = self.client.chat.completions.create(
+            model="gpt-5",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(response.choices[0].message.content)
+
+        beats = []
+        for b in data.get("beats", []):
+            beats.append(Beat(
+                beat_id=b["beat_id"],
+                narration=b["narration"],
+                visual_hint=b.get("visual_hint", ""),
+                # F1: canonicalize labels here so the ledger is consistent
+                # even if the LLM emitted "Sine Function" / "sin" / "sine".
+                introduces_concepts=[
+                    _canonicalize_concept(c) for c in b.get("introduces_concepts", [])
+                    if _canonicalize_concept(c)
+                ],
+                references_prior_beats=b.get("references_prior_beats", []),
+            ))
+
+        return VideoScript(title=data.get("title", ""), beats=beats)
+
+    def _chunk_script_into_scenes(self, script) -> List[Scene]:
+        """Group beats into ~30-90 s scenes (Task 4 chunker).
+
+        Greedy packer: walk the beats in order, accumulating beats into the
+        current chunk until adding the next beat would push the chunk over
+        ``MAX_SCENE_DURATION``. A beat is atomic — never split. If a single
+        beat exceeds ``MAX_SCENE_DURATION``, it becomes its own oversized
+        chunk and a WARNING is logged (F3 mitigation).
+
+        Source beats are stored on ``Scene.source_beats`` as a real Pydantic
+        field so they survive ``model_dump()`` round-trips (F5 mitigation).
+        """
+        from src.schemas.video_script import Beat, VideoScript
+
+        def beat_duration(b) -> float:
+            return len(b.narration.split()) / self.WORDS_PER_SECOND
+
+        chunks: List[List[Beat]] = []
+        current: List[Beat] = []
+        current_dur = 0.0
+
+        for beat in script.beats:
+            bd = beat_duration(beat)
+            if bd > self.MAX_SCENE_DURATION:
+                # F3: oversized beat — log a warning and ship it as a single chunk.
+                logger.warning(
+                    "Beat %s narration is %.1fs (>%.1fs MAX_SCENE_DURATION); "
+                    "shipping as oversized chunk. Tighten the script-LLM prompt "
+                    "to keep beats under 80 words.",
+                    beat.beat_id, bd, self.MAX_SCENE_DURATION,
+                )
+            # If adding this beat overflows the current chunk, flush first.
+            if current and current_dur + bd > self.MAX_SCENE_DURATION:
+                chunks.append(current)
+                current, current_dur = [], 0.0
+            current.append(beat)
+            current_dur += bd
+            # Close the chunk once we've crossed TARGET to avoid trailing tinies.
+            if current_dur >= self.TARGET_SCENE_DURATION:
+                chunks.append(current)
+                current, current_dur = [], 0.0
+        if current:
+            chunks.append(current)
+
+        # Concept tracking: each scene's concept_id is the first canonical
+        # concept introduced in its beats. Reference-only chunks inherit the
+        # most-recently introduced concept so StoryboardJSON's cross-validator
+        # stays satisfied.
+        most_recent_concept: Optional[str] = None
+        # Pre-compute the global ledger so we have a fallback for purely-
+        # reference chunks at the very start of the video (none introduced yet).
+        for beat in script.beats:
+            for c in beat.introduces_concepts:
+                most_recent_concept = c
+                break
+            if most_recent_concept:
+                break
+        # Reset for the actual loop
+        most_recent_concept_iter = None
+
+        scenes: List[Scene] = []
+        for idx, chunk_beats in enumerate(chunks):
+            narration = "\n\n".join(b.narration for b in chunk_beats)
+            word_count = sum(len(b.narration.split()) for b in chunk_beats)
+            # Honour the floor (MIN_SCENE_DURATION) but allow oversized
+            # chunks to keep their natural duration.
+            duration = max(self.MIN_SCENE_DURATION, word_count / self.WORDS_PER_SECOND)
+            scene_id = f"scene_{idx + 1:03d}"
+
+            # Pick the chunk's primary concept: first newly introduced in this
+            # chunk, else the most-recent introduced earlier, else the global
+            # first-introduced (the oldest chunk-1 case).
+            chunk_first_concept: Optional[str] = None
+            for b in chunk_beats:
+                for c in b.introduces_concepts:
+                    chunk_first_concept = c
+                    break
+                if chunk_first_concept:
+                    break
+            scene_concept_id = (
+                chunk_first_concept
+                or most_recent_concept_iter
+                or most_recent_concept
+                or chunk_beats[0].beat_id  # absolute fallback (no concepts anywhere)
             )
+            if chunk_first_concept:
+                most_recent_concept_iter = chunk_first_concept
 
-            data = json.loads(response.choices[0].message.content)
+            scenes.append(Scene(
+                scene_id=scene_id,
+                scene_index=idx,
+                concept_id=scene_concept_id,
+                narration=narration,
+                visual_intent=self._empty_visual_intent_placeholder(),
+                duration_estimate=round(duration, 1),
+                dependencies=[f"scene_{idx:03d}"] if idx > 0 else [],
+                source_beats=chunk_beats,
+            ))
 
-            # 6. Map JSON back to project classes
+        return scenes
 
-            # A. Mathematical Objects
-            math_objs = []
-            for obj in data.get('objects', []):
-                math_objs.append(MathematicalObject(
-                    object_type=obj.get('type', 'text'),
-                    content=obj.get('content', ''),
-                    style=ObjectStyle(
-                        color=obj.get('color', 'WHITE'),
-                        position=obj.get('position', 'center')
-                    )
-                ))
+    def _empty_visual_intent_placeholder(self) -> VisualIntent:
+        """Visual intent left empty by the chunker; populated in Task 7
+        by the per-chunk visual planner."""
+        return VisualIntent(
+            mathematical_objects=[],
+            transformations=[],
+            beats=[],
+            scene_state_in=SceneState(),
+            scene_state_out=SceneState(),
+            emphasis_points=[],
+        )
 
-            # B. Transformations
-            trans = []
-            for t in data.get('transformations', []):
-                trans.append(Transformation(
-                    transformation_type=t.get('type', 'FadeIn'),
-                    target_object=t.get('target', 'obj_0'),
-                    parameters={
-                        "beat_index": t.get('beat_index', 0)
-                    },
-                    timing=float(t.get('timing', 1.0))
-                ))
+    def _mock_video_script_fallback(self, ocr_output, config):
+        """Deterministic fallback for runs without OPENAI_API_KEY.
 
-            # C. Emphasis Points
-            emphasis = []
-            for e in data.get('emphasis_points', []):
-                emphasis.append(EmphasisPoint(
-                    timestamp=float(e.get('timestamp', 0.0)),
-                    description=e.get('description', 'Key moment')
-                ))
-
-            return VisualIntent(
-                mathematical_objects=math_objs,
-                transformations=trans,
-                emphasis_points=emphasis
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to generate visual intent via LLM: {e}", exc_info=True)
-            logger.warning("Falling back to narration-derived visual intent")
-            return self._generate_fallback_visual_intent(narration)
+        Returns a minimal 2-beat script so the pipeline degrades gracefully
+        instead of aborting. Real PDFs running without a key will produce a
+        2-chunk video; that's intentional — set OPENAI_API_KEY for real output.
+        """
+        from src.schemas.video_script import VideoScript, Beat
+        title_text = ocr_output.pdf_metadata.filename
+        return VideoScript(
+            title=f"Overview of {title_text}",
+            beats=[
+                Beat(
+                    beat_id="beat_001",
+                    narration=(
+                        f"This video introduces the core concepts in {title_text}. "
+                        "We start with the basic ideas and build up step by step."
+                    ),
+                    visual_hint="Title card with the document name and a short outline.",
+                    introduces_concepts=["overview"],
+                    references_prior_beats=[],
+                ),
+                Beat(
+                    beat_id="beat_002",
+                    narration=(
+                        "Now we walk through the most important formulas and what "
+                        "they mean intuitively."
+                    ),
+                    visual_hint="Show the key formulas one at a time, with simple geometric illustrations.",
+                    introduces_concepts=["main_formulas"],
+                    references_prior_beats=["beat_001"],
+                ),
+            ],
+        )
 
     def _generate_fallback_visual_intent(self, narration: str) -> VisualIntent:
         """Build a minimal visual intent from the narration text.
@@ -851,6 +743,8 @@ Return JSON in this EXACT schema:
         # Take the first sentence as a title-like object
         first_sentence = narration.split(".")[0].strip() if narration else "Introduction"
         objs.append(MathematicalObject(
+            object_id="intro_text",
+            object_role="title",
             object_type="text",
             content=first_sentence[:80],
             style=ObjectStyle(color="BLUE", position="top")
@@ -861,16 +755,23 @@ Return JSON in this EXACT schema:
         latex_hints = _re.findall(r'(sin|cos|tan|theta|pi|equation|formula)', narration.lower())
         if latex_hints:
             objs.append(MathematicalObject(
+                object_id="main_equation",
+                object_role="main_equation",
                 object_type="equation",
+                notation_key="main_equation",
                 content=r"\sin(\theta) = \frac{\text{opposite}}{\text{hypotenuse}}",
                 style=ObjectStyle(color="YELLOW", position="center")
             ))
 
+        active_object_ids = [obj.object_id for obj in objs if obj.object_id]
         trans = [
             Transformation(
-                transformation_type="Write",
-                target_object="obj_0",
-                parameters={},
+                transformation_type="fade_in",
+                source_object_id=active_object_ids[0] if active_object_ids else "intro_text",
+                target_object_id=active_object_ids[0] if active_object_ids else "intro_text",
+                continuity_action="create",
+                beat_id="beat_001",
+                parameters={"animation_hint": "Write"},
                 timing=2.0,
             )
         ]
@@ -878,76 +779,21 @@ Return JSON in this EXACT schema:
         return VisualIntent(
             mathematical_objects=objs,
             transformations=trans,
+            beats=[
+                VisualBeat(
+                    beat_id="beat_001",
+                    narration_excerpt=first_sentence[:80],
+                    start_time=0.0,
+                    end_time=5.0,
+                    active_object_ids=active_object_ids,
+                    camera_action="focus",
+                    beat_goal="Introduce the primary visual elements for the scene",
+                )
+            ],
+            scene_state_in=SceneState(),
+            scene_state_out=SceneState(active_object_ids=active_object_ids),
             emphasis_points=[],
         )
-    
-    def _estimate_duration(
-        self,
-        narration: str,
-        visual_intent: VisualIntent
-    ) -> float:
-        """Estimate scene duration from narration word count.
-
-        The narration is the single source of truth for duration.
-        TTS produces audio at ~3 words/second, so duration = words / 3.
-        We floor at 15s to avoid degenerate scenes.
-
-        Args:
-            narration: Narration text
-            visual_intent: Visual intent specification (unused but kept for API)
-
-        Returns:
-            Estimated duration in seconds
-        """
-        word_count = len(narration.split())
-        tts_duration = word_count / 3.0  # TTS rate: ~3 words/sec
-
-        # Floor at 15s, no upper cap — long narrations get long videos
-        return round(max(15.0, tts_duration), 1)
-    
-    def _assemble_storyboard(
-        self,
-        ocr_output: OCROutput,
-        config: Configuration,
-        concepts: List[Dict[str, Any]],
-        scenes: List[Scene]
-    ) -> StoryboardJSON:
-        """Assemble complete storyboard JSON
-        
-        Args:
-            ocr_output: OCR output
-            config: Configuration parameters
-            concepts: List of identified concepts
-            scenes: List of generated scenes
-            
-        Returns:
-            StoryboardJSON object
-        """
-        # Create PDF metadata for storyboard
-        pdf_metadata = PDFMetadataStoryboard(
-            filename=ocr_output.pdf_metadata.filename,
-            page_count=ocr_output.pdf_metadata.page_count
-        )
-        
-        # Create concept hierarchy
-        concept_hierarchy = [
-            ConceptHierarchy(
-                concept_id=concept["concept_id"],
-                concept_name=concept["concept_name"],
-                dependencies=concept["dependencies"]
-            )
-            for concept in concepts
-        ]
-        
-        # Assemble storyboard
-        storyboard = StoryboardJSON(
-            pdf_metadata=pdf_metadata,
-            configuration=config,
-            concept_hierarchy=concept_hierarchy,
-            scenes=scenes
-        )
-        
-        return storyboard
     
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is a ScriptArchitectInput object

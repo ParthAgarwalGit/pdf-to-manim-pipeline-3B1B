@@ -18,6 +18,7 @@ from src.schemas.output_manifest import (
 )
 from src.schemas.scene_processing import (
     FailedScene,
+    NarrativeContext,
     SceneProcessingInput,
     SceneProcessingReport,
     SceneSpec,
@@ -32,10 +33,13 @@ from src.schemas.storyboard import (
     ObjectStyle,
     PDFMetadataStoryboard,
     Scene,
+    SceneState,
     StoryboardJSON,
     Transformation,
+    VisualBeat,
     VisualIntent,
 )
+from src.schemas.video_script import Beat, VideoScript
 
 __all__ = [
     # File Reference
@@ -56,6 +60,8 @@ __all__ = [
     "MathematicalObject",
     "Transformation",
     "EmphasisPoint",
+    "SceneState",
+    "VisualBeat",
     "VisualIntent",
     "Scene",
     "StoryboardJSON",
@@ -64,6 +70,7 @@ __all__ = [
     # Scene Processing
     "VisualStyle",
     "SharedContext",
+    "NarrativeContext",
     "SceneSpec",
     "SceneProcessingInput",
     "FailedScene",
@@ -72,4 +79,7 @@ __all__ = [
     "OutputFile",
     "FailedSceneManifest",
     "OutputManifest",
+    # Video Script (unified narration + chunker contract)
+    "Beat",
+    "VideoScript",
 ]

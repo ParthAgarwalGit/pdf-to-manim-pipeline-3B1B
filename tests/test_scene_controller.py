@@ -85,6 +85,7 @@ def scene_count_strategy(draw):
     return draw(st.integers(min_value=1, max_value=10))
 
 
+@pytest.mark.property
 @given(num_scenes=scene_count_strategy())
 def test_property_scene_iteration_is_deterministic(num_scenes):
     """Property 3: Scene iteration is deterministic.
@@ -484,3 +485,237 @@ def test_scene_controller_handles_empty_concept_id():
     # Should still succeed
     assert result.report.successful_scenes == 1
     assert len(result.report.failed_scenes) == 0
+
+
+# ============================================================================
+# Task 5 — Helper-friendly shared state across scenes
+# ============================================================================
+
+def test_scene_controller_exports_coordinate_system_bindings():
+    """scene_state_out coordinate_systems must propagate into shared_context."""
+    agent = SceneControllerAgent()
+    storyboard = build_test_storyboard(num_scenes=1)
+    storyboard.scenes[0].visual_intent.scene_state_out.coordinate_systems = {
+        "axes_main": "number_plane"
+    }
+    result = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=None,
+    ))
+    assert result.shared_context.coordinate_system_bindings["axes_main"] == "number_plane"
+
+
+def test_scene_controller_exports_notation_bindings():
+    """scene_state_out notation_bindings must propagate into shared_context."""
+    agent = SceneControllerAgent()
+    storyboard = build_test_storyboard(num_scenes=1)
+    storyboard.scenes[0].visual_intent.scene_state_out.notation_bindings = {
+        "sigma": "eq_sigma"
+    }
+    result = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=None,
+    ))
+    assert result.shared_context.notation_registry["sigma"] == "eq_sigma"
+
+
+def test_scene_controller_exports_character_roles():
+    """scene_state_out character_roles must propagate into shared_context."""
+    agent = SceneControllerAgent()
+    storyboard = build_test_storyboard(num_scenes=1)
+    storyboard.scenes[0].visual_intent.scene_state_out.character_roles = {
+        "teacher": "teacher_obj"
+    }
+    result = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=None,
+    ))
+    assert result.shared_context.character_registry["teacher"] == "teacher_obj"
+
+
+def test_scene_controller_accumulates_bindings_across_scenes():
+    """Bindings from scene N must still be available when scene N+1 runs."""
+    agent = SceneControllerAgent()
+    storyboard = build_test_storyboard(num_scenes=2)
+    storyboard.scenes[0].visual_intent.scene_state_out.coordinate_systems = {
+        "shared_axes": "axes"
+    }
+    storyboard.scenes[1].visual_intent.scene_state_out.notation_bindings = {
+        "eq_main": "obj_0"
+    }
+    result = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=None,
+    ))
+    # Both scenes contributed to the final shared context
+    assert result.shared_context.coordinate_system_bindings.get("shared_axes") == "axes"
+    assert result.shared_context.notation_registry.get("eq_main") == "obj_0"
+
+
+def test_shared_context_has_registry_fields():
+    """SharedContext must have coordinate, notation, and character registry fields."""
+    ctx = SharedContext()
+    assert hasattr(ctx, "coordinate_system_bindings")
+    assert hasattr(ctx, "notation_registry")
+    assert hasattr(ctx, "character_registry")
+    assert isinstance(ctx.coordinate_system_bindings, dict)
+    assert isinstance(ctx.notation_registry, dict)
+    assert isinstance(ctx.character_registry, dict)
+
+
+# ============================================================================
+# Task 6: NarrativeContext propagation across scenes
+# ============================================================================
+
+def _two_scene_storyboard_with_beats() -> StoryboardJSON:
+    """Two-scene storyboard whose source_beats introduce 'sine' then 'cosine'.
+
+    Mirrors what the chunker (Task 4) attaches to each Scene so the
+    SceneController can extract concepts from beats — not just from
+    scene.concept_id.
+    """
+    from src.schemas.video_script import Beat
+
+    storyboard = build_test_storyboard(num_scenes=2)
+    storyboard.scenes[0].concept_id = "sine"
+    storyboard.scenes[0].narration = (
+        "Sine measures the height of a point on the unit circle. "
+        "It starts at zero and rises to one."
+    )
+    storyboard.scenes[0].source_beats = [
+        Beat(
+            beat_id="beat_001",
+            narration=storyboard.scenes[0].narration,
+            visual_hint="Unit circle with rotating radius.",
+            introduces_concepts=["sine"],
+        )
+    ]
+    storyboard.scenes[1].concept_id = "cosine"
+    storyboard.scenes[1].narration = (
+        "Cosine is sine's companion: the horizontal projection on the same circle."
+    )
+    storyboard.scenes[1].source_beats = [
+        Beat(
+            beat_id="beat_002",
+            narration=storyboard.scenes[1].narration,
+            visual_hint="Same circle, horizontal projection highlighted.",
+            introduces_concepts=["cosine"],
+            references_prior_beats=["beat_001"],
+        )
+    ]
+    return storyboard
+
+
+def _stub_animation_generator():
+    """Animation generator that always returns a trivial AnimationCodeObject."""
+    from src.agents.animation_generator import AnimationGeneratorOutput
+
+    gen = Mock()
+
+    def execute(inp):
+        sid = inp.scene_processing_input.scene_spec.scene_id
+        return AnimationGeneratorOutput(
+            animation_code=AnimationCodeObject(
+                scene_id=sid,
+                code=f"# {sid}",
+                imports=["from manim import *"],
+                class_name=sid.replace("scene", "Scene"),
+                narration=inp.scene_processing_input.scene_spec.narration,
+                duration_estimate=inp.scene_processing_input.scene_spec.duration_estimate,
+                generation_timestamp=datetime.now(),
+            )
+        )
+
+    gen.execute = Mock(side_effect=execute)
+    return gen
+
+
+def test_scene_controller_appends_narrative_summary_per_scene():
+    """After two scenes, NarrativeContext records one summary per scene
+    and concepts in first-introduction order."""
+    agent = SceneControllerAgent()
+    storyboard = _two_scene_storyboard_with_beats()
+    gen = _stub_animation_generator()
+
+    out = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=gen,
+    ))
+
+    nc = out.shared_context.narrative
+    assert len(nc.prior_scene_summaries) == 2
+    assert "sine" in nc.concepts_introduced
+    assert "cosine" in nc.concepts_introduced
+    assert nc.concepts_introduced.index("sine") < nc.concepts_introduced.index("cosine")
+
+
+def test_scene_controller_passes_narrative_into_next_scene():
+    """Second scene's processing input must see the first scene's narrative."""
+    agent = SceneControllerAgent()
+    storyboard = _two_scene_storyboard_with_beats()
+    gen = _stub_animation_generator()
+
+    captured = []
+    orig_side_effect = gen.execute.side_effect
+
+    def spy(inp):
+        captured.append(list(inp.scene_processing_input.context.narrative.prior_scene_summaries))
+        return orig_side_effect(inp)
+
+    gen.execute = Mock(side_effect=spy)
+
+    agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=gen,
+    ))
+
+    assert len(captured) == 2
+    assert captured[0] == []  # scene 1 sees empty narrative
+    assert len(captured[1]) == 1  # scene 2 sees scene 1's summary
+
+
+def test_scene_controller_running_storyline_is_bounded():
+    """Running storyline keeps at most three sentences regardless of scene count."""
+    agent = SceneControllerAgent()
+    # Build a 5-scene storyboard so >3 summaries accumulate
+    storyboard = build_test_storyboard(num_scenes=5)
+    for i, scene in enumerate(storyboard.scenes):
+        scene.narration = f"Scene {i} introduces topic number {i}."
+
+    out = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=None,
+    ))
+
+    storyline = out.shared_context.narrative.running_storyline
+    # Count "real" sentences (split on '.', ignore empty fragments)
+    sentence_count = sum(1 for s in storyline.split(".") if s.strip())
+    assert sentence_count <= 3, f"Storyline had {sentence_count} sentences: {storyline!r}"
+
+
+def test_scene_controller_live_objects_reflect_scene_state_out():
+    """live_objects_on_screen should mirror the LAST scene's scene_state_out."""
+    agent = SceneControllerAgent()
+    storyboard = build_test_storyboard(num_scenes=2)
+    # Scene 0 sets one active object (will be overwritten by scene 1)
+    storyboard.scenes[0].visual_intent.scene_state_out.active_object_ids = ["only_in_scene_0"]
+    # Scene 1 sets a different active object
+    storyboard.scenes[1].visual_intent.mathematical_objects[0].object_id = "carryover_obj"
+    storyboard.scenes[1].visual_intent.scene_state_out.active_object_ids = ["carryover_obj"]
+
+    out = agent.execute(SceneControllerInput(
+        storyboard=storyboard,
+        output_directory="output/test",
+        animation_generator=None,
+    ))
+
+    live = out.shared_context.narrative.live_objects_on_screen
+    assert "carryover_obj" in live
+    assert "only_in_scene_0" not in live

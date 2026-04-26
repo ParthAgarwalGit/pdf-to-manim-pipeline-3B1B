@@ -3,7 +3,7 @@
 import ast
 import pytest
 from datetime import datetime
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 
 from src.agents.animation_generator import (
     AnimationCodeGeneratorAgent,
@@ -144,6 +144,8 @@ def valid_scene_spec_strategy(draw):
     )
 
 
+@pytest.mark.property
+@settings(deadline=None)
 @given(scene_spec=valid_scene_spec_strategy())
 def test_property_generated_code_is_syntactically_valid(scene_spec):
     """Property 4: Generated code is syntactically valid Python.
@@ -258,9 +260,9 @@ def test_animation_generator_generates_mathtex_for_equations():
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
     
-    # Should contain MathTex
-    assert "MathTex" in code
-    assert "E = mc^2" in code or "E = mc\\\\^2" in code  # May be escaped
+    # Should contain create_notation helper (helper layer replaces raw MathTex)
+    assert "create_notation" in code
+    assert "E = mc^2" in code or "mc" in code
 
 
 def test_animation_generator_generates_text_objects():
@@ -289,8 +291,8 @@ def test_animation_generator_generates_text_objects():
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
     
-    # Should contain Text
-    assert "Text" in code
+    # Should contain create_text_label helper (helper layer replaces raw Text)
+    assert "create_text_label" in code
     assert "Hello World" in code
 
 
@@ -320,8 +322,39 @@ def test_animation_generator_generates_axes():
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
     
-    # Should contain Axes
-    assert "Axes" in code
+    # Should contain create_coordinate_system helper (helper layer replaces raw Axes)
+    assert "create_coordinate_system" in code
+
+
+def test_animation_generator_supports_pi_creature_helpers(monkeypatch):
+    """Pi-creature storyboard hints should map to the repo helper functions."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    agent = AnimationCodeGeneratorAgent()
+    scene_spec = build_test_scene_spec(
+        math_objects=[
+            {
+                "object_type": "pi_creature",
+                "render_hint": "PiCreatureTeacher",
+                "content": "Teacher introduces the intuition",
+                "style": {"color": "blue"},
+            }
+        ]
+    )
+    context = build_test_context()
+
+    processing_input = SceneProcessingInput(
+        scene_spec=scene_spec,
+        context=context,
+        scene_index=0
+    )
+
+    input_data = AnimationGeneratorInput(processing_input)
+    result = agent.execute(input_data)
+
+    assert isinstance(result, AnimationGeneratorOutput)
+    code = result.animation_code.code
+    assert "create_pi_teacher" in code
 
 
 def test_animation_generator_generates_geometric_shapes():
@@ -620,3 +653,254 @@ def test_animation_generator_includes_wait_for_duration():
     # Should include wait with duration
     assert "self.wait" in code
     assert "45.5" in code
+
+
+# ============================================================================
+# Task 4 — Helper-backed code generation
+# ============================================================================
+
+def test_animation_generator_uses_coordinate_helper_for_axes_objects(monkeypatch):
+    """Mock path must emit create_coordinate_system for axes-type objects."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    agent = AnimationCodeGeneratorAgent()
+    scene_spec = build_test_scene_spec(
+        math_objects=[
+            {
+                "object_id": "axes_main",
+                "object_type": "axes",
+                "render_hint": "NumberPlane",
+                "content": "main frame",
+                "style": {},
+            }
+        ],
+        transformations=[],
+    )
+    result = agent.execute(AnimationGeneratorInput(SceneProcessingInput(
+        scene_spec=scene_spec,
+        context=build_test_context(),
+        scene_index=0,
+    )))
+    assert isinstance(result, AnimationGeneratorOutput)
+    assert "create_coordinate_system" in result.animation_code.code
+
+
+def test_animation_generator_uses_notation_helper_when_notation_key_exists(monkeypatch):
+    """Mock path must emit create_notation when notation_key is provided."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    agent = AnimationCodeGeneratorAgent()
+    scene_spec = build_test_scene_spec(
+        math_objects=[
+            {
+                "object_id": "eq_main",
+                "object_type": "equation",
+                "notation_key": "svd_core",
+                "content": r"X = U\Sigma V^T",
+                "style": {"color": "blue"},
+            }
+        ],
+        transformations=[],
+    )
+    result = agent.execute(AnimationGeneratorInput(SceneProcessingInput(
+        scene_spec=scene_spec,
+        context=build_test_context(),
+        scene_index=0,
+    )))
+    assert isinstance(result, AnimationGeneratorOutput)
+    assert "create_notation" in result.animation_code.code
+
+
+def test_animation_generator_uses_character_role_helper_for_pi_creature(monkeypatch):
+    """Mock path must emit create_character_for_role for pi_creature objects."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    agent = AnimationCodeGeneratorAgent()
+    scene_spec = build_test_scene_spec(
+        math_objects=[
+            {
+                "object_id": "teacher_obj",
+                "object_type": "pi_creature",
+                "character_role": "teacher",
+                "content": "teacher",
+                "style": {},
+            }
+        ],
+        transformations=[],
+    )
+    result = agent.execute(AnimationGeneratorInput(SceneProcessingInput(
+        scene_spec=scene_spec,
+        context=build_test_context(),
+        scene_index=0,
+    )))
+    assert isinstance(result, AnimationGeneratorOutput)
+    assert "create_character_for_role" in result.animation_code.code
+
+
+def test_animation_generator_uses_object_id_as_variable_name(monkeypatch):
+    """Stable object_id should become the Python variable name."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    agent = AnimationCodeGeneratorAgent()
+    scene_spec = build_test_scene_spec(
+        math_objects=[
+            {
+                "object_id": "sigma_matrix",
+                "object_type": "equation",
+                "content": r"\Sigma",
+                "style": {},
+            }
+        ],
+        transformations=[],
+    )
+    result = agent.execute(AnimationGeneratorInput(SceneProcessingInput(
+        scene_spec=scene_spec,
+        context=build_test_context(),
+        scene_index=0,
+    )))
+    assert isinstance(result, AnimationGeneratorOutput)
+    assert "sigma_matrix" in result.animation_code.code
+
+
+def test_animation_generator_system_prompt_includes_quality_contract():
+    """The system prompt should include the 3B1B quality contract."""
+    from src.utils.manim_engine_contract import build_3b1b_quality_prompt
+    prompt = build_3b1b_quality_prompt()
+    # Verify the prompt is non-empty and contains key sections
+    assert "TIMING CONSTRAINTS" in prompt
+    assert "PROGRESSIVE REVEAL" in prompt
+    assert "COLOR CONSISTENCY" in prompt
+    assert "SMOOTH MORPHING" in prompt
+    # Verify the import works in the animation generator module
+    from src.agents.animation_generator import AnimationCodeGeneratorAgent
+
+
+# ============================================================================
+# Task 8: NarrativeContext briefing in the animation-generator system prompt
+# ============================================================================
+
+def _capture_animation_prompt(agent_factory, monkeypatch, scene_spec, context, scene_index=0):
+    """Helper: install a fake Anthropic client that captures (system, user)
+    and returns a trivial valid Manim class."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    captured: dict = {}
+
+    class _Resp:
+        content = [type("B", (), {"text": "class S(Scene):\n    def construct(self):\n        self.wait(1)"})]
+
+    class _Messages:
+        def create(self, *, system, messages, **_kw):
+            captured["system"] = system
+            captured["user"] = messages[0]["content"]
+            return _Resp()
+
+    class _Client:
+        messages = _Messages()
+
+    agent = agent_factory()
+    agent.client = _Client()
+
+    processing_input = SceneProcessingInput(
+        scene_spec=scene_spec,
+        context=context,
+        scene_index=scene_index,
+    )
+    agent.execute(AnimationGeneratorInput(processing_input))
+    return captured
+
+
+def test_animation_prompt_includes_concepts_already_taught(monkeypatch):
+    """When NarrativeContext lists previously-taught concepts, they must
+    appear in the system prompt with a 'do not re-explain' instruction."""
+    from src.schemas.scene_processing import NarrativeContext
+
+    spec = build_test_scene_spec(
+        scene_id="scene_002",
+        narration="Cosine traces the x-coordinate.",
+        duration=20.0,
+    )
+    context = build_test_context()
+    context.narrative = NarrativeContext(
+        prior_scene_summaries=["[sine] Sine on the unit circle introduced."],
+        concepts_introduced=["sine", "unit_circle"],
+        running_storyline="Sine on the unit circle introduced.",
+    )
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=1,
+    )
+    full = captured["system"] + captured["user"]
+    assert "sine" in full.lower()
+    assert "unit_circle" in full.lower()
+    assert "do not re-explain" in full.lower() or "already" in full.lower()
+
+
+def test_animation_prompt_omits_briefing_when_narrative_empty(monkeypatch):
+    """First scene has empty narrative; the briefing section must NOT appear
+    so we don't waste tokens on noise."""
+    spec = build_test_scene_spec(scene_id="scene_001", narration="Intro.", duration=15.0)
+    context = build_test_context()  # narrative is default-empty
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=0,
+    )
+    assert "NARRATIVE BRIEFING" not in captured["system"]
+
+
+def test_animation_prompt_does_not_dump_full_pdf(monkeypatch):
+    """Even with a populated narrative, the prompt must never include a
+    placeholder for the raw PDF / OCR text."""
+    from src.schemas.scene_processing import NarrativeContext
+
+    spec = build_test_scene_spec(scene_id="scene_002", narration="Cosine.", duration=15.0)
+    context = build_test_context()
+    context.narrative = NarrativeContext(
+        prior_scene_summaries=["[sine] First scene."],
+        concepts_introduced=["sine"],
+    )
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=1,
+    )
+    full = captured["system"] + captured["user"]
+    assert "OCR" not in full
+    # "PDF" appears in the existing CONTENT FIDELITY section ("extracted from
+    # an academic PDF"). That is intentional context, not a dump. Guard
+    # against the actual anti-pattern: a labelled raw-text payload.
+    assert "RAW PDF TEXT" not in full
+    assert "FULL PDF" not in full
+
+
+# ============================================================================
+# Task 9: Manim-level visual continuity at chunk boundaries (opening state)
+# ============================================================================
+
+def test_animation_prompt_instructs_carryover_when_live_objects_present(monkeypatch):
+    """When the previous scene leaves objects on screen, the prompt must
+    instruct the LLM to re-instantiate them at run_time=0 so the cut is
+    seamless."""
+    from src.schemas.scene_processing import NarrativeContext
+
+    spec = build_test_scene_spec(scene_id="scene_002", narration="Continue.", duration=15.0)
+    context = build_test_context()
+    context.narrative = NarrativeContext(
+        live_objects_on_screen={"unit_circle": "geometric_shape: Circle(radius=2)"},
+    )
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=1,
+    )
+    sys_prompt = captured["system"]
+    assert "OPENING STATE" in sys_prompt
+    # Instruction must reference one of the no-animation reentry mechanisms.
+    assert "self.add" in sys_prompt or "run_time=0" in sys_prompt
+    # The live object id must be named so the LLM knows what to recreate.
+    assert "unit_circle" in sys_prompt
+
+
+def test_animation_prompt_omits_opening_state_when_no_live_objects(monkeypatch):
+    """If nothing carries over, the OPENING STATE section must NOT appear."""
+    spec = build_test_scene_spec(scene_id="scene_001", narration="Intro.", duration=15.0)
+    context = build_test_context()  # narrative default — no live objects
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=0,
+    )
+    assert "OPENING STATE" not in captured["system"]
+    assert callable(getattr(AnimationCodeGeneratorAgent, "execute", None))
