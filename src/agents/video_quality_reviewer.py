@@ -13,6 +13,7 @@ code to produce actionable findings:
 from dataclasses import asdict, dataclass
 import logging
 from pathlib import Path
+import re
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,8 @@ class VideoQualityReviewerInput(AgentInput):
         tts_output: Optional[List[Any]] = None,
         composition_output: Optional[Any] = None,
         final_video_path: Optional[str] = None,
+        final_video_expected: bool = True,
+        scene_layouts: Optional[List[Any]] = None,
     ):
         self.storyboard = storyboard
         self.manifest = manifest
@@ -62,6 +65,11 @@ class VideoQualityReviewerInput(AgentInput):
         self.tts_output = tts_output or []
         self.composition_output = composition_output
         self.final_video_path = final_video_path
+        # When False, the "no final video" check is suppressed — e.g. when
+        # TTS is disabled and composition is intentionally skipped.
+        self.final_video_expected = final_video_expected
+        # Validated SceneLayout objects from the SceneController (optional)
+        self.scene_layouts: List[Any] = scene_layouts or []
 
 
 class VideoQualityReviewerOutput(AgentOutput):
@@ -128,8 +136,15 @@ class VideoQualityReviewerAgent(Agent):
             )
         )
         findings.extend(self._review_layout_risk(code_by_scene))
+        findings.extend(self._review_layout_violations(input_data.scene_layouts))
+        findings.extend(self._review_helper_semantics(input_data.storyboard, code_by_scene))
+        findings.extend(self._review_animation_pacing(code_by_scene))
+        findings.extend(self._review_progressive_reveal(code_by_scene))
+        findings.extend(self._review_anti_patterns(input_data.storyboard, code_by_scene))
 
-        if not final_video_path or not Path(final_video_path).exists():
+        if input_data.final_video_expected and (
+            not final_video_path or not Path(final_video_path).exists()
+        ):
             findings.append(
                 VideoQualityFinding(
                     issue="No final video artifact was produced.",
@@ -379,6 +394,484 @@ class VideoQualityReviewerAgent(Agent):
                 )
         return findings
 
+    def _review_layout_violations(
+        self,
+        scene_layouts: List[Any],
+    ) -> List[VideoQualityFinding]:
+        """Re-validate SceneLayout objects and report any lingering overlaps.
+
+        If the layout planner and validator ran during scene generation the
+        layouts should already be clean.  This is a defence-in-depth pass that
+        catches any regressions (e.g. a validator that was skipped).
+        """
+        if not scene_layouts:
+            return []
+
+        findings: List[VideoQualityFinding] = []
+
+        try:
+            from src.agents.layout_validator import LayoutValidationInput, LayoutValidatorAgent
+            validator = LayoutValidatorAgent()
+
+            for scene_layout in scene_layouts:
+                val_result = validator.execute(LayoutValidationInput(scene_layout=scene_layout))
+                if not val_result.is_valid:
+                    for violation in val_result.violations:
+                        findings.append(
+                            VideoQualityFinding(
+                                issue=(
+                                    f"Bounding-box overlap: '{violation.object_id_a}' and "
+                                    f"'{violation.object_id_b}' overlap by "
+                                    f"{violation.overlap_x:.2f}×{violation.overlap_y:.2f} units."
+                                ),
+                                suspected_stage="scene_layout_planner",
+                                severity="high",
+                                scene_id=scene_layout.scene_id,
+                                evidence=violation.description,
+                                suggested_fix=(
+                                    "Re-run the layout planner with explicit separation constraints "
+                                    "for these two objects."
+                                ),
+                                llm_direction=(
+                                    f"In scene {scene_layout.scene_id}, move '{violation.object_id_a}' "
+                                    f"and '{violation.object_id_b}' apart so their bounding boxes no "
+                                    "longer intersect while both are on screen."
+                                ),
+                            )
+                        )
+        except Exception as exc:
+            logger.warning("Layout violation review failed: %s", exc)
+
+        return findings
+
+    def _review_helper_semantics(
+        self, storyboard: Any, code_by_scene: Dict[str, Any]
+    ) -> List[VideoQualityFinding]:
+        """Check that generated code uses the helper layer where expected.
+
+        Inspects each scene's ``scene_state_in`` / ``scene_state_out`` against
+        the generated code to detect cases where the generator used raw Manim
+        constructors instead of the reusable helper functions.
+
+        Returns a list of medium-severity findings; returns an empty list when
+        the storyboard or code are not available.
+        """
+        findings: List[VideoQualityFinding] = []
+        if storyboard is None:
+            return findings
+
+        for scene in getattr(storyboard, "scenes", []):
+            code_obj = code_by_scene.get(scene.scene_id)
+            if code_obj is None:
+                continue
+            source = code_obj.code
+
+            visual_intent = getattr(scene, "visual_intent", None)
+            if visual_intent is None:
+                continue
+
+            scene_state_in = getattr(visual_intent, "scene_state_in", None)
+            scene_state_out = getattr(visual_intent, "scene_state_out", None)
+
+            # ── Coordinate-system reuse check ──────────────────────────────
+            cs_in = getattr(scene_state_in, "coordinate_systems", {}) or {}
+            if cs_in and "create_coordinate_system" not in source:
+                findings.append(VideoQualityFinding(
+                    issue="A reusable coordinate system was redrawn without the helper-backed factory.",
+                    suspected_stage="animation_generator",
+                    severity="medium",
+                    scene_id=scene.scene_id,
+                    evidence=(
+                        "scene_state_in declares reusable coordinate systems, but generated code "
+                        "does not call create_coordinate_system(...)"
+                    ),
+                    suggested_fix=(
+                        "Reuse the prior coordinate system binding and build it through "
+                        "create_coordinate_system(...) only when first introduced."
+                    ),
+                    llm_direction=(
+                        f"Regenerate scene {scene.scene_id} so recurring axes or planes are "
+                        "created or reused through create_coordinate_system(...)."
+                    ),
+                ))
+
+            # ── Notation helper check ───────────────────────────────────────
+            nb_out = getattr(scene_state_out, "notation_bindings", {}) or {}
+            if nb_out and "create_notation" not in source:
+                findings.append(VideoQualityFinding(
+                    issue="Persistent notation was emitted without the notation helper.",
+                    suspected_stage="animation_generator",
+                    severity="medium",
+                    scene_id=scene.scene_id,
+                    evidence=(
+                        "scene_state_out exports notation bindings, but generated code "
+                        "does not call create_notation(...)"
+                    ),
+                    suggested_fix=(
+                        "Build persistent equations and symbolic labels through create_notation(...) "
+                        "so notation keys stay stable across retries."
+                    ),
+                    llm_direction=(
+                        f"Regenerate scene {scene.scene_id} so notation-bearing MathTex objects "
+                        "are created through create_notation(...)."
+                    ),
+                ))
+
+            # ── Character-role helper check ─────────────────────────────────
+            cr_out = getattr(scene_state_out, "character_roles", {}) or {}
+            if cr_out and "create_character_for_role" not in source:
+                findings.append(VideoQualityFinding(
+                    issue="Character-role continuity was emitted without the role-aware helper.",
+                    suspected_stage="animation_generator",
+                    severity="medium",
+                    scene_id=scene.scene_id,
+                    evidence=(
+                        "scene_state_out exports character roles, but generated code "
+                        "does not call create_character_for_role(...)"
+                    ),
+                    suggested_fix=(
+                        "Use create_character_for_role(...) so teacher and student roles "
+                        "stay deterministic across scenes."
+                    ),
+                    llm_direction=(
+                        f"Regenerate scene {scene.scene_id} so persistent character roles "
+                        "use create_character_for_role(...)."
+                    ),
+                ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Task 5: Pacing & Timing Hard-Constraint Reviewer
+    # ------------------------------------------------------------------
+
+    def _review_animation_pacing(
+        self,
+        code_by_scene: Dict[str, AnimationCodeObject],
+    ) -> List[VideoQualityFinding]:
+        """Flag run_time / wait violations against the 3B1B timing contract."""
+        from src.utils.manim_engine_contract import TIMING_CONTRACT, WAIT_CONTRACT
+
+        findings: List[VideoQualityFinding] = []
+        run_time_re = re.compile(r"run_time\s*=\s*([\d.]+)")
+        wait_re = re.compile(r"self\.wait\(\s*([\d.]+)\s*\)")
+        play_re = re.compile(r"self\.play\(")
+
+        for scene_id, code_obj in code_by_scene.items():
+            source = code_obj.code
+            violations = 0
+            total_checked = 0
+
+            # Check run_time values against contract
+            for line_no, line in enumerate(source.splitlines(), 1):
+                rt_match = run_time_re.search(line)
+                if rt_match:
+                    total_checked += 1
+                    rt = float(rt_match.group(1))
+                    # Try to match the animation family from the line
+                    for anim, (lo, hi) in TIMING_CONTRACT.items():
+                        if anim in line:
+                            if rt < lo or rt > hi:
+                                violations += 1
+                                findings.append(VideoQualityFinding(
+                                    issue=f"Animation timing violation: {anim} run_time={rt}s (allowed {lo}–{hi}s).",
+                                    suspected_stage="animation_generator",
+                                    severity="medium",
+                                    scene_id=scene_id,
+                                    evidence=f"Line {line_no}: {line.strip()}",
+                                    suggested_fix=f"Set run_time between {lo} and {hi}s for {anim}.",
+                                    llm_direction=f"Adjust {anim} timing in scene {scene_id} to be within {lo}–{hi}s.",
+                                ))
+                            break
+
+            # Check for missing wait() between consecutive self.play() calls
+            play_positions = [m.start() for m in play_re.finditer(source)]
+            wait_positions = [m.start() for m in wait_re.finditer(source)]
+            min_wait = WAIT_CONTRACT.get("between_animations", 0.5)
+
+            for i in range(len(play_positions) - 1):
+                start = play_positions[i]
+                end = play_positions[i + 1]
+                # Check if there's a wait between these two play calls
+                has_wait = any(start < wp < end for wp in wait_positions)
+                if not has_wait:
+                    violations += 1
+
+            if violations > 0 and total_checked > 0 and violations > total_checked * 0.5:
+                findings.append(VideoQualityFinding(
+                    issue="Majority of animations violate 3B1B timing contract.",
+                    suspected_stage="animation_generator",
+                    severity="high",
+                    scene_id=scene_id,
+                    evidence=f"{violations} violations out of {total_checked} checked animations.",
+                    suggested_fix="Review all animation timings against the 3B1B timing contract.",
+                    llm_direction=f"Regenerate scene {scene_id} with 3B1B-compliant timing.",
+                ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Task 6: Progressive Reveal Reviewer Check
+    # ------------------------------------------------------------------
+
+    def _review_progressive_reveal(
+        self,
+        code_by_scene: Dict[str, AnimationCodeObject],
+    ) -> List[VideoQualityFinding]:
+        """Detect complex equations written in a single shot."""
+        findings: List[VideoQualityFinding] = []
+        # Pattern: Write(MathTex(...)) where the MathTex has many terms
+        write_mathtex_re = re.compile(
+            r'Write\(\s*MathTex\((.*?)\)',
+            re.DOTALL,
+        )
+        # Also catch Write(some_var) where some_var was defined as a complex MathTex
+        complex_var_re = re.compile(
+            r'(\w+)\s*=\s*MathTex\(\s*r?"([^"]*)"',
+        )
+
+        for scene_id, code_obj in code_by_scene.items():
+            source = code_obj.code
+
+            # Build map of variable → tex content
+            var_tex: Dict[str, str] = {}
+            for m in complex_var_re.finditer(source):
+                var_tex[m.group(1)] = m.group(2)
+
+            # Check direct Write(MathTex(...)) calls
+            for m in write_mathtex_re.finditer(source):
+                inner = m.group(1)
+                # Count terms by separating on +, -, =, \frac, etc.
+                terms = re.split(r'[+\-=]|\\frac|\\sum|\\int|\\prod', inner)
+                if len(terms) > 3:
+                    findings.append(VideoQualityFinding(
+                        issue="Complex equation written in one shot instead of progressive reveal.",
+                        suspected_stage="animation_generator",
+                        severity="medium",
+                        scene_id=scene_id,
+                        evidence=f"Write(MathTex(...)) with {len(terms)} terms.",
+                        suggested_fix="Use progressive_write() or animate sub-expressions sequentially.",
+                        llm_direction=(
+                            f"In scene {scene_id}, break the complex equation into parts and reveal them "
+                            "progressively using progressive_write() or staged Write() calls."
+                        ),
+                    ))
+
+            # Check Write(var) where var is a complex MathTex
+            write_var_re = re.compile(r'Write\(\s*(\w+)')
+            for m in write_var_re.finditer(source):
+                var_name = m.group(1)
+                if var_name in var_tex:
+                    tex = var_tex[var_name]
+                    terms = re.split(r'[+\-=]|\\frac|\\sum|\\int|\\prod', tex)
+                    if len(terms) > 3:
+                        findings.append(VideoQualityFinding(
+                            issue=f"Complex equation '{var_name}' written in one shot.",
+                            suspected_stage="animation_generator",
+                            severity="medium",
+                            scene_id=scene_id,
+                            evidence=f"Write({var_name}) where {var_name} has {len(terms)} terms.",
+                            suggested_fix="Use progressive_write() or isolate sub-expressions.",
+                            llm_direction=(
+                                f"In scene {scene_id}, reveal '{var_name}' progressively instead of "
+                                "all at once."
+                            ),
+                        ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Task 7: LLM-Based Narration-Visual Fidelity Reviewer
+    # ------------------------------------------------------------------
+
+    def _review_narration_fidelity(
+        self,
+        storyboard: Any,
+        code_by_scene: Dict[str, AnimationCodeObject],
+    ) -> List[VideoQualityFinding]:
+        """Use an LLM call to check narration-visual alignment.
+
+        For each scene, sends narration + generated code and asks whether the
+        code shows every formula, definition, and example the narration mentions.
+        This is an optional check — it degrades gracefully if no API key is
+        available.
+        """
+        findings: List[VideoQualityFinding] = []
+        try:
+            import openai
+        except ImportError:
+            logger.info("openai not installed; skipping narration-fidelity check.")
+            return findings
+
+        import os
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            logger.info("OPENAI_API_KEY not set; skipping narration-fidelity check.")
+            return findings
+
+        client = openai.OpenAI(api_key=api_key)
+
+        for scene in getattr(storyboard, "scenes", []):
+            code_obj = code_by_scene.get(scene.scene_id)
+            if code_obj is None:
+                continue
+            narration = getattr(scene, "narration", "")
+            if not narration:
+                continue
+
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-5",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a video production QA reviewer. Given a scene's narration "
+                                "and its Manim code, identify any formulas, definitions, or examples "
+                                "mentioned in the narration that are NOT visually represented in the code. "
+                                "Reply with a JSON object: {\"missing\": [list of missing items], "
+                                "\"aligned\": true/false}. If everything is aligned, set missing to []."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"NARRATION:\n{narration}\n\n"
+                                f"MANIM CODE:\n{code_obj.code}"
+                            ),
+                        },
+                    ],
+                    max_completion_tokens=500,
+                )
+                content = response.choices[0].message.content or ""
+                # Try to parse the response
+                import json
+                try:
+                    result = json.loads(content)
+                    missing = result.get("missing", [])
+                    if missing:
+                        findings.append(VideoQualityFinding(
+                            issue="Narration mentions content not shown visually.",
+                            suspected_stage="animation_generator",
+                            severity="medium",
+                            scene_id=scene.scene_id,
+                            evidence=f"Missing visual elements: {', '.join(missing[:5])}",
+                            suggested_fix="Add visual representations for the missing narration content.",
+                            llm_direction=(
+                                f"In scene {scene.scene_id}, add Manim objects to show: "
+                                f"{', '.join(missing[:5])}."
+                            ),
+                        ))
+                except json.JSONDecodeError:
+                    logger.warning("Could not parse LLM fidelity response for %s", scene.scene_id)
+            except Exception as exc:
+                logger.warning("Narration fidelity check failed for %s: %s", scene.scene_id, exc)
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Task 8: Anti-Pattern Detection
+    # ------------------------------------------------------------------
+
+    def _review_anti_patterns(
+        self,
+        storyboard: Any,
+        code_by_scene: Dict[str, AnimationCodeObject],
+    ) -> List[VideoQualityFinding]:
+        """Detect common anti-patterns in generated Manim code."""
+        findings: List[VideoQualityFinding] = []
+
+        for scene_id, code_obj in code_by_scene.items():
+            source = code_obj.code
+            lines = source.splitlines()
+
+            # 1. FadeOut immediately followed by FadeIn (should be Transform)
+            for i in range(len(lines) - 1):
+                if "FadeOut(" in lines[i] and "FadeIn(" in lines[i + 1]:
+                    findings.append(VideoQualityFinding(
+                        issue="FadeOut immediately followed by FadeIn — use ReplacementTransform instead.",
+                        suspected_stage="animation_generator",
+                        severity="medium",
+                        scene_id=scene_id,
+                        evidence=f"Lines {i + 1}-{i + 2}: {lines[i].strip()} / {lines[i + 1].strip()}",
+                        suggested_fix="Replace FadeOut→FadeIn with ReplacementTransform for smoother morphing.",
+                        llm_direction=(
+                            f"In scene {scene_id}, replace FadeOut/FadeIn pairs with "
+                            "ReplacementTransform for 3B1B-style smooth transitions."
+                        ),
+                    ))
+
+            # 2. No self.wait() between consecutive self.play() calls
+            play_line_nos = [
+                i for i, line in enumerate(lines) if "self.play(" in line
+            ]
+            for j in range(len(play_line_nos) - 1):
+                start_line = play_line_nos[j]
+                end_line = play_line_nos[j + 1]
+                has_wait = any(
+                    "self.wait(" in lines[k]
+                    for k in range(start_line + 1, end_line)
+                )
+                if not has_wait:
+                    findings.append(VideoQualityFinding(
+                        issue="Missing self.wait() between consecutive self.play() calls.",
+                        suspected_stage="animation_generator",
+                        severity="medium",
+                        scene_id=scene_id,
+                        evidence=f"Lines {start_line + 1} and {end_line + 1} have no wait in between.",
+                        suggested_fix="Add self.wait(0.5) or more between play() calls for breathing room.",
+                        llm_direction=(
+                            f"In scene {scene_id}, add self.wait() calls between consecutive self.play() "
+                            "calls to give viewers time to absorb changes."
+                        ),
+                    ))
+
+            # 3. Text walls (>3 Text objects visible simultaneously)
+            text_creates = re.findall(r'(\w+)\s*=\s*Text\(', source)
+            if len(text_creates) > 3:
+                # Check if they're all added without any being faded out
+                fade_outs = re.findall(r'FadeOut\(\s*(\w+)', source)
+                still_visible = len(text_creates) - len(
+                    [t for t in text_creates if t in fade_outs]
+                )
+                if still_visible > 3:
+                    findings.append(VideoQualityFinding(
+                        issue="Potential text wall: too many Text objects visible simultaneously.",
+                        suspected_stage="animation_generator",
+                        severity="medium",
+                        scene_id=scene_id,
+                        evidence=f"{still_visible} Text objects likely visible at once.",
+                        suggested_fix="Reduce simultaneous text to <=3. Use FadeOut for old text before adding new.",
+                        llm_direction=(
+                            f"In scene {scene_id}, limit visible Text objects to 3 or fewer. "
+                            "FadeOut older text before introducing new explanatory labels."
+                        ),
+                    ))
+
+            # 4. Missing LayoutTracker registration after object creation
+            create_pattern = re.compile(
+                r'(\w+)\s*=\s*(?:MathTex|Text|Axes|NumberPlane|Circle|Square|Triangle|Arrow|Line)\('
+            )
+            created_vars = [m.group(1) for m in create_pattern.finditer(source)]
+            if created_vars and "layout" in source:
+                for var in created_vars:
+                    if f'layout.register("{var}"' not in source and f"layout.register('{var}'" not in source:
+                        # Only flag if layout is being used at all in this scene
+                        if "layout.register(" in source:
+                            findings.append(VideoQualityFinding(
+                                issue=f"Object '{var}' created but not registered with LayoutTracker.",
+                                suspected_stage="animation_generator",
+                                severity="low",
+                                scene_id=scene_id,
+                                evidence=f"'{var}' is created but no layout.register(\"{var}\", ...) found.",
+                                suggested_fix=f"Add layout.register(\"{var}\", {var}) after positioning.",
+                                llm_direction=(
+                                    f"In scene {scene_id}, register '{var}' with LayoutTracker after creation."
+                                ),
+                            ))
+
+        return findings
+
     def _guess_missing_video_stage(self, input_data: VideoQualityReviewerInput) -> str:
         composition_output = input_data.composition_output
         video_output = input_data.video_output
@@ -417,6 +910,7 @@ class VideoQualityReviewerAgent(Agent):
         )
 
     def _get_media_duration(self, file_path: str) -> float:
+        """Return duration in seconds, or -1.0 if detection fails."""
         try:
             result = subprocess.run(
                 [
@@ -430,5 +924,6 @@ class VideoQualityReviewerAgent(Agent):
                 timeout=10,
             )
             return float(result.stdout.strip())
-        except Exception:
-            return 0.0
+        except Exception as exc:
+            logger.warning("Duration detection failed for %s: %s", file_path, exc)
+            return -1.0

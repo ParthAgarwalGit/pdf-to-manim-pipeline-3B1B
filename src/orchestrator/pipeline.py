@@ -26,12 +26,13 @@ Error Handling Strategy:
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
+from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy, StepConstraints
 from src.orchestrator.retry_policy import calculate_backoff_delay, is_retryable_error
 from src.orchestrator.logger import StructuredJSONLogger
 from src.agents.ingestion import CloudStorageEvent, IngestAgent, IngestionError, IngestionOutput
@@ -300,7 +301,7 @@ class Orchestrator:
                 pipeline_duration = time.time() - pipeline_start_time
                 scene_success_rate = (
                     manifest.successful_scenes / manifest.total_scenes
-                    if manifest.total_scenes > 0 else 0.0
+                    if manifest.total_scenes > 0 else 1.0
                 )
                 self.structured_logger.log_pipeline_complete(
                     duration_seconds=pipeline_duration,
@@ -328,26 +329,37 @@ class Orchestrator:
                 self.structured_logger
             )
 
-            # Step 8: Video Rendering (conditional)
+            # Steps 8+9: Video Rendering and TTS — parallel fan-out.
+            # Both only need outputs from Persistence (step 7) so they are
+            # fully independent.  The logger is thread-safe (uses a Lock).
             video_output = None
-            if self.config.enable_render:
-                video_output = self._run_video_renderer(
-                    manifest,
-                    self.structured_logger
-                )
-            else:
-                logger.info("Render skipped (enable_render=False)")
-
-            # Step 9: TTS Generation (conditional)
             tts_output = None
-            if self.config.enable_tts:
-                tts_output = self._run_tts_generation(
-                    sanitized_storyboard,
-                    manifest,
-                    self.structured_logger
-                )
+
+            if self.config.enable_render or self.config.enable_tts:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures: Dict[str, Any] = {}
+                    if self.config.enable_render:
+                        futures["render"] = executor.submit(
+                            self._run_video_renderer,
+                            manifest,
+                            self.structured_logger,
+                        )
+                    else:
+                        logger.info("Render skipped (enable_render=False)")
+                    if self.config.enable_tts:
+                        futures["tts"] = executor.submit(
+                            self._run_tts_generation_logged,
+                            sanitized_storyboard,
+                            manifest,
+                            self.structured_logger,
+                        )
+                    else:
+                        logger.info("TTS skipped (enable_tts=False)")
+                    # executor.__exit__ waits for both futures before we proceed
+                    video_output = futures["render"].result() if "render" in futures else None
+                    tts_output = futures["tts"].result() if "tts" in futures else None
             else:
-                logger.info("TTS skipped (enable_tts=False)")
+                logger.info("Both render and TTS skipped")
 
             # Step 10: Audio-Video Composition (requires both render and TTS)
             composition_output = None
@@ -584,7 +596,8 @@ class Orchestrator:
                 configuration=config,
                 review_feedback=review_feedback,
             )
-            
+            input_data.constraints = StepConstraints(budget_tokens=16000, timeout_seconds=180)
+
             latest_storyboard = self._execute_with_retry(
                 agent=self.script_architect_agent,
                 input_data=input_data,
@@ -604,6 +617,7 @@ class Orchestrator:
                 source_text_summary=self._summarize_ocr_for_review(ocr_output),
                 pass_threshold=self.config.storyboard_quality_threshold,
             )
+            grader_input.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=60)
             grade_result = self._execute_agent(
                 agent=self.storyboard_grader_agent,
                 input_data=grader_input,
@@ -681,7 +695,8 @@ class Orchestrator:
             storyboard_dict = storyboard
         
         input_data = JSONSanitizerInput(storyboard_dict=storyboard_dict)
-        
+        input_data.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=15)
+
         result = self._execute_agent(
             agent=self.json_sanitizer_agent,
             input_data=input_data,
@@ -735,7 +750,7 @@ class Orchestrator:
         scene_feedback: Dict[str, List[str]] = {}
         validation_attempts: List[Dict[str, Any]] = []
         max_attempts = max(1, self.config.max_quality_retries + 1)
-        latest_result = None
+        latest_result = None  # guaranteed to be assigned in first loop iteration (max_attempts >= 1)
 
         for attempt in range(max_attempts):
             input_data = SceneControllerInput(
@@ -744,7 +759,8 @@ class Orchestrator:
                 animation_generator=animation_generator,
                 scene_feedback=scene_feedback,
             )
-            
+            input_data.constraints = StepConstraints(budget_tokens=32000, timeout_seconds=600)
+
             latest_result = self._execute_with_retry(
                 agent=self.scene_controller_agent,
                 input_data=input_data,
@@ -764,6 +780,7 @@ class Orchestrator:
                 animation_code_objects=latest_result.animation_code_objects,
                 enable_dry_run=self.config.enable_manim_dry_run_validation,
             )
+            validator_input.constraints = StepConstraints(budget_tokens=8000, timeout_seconds=120)
             validation_result = self._execute_agent(
                 agent=self.manim_code_validator_agent,
                 input_data=validator_input,
@@ -799,10 +816,16 @@ class Orchestrator:
                 len(scene_feedback),
             )
 
+        # Determine exit reason: if the last feedback was empty the scenes
+        # passed validation; otherwise we exhausted retry attempts.
+        final_status = (
+            "passed" if not scene_feedback
+            else "accepted_with_remaining_failures"
+        )
         self._quality_reports["scene_code_review"] = {
             "enabled": self.config.enable_quality_loops,
             "attempts": validation_attempts,
-            "final_status": "accepted_with_validation_failures",
+            "final_status": final_status,
         }
         return latest_result
     
@@ -868,6 +891,7 @@ class Orchestrator:
             output_dir=output_dir,
             quality="m"
         )
+        input_data.constraints = StepConstraints(timeout_seconds=1800)
 
         try:
             result = self._execute_with_retry(
@@ -904,6 +928,81 @@ class Orchestrator:
                 scene_results=[],
                 error=f"Video rendering failed: {e}"
             )
+
+    def _run_tts_generation_logged(
+        self,
+        storyboard,
+        manifest: OutputManifest,
+        structured_logger: StructuredJSONLogger,
+    ):
+        """Wrap TTS batch generation in structured logging.
+
+        The TTS path doesn't use _execute_agent / _execute_with_retry because
+        it's a batch operation, but the orchestrator-level structured log
+        still needs agent_start / agent_complete events so failures show up
+        in pipeline.log instead of disappearing into stderr.
+        """
+        scene_count = len(getattr(storyboard, "scenes", []) or [])
+        structured_logger.log_agent_start(
+            "TTS",
+            input_summary=f"{scene_count} scenes",
+            retry_attempt=0,
+        )
+        start = time.time()
+        try:
+            results = self._run_tts_generation(storyboard, manifest, structured_logger)
+            success = sum(1 for r in results if isinstance(r, TTSOutput))
+            failed = sum(1 for r in results if isinstance(r, TTSError))
+            duration_ms = (time.time() - start) * 1000
+
+            if failed == 0 and success > 0:
+                status = "SUCCESS"
+            elif success > 0:
+                status = "PARTIAL"
+            elif scene_count == 0:
+                status = "SUCCESS"  # nothing to do
+            else:
+                status = "FAILURE"
+
+            structured_logger.log_agent_complete(
+                "TTS",
+                duration_ms=duration_ms,
+                output_summary=f"{success} ok / {failed} failed",
+                status=status,
+                retry_attempt=0,
+            )
+
+            # Always record the TTS batch outcome so it lands in tts.json,
+            # not just on partial failure — clean runs are diagnostic too.
+            self._quality_reports["tts"] = {
+                "total": len(results),
+                "succeeded": success,
+                "failed": failed,
+                "status": status,
+                "errors": [
+                    {"scene_id": r.scene_id, "error": r.error}
+                    for r in results if isinstance(r, TTSError)
+                ],
+            }
+            return results
+        except Exception as e:
+            duration_ms = (time.time() - start) * 1000
+            structured_logger.log_agent_failure(
+                "TTS",
+                error_message=str(e),
+                error_code="TTS_STAGE_FAILED",
+                input_context=f"{scene_count} scenes",
+                retry_attempt=0,
+                duration_ms=duration_ms,
+            )
+            self._quality_reports["tts"] = {
+                "total": scene_count,
+                "succeeded": 0,
+                "failed": scene_count,
+                "status": "STAGE_ERROR",
+                "errors": [{"scene_id": "*", "error": str(e)}],
+            }
+            return []
 
     def _run_tts_generation(
         self,
@@ -1039,6 +1138,7 @@ class Orchestrator:
             scene_media=scene_media,
             output_dir=manifest.output_directory,
         )
+        input_data.constraints = StepConstraints(timeout_seconds=600)
 
         try:
             result = self._execute_with_retry(
@@ -1105,14 +1205,29 @@ class Orchestrator:
         """
         pdf_filename = Path(file_ref.filename).stem  # Remove extension
 
+        # In dry-run mode scene_output is None — build empty placeholders.
+        if scene_output is not None:
+            report = scene_output.report
+            code_objects = scene_output.animation_code_objects
+        else:
+            from src.schemas.scene_processing import SceneProcessingReport
+            report = SceneProcessingReport(
+                total_scenes=0,
+                successful_scenes=0,
+                failed_scenes=[],
+                output_directory=self._run_output_dir or "",
+            )
+            code_objects = []
+
         input_data = PersistenceInput(
-            scene_processing_report=scene_output.report,
-            animation_code_objects=scene_output.animation_code_objects,
+            scene_processing_report=report,
+            animation_code_objects=code_objects,
             storyboard=storyboard,
             ocr_output=ocr_output,
             pdf_filename=pdf_filename,
             output_dir=self._run_output_dir,  # canonical path — no new timestamp
         )
+        input_data.constraints = StepConstraints(timeout_seconds=60)
 
         result = self._execute_with_retry(
             agent=self.persistence_agent,
@@ -1286,7 +1401,12 @@ class Orchestrator:
             video_output=video_output,
             tts_output=tts_output,
             composition_output=composition_output,
+            # A composed final video only exists when both render and TTS ran.
+            # When TTS is disabled, skip the "no final video" check so it
+            # doesn't fire as a spurious critical finding.
+            final_video_expected=self.config.enable_tts,
         )
+        input_data.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=60)
         result = self._execute_agent(
             agent=self.video_quality_reviewer_agent,
             input_data=input_data,
@@ -1361,6 +1481,13 @@ class Orchestrator:
                 final_video_path,
                 "final_video",
             )
+            # Record on manifest for direct access
+            output_root = Path(manifest.output_directory)
+            try:
+                rel = Path(final_video_path).relative_to(output_root).as_posix()
+            except ValueError:
+                rel = str(Path(final_video_path).name)
+            manifest.final_video_path = rel
 
         self._persist_quality_reports(manifest)
         self._write_manifest_to_disk(manifest)
@@ -1376,6 +1503,7 @@ class Orchestrator:
             "storyboard_review": "storyboard_review.json",
             "scene_code_review": "scene_code_review.json",
             "video_review": "video_review.json",
+            "tts": "tts.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:
@@ -1423,7 +1551,6 @@ class Orchestrator:
             return
 
         manifest_path = output_dir / "manifest.json"
-        manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
         self._register_runtime_artifact(manifest, manifest_path, "manifest")
         manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     

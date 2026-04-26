@@ -126,6 +126,10 @@ class OutputManifest(BaseModel):
         default=None,
         description="Effective runtime configuration for this run"
     )
+    final_video_path: Optional[str] = Field(
+        default=None,
+        description="Relative path to the final composed video (None if render was skipped)"
+    )
     
     @field_validator('status')
     @classmethod
@@ -138,20 +142,14 @@ class OutputManifest(BaseModel):
             )
         return v
     
-    @field_validator('successful_scenes')
-    @classmethod
-    def validate_successful_scenes(cls, v: int, info) -> int:
-        """Ensure successful_scenes does not exceed total_scenes."""
-        total = info.data.get('total_scenes', 0)
-        if v > total:
-            raise ValueError(
-                f"successful_scenes ({v}) cannot exceed total_scenes ({total})"
-            )
-        return v
-    
     @model_validator(mode='after')
     def validate_scene_success_rate_consistency(self) -> 'OutputManifest':
-        """Ensure scene_success_rate is consistent with successful/total scenes."""
+        """Ensure successful_scenes <= total_scenes and rate is consistent."""
+        if self.successful_scenes > self.total_scenes:
+            raise ValueError(
+                f"successful_scenes ({self.successful_scenes}) cannot exceed "
+                f"total_scenes ({self.total_scenes})"
+            )
         if self.total_scenes == 0:
             expected_rate = 0.0
         else:

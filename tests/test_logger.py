@@ -11,8 +11,10 @@ Requirements tested:
 """
 
 import json
+import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -322,10 +324,11 @@ class TestStructuredJSONLogger:
             
             log_entry = json.loads(log_line)
             
-            # Verify timestamp is ISO8601 format (contains 'T' and timezone)
+            # Verify timestamp is valid ISO8601
+            from datetime import datetime, timezone
             timestamp = log_entry["timestamp"]
-            assert 'T' in timestamp
-            assert '+' in timestamp or 'Z' in timestamp or timestamp.endswith('00:00')
+            parsed = datetime.fromisoformat(timestamp)
+            assert parsed.tzinfo is not None, "Timestamp must include timezone"
     
     def test_retry_attempt_tracking(self):
         """Test that retry attempts are correctly tracked in logs."""
@@ -363,3 +366,84 @@ class TestStructuredJSONLogger:
             # Third attempt (success)
             assert log_entries[4]["retry_attempt"] == 2
             assert log_entries[5]["retry_attempt"] == 2
+
+
+class TestLoggerReliability:
+    """Regression tests for cross-platform reliability (Task 5)."""
+
+    def test_write_and_close_in_temp_directory(self):
+        """Logger must create, write to, and close pipeline.log in a temp dir cleanly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = StructuredJSONLogger(output_directory=tmpdir)
+            logger.log_agent_start("ReliabilityAgent", "smoketest")
+            logger.close()
+
+            log_file = Path(tmpdir) / "pipeline.log"
+            assert log_file.exists()
+            entry = json.loads(log_file.read_text().strip())
+            assert entry["agent_name"] == "ReliabilityAgent"
+
+    def test_degrades_gracefully_on_permission_error(self):
+        """If _setup_log_file raises PermissionError, logger falls back to console."""
+        with patch.object(
+            StructuredJSONLogger, "_setup_log_file", side_effect=PermissionError("denied")
+        ):
+            logger = StructuredJSONLogger(output_directory="/fake/dir")
+            assert logger.json_file_handle is None
+            assert logger.log_file_path is None
+            # Should not raise — logs to console only
+            logger.log_agent_start("FallbackAgent", "should not crash")
+            logger.close()
+
+    def test_degrades_gracefully_on_os_error(self):
+        """If _setup_log_file raises OSError, logger falls back to console."""
+        with patch.object(
+            StructuredJSONLogger, "_setup_log_file", side_effect=OSError("disk full")
+        ):
+            logger = StructuredJSONLogger(output_directory="/fake/dir")
+            assert logger.json_file_handle is None
+            # Should still log without crashing
+            logger.log_agent_failure(
+                "DiskAgent", "err", "DISK_FULL", "ctx"
+            )
+            logger.close()
+
+    def test_close_is_idempotent(self):
+        """Calling close() multiple times must not raise."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = StructuredJSONLogger(output_directory=tmpdir)
+            logger.log_agent_start("IdempotentAgent", "test")
+            logger.close()
+            logger.close()  # second call must be safe
+            logger.close()  # third call too
+
+    def test_concurrent_writes_do_not_corrupt_log(self):
+        """Multiple threads writing to the same logger must produce valid JSON lines."""
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = StructuredJSONLogger(output_directory=tmpdir)
+            errors = []
+
+            def _write(agent_name: str, count: int):
+                try:
+                    for i in range(count):
+                        logger.log_agent_start(agent_name, f"item-{i}")
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_write, args=(f"Agent-{t}", 20)) for t in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            logger.close()
+            assert not errors, f"Thread errors: {errors}"
+
+            log_file = Path(tmpdir) / "pipeline.log"
+            lines = log_file.read_text().splitlines()
+            assert len(lines) == 80  # 4 threads × 20 writes
+            for line in lines:
+                entry = json.loads(line)
+                assert "agent_name" in entry

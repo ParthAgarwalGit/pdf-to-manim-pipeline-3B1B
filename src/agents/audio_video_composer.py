@@ -280,7 +280,8 @@ class AudioVideoComposerAgent(Agent):
             elif audio_dur > video_dur:
                 # Audio is longer — freeze last frame of video
                 self._merge_freeze_video(
-                    pair.video_path, pair.audio_path, output_path, audio_dur
+                    pair.video_path, pair.audio_path, output_path, audio_dur,
+                    video_dur=video_dur,
                 )
                 final_dur = audio_dur
 
@@ -349,15 +350,16 @@ class AudioVideoComposerAgent(Agent):
         self._run_ffmpeg(cmd, timeout=self.COMPOSE_TIMEOUT)
 
     def _merge_freeze_video(
-        self, video: str, audio: str, output: str, target_duration: float
+        self, video: str, audio: str, output: str, target_duration: float,
+        video_dur: float = 0.0,
     ) -> None:
         """Audio is longer than video — freeze the video's last frame.
 
         Uses the tpad filter to extend the video stream by repeating the
         last frame until it matches the audio duration.
         """
-        # Calculate how much to extend (with a small buffer)
-        video_dur = self._get_media_duration(video)
+        if video_dur <= 0:
+            video_dur = self._get_media_duration(video)
         extend_secs = max(0, target_duration - video_dur + 0.5)
 
         cmd = [
@@ -413,7 +415,7 @@ class AudioVideoComposerAgent(Agent):
                 mode="w", suffix=".txt", delete=False, encoding="utf-8"
             ) as f:
                 for vp in video_paths:
-                    escaped = vp.replace("\\", "/")
+                    escaped = vp.replace("\\", "/").replace("'", "'\\''")  # escape for FFmpeg concat
                     f.write(f"file '{escaped}'\n")
                 concat_file = f.name
 
@@ -488,7 +490,7 @@ class AudioVideoComposerAgent(Agent):
             raise RuntimeError(f"FFmpeg exit code {result.returncode}: {stderr}")
 
     def _get_media_duration(self, file_path: str) -> float:
-        """Get media duration in seconds using ffprobe."""
+        """Get media duration in seconds using ffprobe. Returns -1.0 on failure."""
         try:
             result = subprocess.run(
                 [
@@ -502,5 +504,6 @@ class AudioVideoComposerAgent(Agent):
                 timeout=10,
             )
             return float(result.stdout.strip())
-        except Exception:
-            return 0.0
+        except Exception as exc:
+            logger.warning("Duration detection failed for %s: %s", file_path, exc)
+            return -1.0

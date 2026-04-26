@@ -115,6 +115,61 @@ def create_pi_students(count: int = 3, height: float = 0.8) -> VGroup:
     return students
 
 
+# ---------------------------------------------------------------------------
+# Role-aware helpers
+# ---------------------------------------------------------------------------
+
+#: Canonical ordering for deterministic left-to-right character lineups.
+ROLE_ORDER: dict = {
+    "teacher": 0,
+    "student_left": 1,
+    "student_center": 2,
+    "student_right": 3,
+    "narrator_proxy": 4,
+}
+
+
+def create_character_for_role(role: str, height: float | None = None) -> VGroup:
+    """Return the canonical Pi-creature for *role*.
+
+    Args:
+        role: One of ``"teacher"``, ``"student_left"``, ``"student_center"``,
+            ``"student_right"``, ``"narrator_proxy"``, or any custom string
+            (falls back to teacher style).
+        height: Override the default character height in Manim units.
+
+    Returns:
+        VGroup representing the character.
+    """
+    if role == "teacher":
+        return create_pi_teacher(height=height or 1.4)
+    if role in {"student_left", "student_center", "student_right"}:
+        return create_pi_students(count=1, height=height or 0.8)[0]
+    # narrator_proxy and unknown roles → teacher-style character
+    return create_pi_teacher(height=height or 1.0)
+
+
+def create_character_lineup(roles: list, spacing: float = 1.1) -> VGroup:
+    """Create a left-to-right lineup of Pi characters for the given *roles*.
+
+    Characters are sorted by ``ROLE_ORDER`` so the teacher always appears
+    on the far left and students are ordered left → center → right, regardless
+    of the order ``roles`` is given in.
+
+    Args:
+        roles: List of role strings (see ``ROLE_ORDER`` for canonical values).
+        spacing: Horizontal buffer between characters in Manim units.
+
+    Returns:
+        VGroup with characters arranged left-to-right.
+    """
+    ordered_roles = sorted(roles, key=lambda r: ROLE_ORDER.get(r, 99))
+    characters = [create_character_for_role(role) for role in ordered_roles]
+    lineup = VGroup(*characters)
+    lineup.arrange(RIGHT, buff=spacing)
+    return lineup
+
+
 def create_speech_bubble(text: str, speaker: VGroup,
                          max_width: float = 4.5,
                          font_size: int = 24) -> VGroup:

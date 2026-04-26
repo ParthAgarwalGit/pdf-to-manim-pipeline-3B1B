@@ -566,6 +566,7 @@ class TestValidationAgentProperties:
     across all valid inputs.
     """
     
+    @pytest.mark.property
     @given(
         # Generate file size within valid bounds [100KB, 50MB]
         # Use smaller range for faster testing

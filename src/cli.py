@@ -12,10 +12,8 @@ Usage:
 """
 
 import logging
-import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -313,35 +311,62 @@ def convert(
                     click.echo(f"  ... and {len(manifest.files) - 10} more files")
                 click.echo()
 
-            # Check for video output (generated after manifest was written)
+            # Report media outputs from the manifest (no filesystem globbing)
             output_path = Path(manifest.output_directory)
-            video_files = sorted(output_path.rglob("*.mp4")) if output_path.exists() else []
-            audio_files = sorted(output_path.rglob("*.mp3")) if output_path.exists() else []
+            video_entries = [f for f in manifest.files if f.type in ("scene_video", "composed_video", "final_video")]
+            audio_entries = [f for f in manifest.files if f.type == "scene_audio"]
 
-            if video_files:
+            if video_entries:
                 click.echo(click.style("Video Output:", fg="green", bold=True))
-                for vf in video_files:
-                    size_mb = vf.stat().st_size / (1024 * 1024)
-                    click.echo(f"  {click.style('VIDEO', fg='green')}: {vf}  ({size_mb:.1f} MB)")
+                for vf in video_entries:
+                    full = output_path / vf.path
+                    size_mb = vf.size_bytes / (1024 * 1024)
+                    click.echo(f"  {click.style('VIDEO', fg='green')}: {full}  ({size_mb:.1f} MB)")
                 click.echo()
             else:
-                click.echo(click.style("Warning: No video files (.mp4) were generated!", fg="yellow", bold=True))
-                click.echo("  This usually means:")
-                click.echo("  1. Manim is not installed  (pip install manim)")
-                click.echo("  2. FFmpeg is not installed  (https://ffmpeg.org/download.html)")
-                click.echo("  3. The Manim scene code had a rendering error")
-                click.echo("  Check the log output above for details.")
+                # Fallback: scan filesystem in case manifest was written before render
+                fs_videos = sorted(output_path.rglob("*.mp4")) if output_path.exists() else []
+                if fs_videos:
+                    click.echo(click.style("Video Output (from filesystem):", fg="green", bold=True))
+                    for vf in fs_videos:
+                        size_mb = vf.stat().st_size / (1024 * 1024)
+                        click.echo(f"  {click.style('VIDEO', fg='green')}: {vf}  ({size_mb:.1f} MB)")
+                    click.echo()
+                else:
+                    click.echo(click.style("Warning: No video files were produced.", fg="yellow", bold=True))
+                    click.echo("  Check: manim installed? ffmpeg available? Scene code errors?")
+                    click.echo()
+
+            if audio_entries:
+                click.echo(click.style("Audio Output:", bold=True))
+                for af in audio_entries:
+                    full = output_path / af.path
+                    size_mb = af.size_bytes / (1024 * 1024)
+                    click.echo(f"  {click.style('AUDIO', fg='cyan')}: {full}  ({size_mb:.1f} MB)")
                 click.echo()
 
-            if audio_files:
-                click.echo(click.style("Audio Output:", bold=True))
-                for af in audio_files:
-                    size_mb = af.stat().st_size / (1024 * 1024)
-                    click.echo(f"  {click.style('AUDIO', fg='cyan')}: {af}  ({size_mb:.1f} MB)")
+            # Quality review artifacts
+            review_files = {
+                "storyboard_review.json": "Storyboard Review",
+                "scene_code_review.json": "Scene Code Review",
+                "video_review.json": "Video Review",
+            }
+            found_reviews = []
+            for filename, label in review_files.items():
+                review_path = output_path / filename
+                if review_path.exists():
+                    found_reviews.append((label, review_path))
+            if found_reviews:
+                click.echo(click.style("Quality Review Artifacts:", bold=True))
+                for label, path in found_reviews:
+                    click.echo(f"  {label}: {path}")
                 click.echo()
 
             click.echo(click.style("=" * 60, fg="cyan"))
-            if video_files:
+            if manifest.final_video_path:
+                click.echo(click.style("Conversion completed successfully!", fg="green", bold=True))
+                click.echo(f"  Final video: {output_path / manifest.final_video_path}")
+            elif video_entries:
                 click.echo(click.style("Conversion completed successfully!", fg="green", bold=True))
             else:
                 click.echo(click.style("Pipeline finished but no video was produced.", fg="yellow", bold=True))

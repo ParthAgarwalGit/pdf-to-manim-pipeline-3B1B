@@ -5,7 +5,7 @@ Each agent has a single responsibility and explicit input/output contracts.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -39,12 +39,29 @@ class RetryPolicy:
             self.retryable_errors = []
 
 
-class AgentInput(ABC):
-    """Base class for agent input data
-    
-    All agent-specific input classes should inherit from this base class.
+@dataclass
+class StepConstraints:
+    """Per-step execution budget carried in every handoff payload.
+
+    Agents may read these to self-throttle prompt length or bail early.
+    The orchestrator sets them; agents treat them as advisory limits.
+
+    Attributes:
+        budget_tokens: Maximum input tokens the agent should consume.
+        timeout_seconds: Wall-clock time limit the agent should respect.
     """
-    pass
+    budget_tokens: Optional[int] = None
+    timeout_seconds: Optional[int] = None
+
+
+class AgentInput(ABC):
+    """Base class for agent input data.
+
+    Every concrete input class inherits ``constraints`` so the orchestrator
+    can attach per-step budget and timeout limits without modifying individual
+    input schemas.
+    """
+    constraints: Optional[StepConstraints] = None
 
 
 class AgentOutput(ABC):

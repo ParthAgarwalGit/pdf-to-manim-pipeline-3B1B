@@ -228,10 +228,9 @@ Return ONLY valid JSON:
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                temperature=0.1,
             )
             data = json.loads(response.choices[0].message.content)
             return self._parse_llm_response(data)

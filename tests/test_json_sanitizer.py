@@ -136,6 +136,7 @@ def valid_storyboard_strategy(draw):
     }
 
 
+@pytest.mark.property
 @given(storyboard_dict=valid_storyboard_strategy())
 def test_property_valid_storyboards_pass_unchanged(storyboard_dict):
     """Property 2: Valid storyboards pass sanitization unchanged.

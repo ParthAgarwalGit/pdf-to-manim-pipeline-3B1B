@@ -1,8 +1,7 @@
 """Ingestion Agent for PDF to Manim pipeline
 
-This module implements the Ingestion Agent responsible for processing local file
-ingestion and routing files to validation. It extracts file metadata from
-local file paths and constructs FileReference objects.
+Processes cloud storage events (S3, GCS, Azure) and local file events,
+extracts file metadata, and constructs FileReference objects.
 """
 
 import json
@@ -11,6 +10,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
+
+from pydantic import ValidationError
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.file_reference import FileReference
@@ -18,13 +20,15 @@ from src.schemas.file_reference import FileReference
 
 logger = logging.getLogger(__name__)
 
+_SUPPORTED_SOURCES = {'s3', 'gcs', 'azure', 'local'}
+
 
 class CloudStorageEvent(AgentInput):
-    """Input for Ingestion Agent: local file event
+    """Input for Ingestion Agent.
 
     Attributes:
-        event_payload: Event payload in local file format
-        event_source: Source of the event (always 'local' for MVP)
+        event_payload: Event payload dict (S3, GCS, Azure, or local format)
+        event_source: One of 's3', 'gcs', 'azure', 'local'
     """
 
     def __init__(self, event_payload: Dict[str, Any], event_source: str = 'local'):
@@ -33,25 +37,15 @@ class CloudStorageEvent(AgentInput):
 
 
 class IngestionOutput(AgentOutput):
-    """Output from Ingestion Agent: file reference object
-    
-    Attributes:
-        file_reference: FileReference object with extracted metadata
-    """
-    
+    """Successful output: extracted FileReference."""
+
     def __init__(self, file_reference: FileReference):
         self.file_reference = file_reference
 
 
 class IngestionError(AgentOutput):
-    """Error output from Ingestion Agent
-    
-    Attributes:
-        error_code: Machine-readable error code
-        reason: Human-readable error description
-        event_payload_sample: Sample of the malformed payload (for debugging)
-    """
-    
+    """Error output from Ingestion Agent."""
+
     def __init__(self, error_code: str, reason: str, event_payload_sample: Optional[str] = None):
         self.error_code = error_code
         self.reason = reason
@@ -59,111 +53,77 @@ class IngestionError(AgentOutput):
 
 
 class IngestAgent(Agent):
-    """Ingestion Agent for processing local file ingestion
+    """Ingestion Agent — parses cloud storage events into FileReference objects.
 
-    Responsibilities:
-    - Process local file ingestion events
-    - Extract file metadata from file paths
-    - Construct FileReference objects
-    - Log ingestion events with timestamps
-
-    Failure Modes:
-    - Malformed event payload → Return error, skip file
-    - File not found or inaccessible → Log error, skip file
+    Supported event sources: s3, gcs, azure, local.
     """
 
     def __init__(self):
-        """Initialize the Ingestion Agent"""
         self.logger = logging.getLogger(f"{__name__}.IngestAgent")
 
     @classmethod
     def from_file_path(cls, file_path: str) -> 'CloudStorageEvent':
-        """Create a CloudStorageEvent from a local file path.
-
-        This is a convenience method for the MVP that avoids needing to construct
-        the event payload manually for local file ingestion.
-
-        Args:
-            file_path: Absolute or relative path to a local file
-
-        Returns:
-            CloudStorageEvent with the file path embedded in event payload
-
-        Raises:
-            FileNotFoundError: If the file does not exist
-            ValueError: If the file path is invalid
-        """
+        """Convenience factory: wrap a local file path as a CloudStorageEvent."""
         path = Path(file_path)
-
         if not path.exists():
             raise FileNotFoundError(f"File does not exist: {file_path}")
-
         if not path.is_file():
             raise ValueError(f"Path is not a file: {file_path}")
 
-        # Get file size in bytes
-        file_size = path.stat().st_size
-
-        # Create event payload in local format
         event_payload = {
             'Records': [
                 {
                     's3': {
                         'object': {
                             'key': str(path.resolve()),
-                            'size': file_size
+                            'size': path.stat().st_size,
                         }
                     },
                     'eventTime': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                    'eventName': 'ObjectCreated:Put'
+                    'eventName': 'ObjectCreated:Put',
                 }
             ]
         }
-
         return CloudStorageEvent(event_payload=event_payload, event_source='local')
-    
+
     def execute(self, input_data: CloudStorageEvent) -> AgentOutput:
-        """Execute ingestion logic: extract metadata and create FileReference
-        
-        Args:
-            input_data: CloudStorageEvent containing event payload
-            
-        Returns:
-            IngestionOutput with FileReference OR IngestionError
-            
-        Raises:
-            AgentExecutionError: For unrecoverable failures
-        """
         if not self.validate_input(input_data):
             return IngestionError(
                 error_code="INVALID_INPUT",
                 reason="Input is not a valid CloudStorageEvent",
-                event_payload_sample=None
             )
-        
-        # Log ingestion event start
+
         self.logger.info(
             "Ingestion started",
             extra={
                 "event": "ingestion_start",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "event_source": input_data.event_source
-            }
+                "event_source": input_data.event_source,
+            },
         )
-        
-        try:
-            # Extract metadata from local file event
-            if input_data.event_source != 'local':
-                return IngestionError(
-                    error_code="UNSUPPORTED_EVENT_SOURCE",
-                    reason=f"Event source '{input_data.event_source}' is not supported (only 'local' is supported)",
-                    event_payload_sample=json.dumps(input_data.event_payload)[:200]
-                )
 
-            file_reference = self._extract_local_metadata(input_data.event_payload)
-            
-            # Log successful ingestion
-            # NOTE: "filename" is a reserved LogRecord attr — use "file_name" instead
+        source = input_data.event_source
+
+        if source not in _SUPPORTED_SOURCES:
+            return IngestionError(
+                error_code="UNSUPPORTED_EVENT_SOURCE",
+                reason=(
+                    f"Event source '{source}' is not supported. "
+                    f"Supported sources: {sorted(_SUPPORTED_SOURCES)}"
+                ),
+                event_payload_sample=json.dumps(input_data.event_payload)[:200],
+            )
+
+        try:
+            if source == 's3':
+                file_reference = self._extract_s3_metadata(input_data.event_payload)
+            elif source == 'gcs':
+                file_reference = self._extract_gcs_metadata(input_data.event_payload)
+            elif source == 'azure':
+                file_reference = self._extract_azure_metadata(input_data.event_payload)
+            else:
+                file_reference = self._extract_local_metadata(input_data.event_payload)
+
             self.logger.info(
                 "Ingestion completed successfully",
                 extra={
@@ -171,138 +131,193 @@ class IngestAgent(Agent):
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "file_path": file_reference.file_path,
                     "file_name": file_reference.filename,
-                    "size_bytes": file_reference.size_bytes
-                }
+                    "size_bytes": file_reference.size_bytes,
+                },
             )
-            
             return IngestionOutput(file_reference=file_reference)
-            
+
         except KeyError as e:
-            # Malformed event payload - missing required fields
             error_msg = f"Malformed event payload: missing required field '{e.args[0]}'"
-            self.logger.error(
-                error_msg,
-                extra={
-                    "event": "ingestion_error",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error_code": "MALFORMED_PAYLOAD",
-                    "payload_sample": json.dumps(input_data.event_payload)[:200]
-                }
-            )
+            self.logger.error(error_msg)
             return IngestionError(
                 error_code="MALFORMED_PAYLOAD",
                 reason=error_msg,
-                event_payload_sample=json.dumps(input_data.event_payload)[:200]
+                event_payload_sample=json.dumps(input_data.event_payload)[:200],
             )
-            
-        except ValueError as e:
-            # Invalid data in payload (e.g., negative file size)
-            error_msg = f"Invalid data in event payload: {str(e)}"
-            self.logger.error(
-                error_msg,
-                extra={
-                    "event": "ingestion_error",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error_code": "INVALID_PAYLOAD_DATA",
-                    "payload_sample": json.dumps(input_data.event_payload)[:200]
-                }
-            )
+
+        except ValidationError as e:
+            error_msg = f"Invalid data in event payload: validation error - {e}"
+            self.logger.error(error_msg)
             return IngestionError(
                 error_code="INVALID_PAYLOAD_DATA",
                 reason=error_msg,
-                event_payload_sample=json.dumps(input_data.event_payload)[:200]
+                event_payload_sample=json.dumps(input_data.event_payload)[:200],
             )
-            
+
+        except ValueError as e:
+            error_msg = f"Invalid data in event payload: {e}"
+            self.logger.error(error_msg)
+            return IngestionError(
+                error_code="INVALID_PAYLOAD_DATA",
+                reason=error_msg,
+                event_payload_sample=json.dumps(input_data.event_payload)[:200],
+            )
+
         except Exception as e:
-            # Unexpected error
-            error_msg = f"Unexpected error during ingestion: {str(e)}"
-            self.logger.error(
-                error_msg,
-                extra={
-                    "event": "ingestion_error",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error_code": "UNEXPECTED_ERROR",
-                    "error_type": type(e).__name__
-                }
-            )
+            error_msg = f"Unexpected error during ingestion: {e}"
+            self.logger.error(error_msg)
             raise AgentExecutionError(
                 error_code="UNEXPECTED_ERROR",
                 message=error_msg,
-                context={"error_type": type(e).__name__}
+                context={"error_type": type(e).__name__},
             )
 
-    def _extract_local_metadata(self, event_payload: Dict[str, Any]) -> FileReference:
-        """Extract metadata from local file event
+    # ------------------------------------------------------------------
+    # Per-source parsers
+    # ------------------------------------------------------------------
 
-        Args:
-            event_payload: Local file event payload (S3-like format)
-
-        Returns:
-            FileReference object with extracted metadata
-
-        Raises:
-            KeyError: If required fields are missing
-            ValueError: If data is invalid
-        """
-        # Local event structure mimics S3: Records[0].s3.object
+    def _extract_s3_metadata(self, event_payload: Dict[str, Any]) -> FileReference:
+        """Parse an AWS S3 event notification."""
         record = event_payload['Records'][0]
         s3_info = record['s3']
+        bucket_name = s3_info['bucket']['name']
+        s3_object = s3_info['object']
+        object_key = s3_object['key']
+        file_size = int(s3_object['size'])
 
-        # For local files, the object key is the actual file path
-        file_path = s3_info['object']['key']
-        file_size = s3_info['object']['size']
+        filename = Path(object_key).name
+        file_path = f"s3://{bucket_name}/{object_key}"
 
-        # Extract filename from path
-        filename = Path(file_path).name
+        event_time_str = record.get('eventTime', '')
+        upload_timestamp = self._parse_timestamp(event_time_str)
 
-        # Parse event time (ISO8601 format)
-        event_time_str = record['eventTime']
-        upload_timestamp = datetime.fromisoformat(event_time_str.replace('Z', '+00:00'))
+        region = record.get('awsRegion', 'Unknown')
+        event_name = record.get('eventName', 'Unknown')
 
-        # Extract additional metadata
-        metadata = {
-            'source': 'local',
-            'event_name': record.get('eventName', 'LocalFile')
+        metadata: Dict[str, Any] = {
+            'bucket': bucket_name,
+            'object_key': object_key,
+            'event_name': event_name,
+            'region': region,
         }
+        etag = s3_object.get('eTag')
+        if etag is not None:
+            metadata['etag'] = etag
 
         return FileReference(
-            file_path=file_path,  # Keep as local path, not S3 URL
+            file_path=file_path,
             filename=filename,
             size_bytes=file_size,
             upload_timestamp=upload_timestamp,
-            metadata=metadata
+            metadata=metadata,
         )
 
+    def _extract_gcs_metadata(self, event_payload: Dict[str, Any]) -> FileReference:
+        """Parse a Google Cloud Storage object notification."""
+        bucket_name = event_payload['bucket']
+        object_name = event_payload['name']
+        file_size = int(event_payload['size'])
+
+        filename = Path(object_name).name
+        file_path = f"gs://{bucket_name}/{object_name}"
+
+        event_time_str = event_payload.get('timeCreated', '')
+        upload_timestamp = self._parse_timestamp(event_time_str)
+
+        metadata: Dict[str, Any] = {
+            'bucket': bucket_name,
+            'object_name': object_name,
+        }
+        content_type = event_payload.get('contentType')
+        if content_type is not None:
+            metadata['content_type'] = content_type
+        generation = event_payload.get('generation')
+        if generation is not None:
+            metadata['generation'] = generation
+
+        return FileReference(
+            file_path=file_path,
+            filename=filename,
+            size_bytes=file_size,
+            upload_timestamp=upload_timestamp,
+            metadata=metadata,
+        )
+
+    def _extract_azure_metadata(self, event_payload: Dict[str, Any]) -> FileReference:
+        """Parse an Azure Blob Storage event."""
+        data = event_payload['data']
+        blob_url = data['url']
+        file_size = int(data['contentLength'])
+
+        parsed = urlparse(blob_url)
+        # path is e.g. "/container/path/to/blob.pdf"
+        path_parts = parsed.path.lstrip('/').split('/', 1)
+        container = path_parts[0]
+        blob_path = path_parts[1] if len(path_parts) > 1 else ''
+        blob_name = Path(blob_path).name
+        file_path = f"azure://{container}/{blob_path}"
+
+        event_time_str = event_payload.get('eventTime', '')
+        upload_timestamp = self._parse_timestamp(event_time_str)
+
+        metadata: Dict[str, Any] = {
+            'container': container,
+            'blob_name': blob_name,
+            'event_type': event_payload.get('eventType', ''),
+        }
+        content_type = data.get('contentType')
+        if content_type is not None:
+            metadata['content_type'] = content_type
+
+        return FileReference(
+            file_path=file_path,
+            filename=blob_name,
+            size_bytes=file_size,
+            upload_timestamp=upload_timestamp,
+            metadata=metadata,
+        )
+
+    def _extract_local_metadata(self, event_payload: Dict[str, Any]) -> FileReference:
+        """Parse a synthetic local-file event (S3-shaped, local path as key)."""
+        record = event_payload['Records'][0]
+        s3_info = record['s3']
+        file_path = s3_info['object']['key']
+        file_size = s3_info['object']['size']
+        filename = Path(file_path).name
+
+        event_time_str = record.get('eventTime', '')
+        upload_timestamp = self._parse_timestamp(event_time_str)
+
+        metadata = {
+            'source': 'local',
+            'event_name': record.get('eventName', 'LocalFile'),
+        }
+
+        return FileReference(
+            file_path=file_path,
+            filename=filename,
+            size_bytes=file_size,
+            upload_timestamp=upload_timestamp,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _parse_timestamp(ts: str) -> datetime:
+        """Parse an ISO-8601 timestamp string, handling trailing Z."""
+        if not ts:
+            return datetime.now(timezone.utc)
+        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+
     def validate_input(self, input_data: AgentInput) -> bool:
-        """Validate input is a CloudStorageEvent with required fields
-        
-        Args:
-            input_data: Input to validate
-            
-        Returns:
-            True if input is valid, False otherwise
-        """
         if not isinstance(input_data, CloudStorageEvent):
             return False
-        
         if not hasattr(input_data, 'event_payload') or not isinstance(input_data.event_payload, dict):
             return False
-        
         if not hasattr(input_data, 'event_source') or not isinstance(input_data.event_source, str):
             return False
-        
         return True
-    
+
     def get_retry_policy(self) -> RetryPolicy:
-        """Return retry policy for Ingestion Agent
-        
-        Returns:
-            RetryPolicy with exponential backoff for transient failures
-            
-        Note:
-            Retries are appropriate for event notification system unavailability.
-            Malformed payloads and missing files should not be retried.
-        """
         return RetryPolicy(
             max_attempts=3,
             backoff_strategy=BackoffStrategy.EXPONENTIAL,
@@ -311,6 +326,6 @@ class IngestAgent(Agent):
             retryable_errors=[
                 "EVENT_SYSTEM_UNAVAILABLE",
                 "NETWORK_TIMEOUT",
-                "TEMPORARY_SERVICE_UNAVAILABLE"
-            ]
+                "TEMPORARY_SERVICE_UNAVAILABLE",
+            ],
         )

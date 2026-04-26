@@ -1,16 +1,21 @@
-"""Async wrapper for the synchronous pipeline with web deployment support.
+"""Async adapter around the synchronous pipeline for web deployment scenarios.
 
-This module provides async capabilities for the PDF-to-Manim pipeline, enabling
-concurrent execution in web environments. It wraps the synchronous Orchestrator
-class and provides:
+ARCHITECTURE NOTE (ADR-001): This module is an *adapter*, not a second pipeline
+implementation. The canonical orchestration logic lives in
+``src/orchestrator/pipeline.py`` (the synchronous ``Orchestrator``). This file
+wraps that class via ``asyncio.to_thread()`` to enable WebSocket progress
+callbacks and concurrent multi-pipeline task queues in a future web deployment.
 
+New pipeline stages must be added to the sync orchestrator first. If this
+adapter diverges from the sync pipeline's feature set, it must be brought back
+into alignment before it can be trusted. Any future move to full async
+orchestration requires a new ADR superseding ADR-001.
+
+Provides:
 1. AsyncPipelineRunner: Async execution with progress callbacks for WebSocket updates
 2. TaskQueue: Manages multiple concurrent pipeline runs with configurable limits
 3. PipelineStatus: Enum tracking pipeline execution stages
 4. PipelineResult: Dataclass with execution results and cost/timing information
-
-The async wrapper uses asyncio.to_thread() to run the synchronous pipeline in
-a thread executor, preventing blocking of the event loop.
 """
 
 import asyncio

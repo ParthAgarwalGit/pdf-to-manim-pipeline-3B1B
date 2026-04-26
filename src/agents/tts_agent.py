@@ -7,16 +7,95 @@ retry logic with exponential backoff, and graceful handling of missing API keys.
 
 import logging
 import os
+import re
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+try:
+    import openai
+except ImportError:
+    openai = None  # type: ignore[assignment]
+
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.utils.cost_tracker import CostTracker
+from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
 
 
 logger = logging.getLogger(__name__)
+
+
+# OpenAI TTS rejects any single request over 4096 characters with HTTP 400.
+# We pick 4000 as a safety buffer and split longer narration on sentence
+# boundaries, generating one MP3 per chunk and concatenating with ffmpeg.
+TTS_MAX_CHARS = 4000
+
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_for_tts(text: str, max_chars: int = TTS_MAX_CHARS) -> List[str]:
+    """Split narration into chunks ≤ max_chars on sentence boundaries.
+
+    Falls back to whitespace boundaries when a single sentence exceeds the
+    limit, and to a hard char-cut as last resort (only for pathological
+    input with no whitespace at all).
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    sentences = [s for s in _SENTENCE_BREAK.split(text) if s.strip()]
+    chunks: List[str] = []
+    current = ""
+
+    def _flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    def _pack_oversized(piece: str) -> None:
+        """Split a single oversized piece on whitespace, then on hard char cuts."""
+        nonlocal current
+        words = piece.split()
+        for w in words:
+            if len(w) > max_chars:
+                # Pathological: a single token longer than max_chars.
+                # Hard-cut every max_chars characters.
+                _flush()
+                for i in range(0, len(w), max_chars):
+                    chunks.append(w[i:i + max_chars])
+                continue
+            cand = (current + " " + w).strip() if current else w
+            if len(cand) <= max_chars:
+                current = cand
+            else:
+                _flush()
+                current = w
+
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        candidate = (current + " " + s).strip() if current else s
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        # Adding this sentence would overflow → flush current chunk.
+        _flush()
+        if len(s) <= max_chars:
+            current = s
+        else:
+            # Sentence itself is too long — fall back to word packing.
+            _pack_oversized(s)
+
+    _flush()
+    return chunks
 
 
 @dataclass
@@ -125,10 +204,7 @@ class TTSAgent(Agent):
         # Initialize OpenAI client if API key is available
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
-            try:
-                import openai
-                self.client = openai.OpenAI(api_key=api_key)
-            except ImportError:
+            if openai is None:
                 if self.strict:
                     raise AgentExecutionError(
                         "MISSING_DEPENDENCY",
@@ -136,6 +212,8 @@ class TTSAgent(Agent):
                     )
                 logger.warning("OpenAI package not installed. TTS will be skipped.")
                 self.client = None
+            else:
+                self.client = openai.OpenAI(api_key=api_key)
         else:
             if self.strict:
                 raise AgentExecutionError(
@@ -214,18 +292,26 @@ class TTSAgent(Agent):
                     {"scene_id": input_data.scene_id}
                 )
 
-            # Estimate duration
-            duration_seconds = self._estimate_duration(input_data.narration)
+            # Measure actual duration from the generated file; fall back to
+            # heuristic estimate when ffprobe is unavailable.
+            duration_seconds = self._probe_duration(audio_file_path)
+            if duration_seconds <= 0:
+                duration_seconds = self._estimate_duration(input_data.narration)
 
             # Track cost
             char_count = len(input_data.narration)
             cost = self._calculate_cost(char_count)
+            # NOTE: CostTracker.track_call expects token counts. For TTS the
+            # billable unit is characters, not tokens; we pass char_count as
+            # input_tokens so the tracker records *something* proportional to
+            # cost.  A future CostTracker revision should add a dedicated
+            # `characters` field.
             self.cost_tracker.track_call(
                 provider="openai",
                 model=model,
-                input_tokens=char_count,  # Using character count as proxy for tokens
-                output_tokens=0,  # TTS doesn't have output tokens
-                call_type="tts"
+                input_tokens=char_count,
+                output_tokens=0,
+                call_type="tts",
             )
 
             logger.info(f"Generated TTS audio for scene {input_data.scene_id}: {audio_file_path} ({duration_seconds:.2f}s, ${cost:.4f})")
@@ -356,6 +442,10 @@ class TTSAgent(Agent):
     ) -> str:
         """Call OpenAI TTS API and save audio file.
 
+        For narrations > TTS_MAX_CHARS the text is split on sentence
+        boundaries, each chunk is generated as its own MP3, and the
+        chunks are concatenated with ffmpeg into the final file.
+
         Args:
             narration: Text to convert to speech
             scene_id: Scene identifier for logging
@@ -367,25 +457,69 @@ class TTSAgent(Agent):
             Path to generated audio file
 
         Raises:
-            Exception: If API call fails
+            Exception: If any API call or ffmpeg concat fails
         """
         if not self.client:
             raise RuntimeError("OpenAI client not initialized")
 
-        # Generate audio using OpenAI TTS API
-        response = self.client.audio.speech.create(
-            model=model,
-            voice=voice,
-            input=narration,
-            response_format="mp3"
-        )
-
-        # Save audio to file
         output_path = Path(output_dir) / f"{scene_id}.mp3"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(output_path, "wb") as f:
-            f.write(response.content)
+        chunks = _split_for_tts(narration)
+        if not chunks:
+            raise RuntimeError(f"Empty narration for scene {scene_id}")
+
+        if len(chunks) == 1:
+            # Fast path — single API call.
+            response = self.client.audio.speech.create(
+                model=model,
+                voice=voice,
+                input=chunks[0],
+                response_format="mp3",
+            )
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            return str(output_path)
+
+        logger.info(
+            f"Scene {scene_id}: narration {len(narration)} chars > {TTS_MAX_CHARS} "
+            f"limit, splitting into {len(chunks)} TTS calls and concatenating."
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            part_paths: List[str] = []
+            for i, chunk in enumerate(chunks):
+                response = self.client.audio.speech.create(
+                    model=model,
+                    voice=voice,
+                    input=chunk,
+                    response_format="mp3",
+                )
+                part = Path(tmp) / f"part_{i:03d}.mp3"
+                with open(part, "wb") as f:
+                    f.write(response.content)
+                part_paths.append(str(part))
+
+            # ffmpeg concat demuxer wants a list file with single-quoted paths.
+            list_file = Path(tmp) / "parts.txt"
+            list_lines = [
+                "file '" + p.replace("'", "'\\''") + "'"
+                for p in part_paths
+            ]
+            list_file.write_text("\n".join(list_lines), encoding="utf-8")
+
+            cmd = [
+                get_ffmpeg(), "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", str(list_file),
+                "-c", "copy",
+                str(output_path),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg concat failed for scene {scene_id}: {result.stderr.strip()[:500]}"
+                )
 
         return str(output_path)
 
@@ -409,6 +543,23 @@ class TTSAgent(Agent):
                 f"Invalid voice: {input_data.voice}. "
                 f"Must be one of {self.VALID_VOICES}"
             )
+
+    @staticmethod
+    def _probe_duration(file_path: str) -> float:
+        """Return actual audio duration via ffprobe, or -1.0 on failure."""
+        try:
+            result = subprocess.run(
+                [
+                    get_ffprobe(), "-v", "quiet",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0",
+                    file_path,
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            return -1.0
 
     def _estimate_duration(self, narration: str) -> float:
         """Estimate audio duration from narration text.

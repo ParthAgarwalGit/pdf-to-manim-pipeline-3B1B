@@ -463,6 +463,22 @@ class TestPersistenceAgentFileContent:
         assert data["scene_success_rate"] == 1.0
         assert len(data["files"]) == 6
 
+        # Manifest self-entry must report a real on-disk size (not 0).
+        # Because knowing the size before writing is a chicken-and-egg problem
+        # we do two passes: write → patch → re-write.  The recorded size comes
+        # from pass 1, so it can be a handful of bytes smaller than the pass-2
+        # file (the digits of the size number itself take up space).  We verify
+        # the value is positive and within a 32-byte tolerance of the real size.
+        manifest_entries = [f for f in data["files"] if f["type"] == "manifest"]
+        assert len(manifest_entries) == 1, "Exactly one manifest entry expected"
+        recorded_size = manifest_entries[0]["size_bytes"]
+        actual_size = os.path.getsize(manifest_file)
+        assert recorded_size > 0, "Manifest self-entry size_bytes must not be 0"
+        assert abs(actual_size - recorded_size) <= 32, (
+            f"Manifest self-entry size {recorded_size} is not within 32 bytes of "
+            f"actual file size {actual_size}"
+        )
+
 
 class TestPersistenceAgentIdempotency:
     """Test idempotency of Persistence Agent."""
@@ -1253,7 +1269,8 @@ class TestPersistenceAgentValidation:
         mock_input = MockInput()
         assert agent.validate_input(mock_input) is False
     """Property-based tests for Persistence Agent idempotency."""
-    
+
+    @pytest.mark.property
     @given(
         scene_count=st.integers(min_value=1, max_value=10),
         pdf_filename=st.text(
@@ -1421,14 +1438,15 @@ class TestPersistenceAgentValidation:
             if os.path.exists(temp_output_dir):
                 shutil.rmtree(temp_output_dir)
     
+    @pytest.mark.property
     @given(
         scene_count=st.integers(min_value=1, max_value=5),
         pdf_filename=st.text(
-            min_size=1, 
-            max_size=20, 
+            min_size=1,
+            max_size=20,
             alphabet=st.characters(whitelist_categories=('Lu', 'Ll', 'Nd'))
-        ).filter(lambda s: s.upper() not in ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 
-                                               'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 
+        ).filter(lambda s: s.upper() not in ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4',
+                                               'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2',
                                                'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']),
         success_rate=st.floats(min_value=0.0, max_value=1.0)
     )

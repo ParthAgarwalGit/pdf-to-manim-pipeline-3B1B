@@ -45,6 +45,9 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.6.0",
 ]
+engine_reference = [
+    "manimgl>=1.7.2",
+]
 
 [project.scripts]
 pdf2manim = "src.cli:main"
@@ -66,8 +69,9 @@ python_functions = "test_*"
 markers = [
     "unit: Unit tests for specific components",
     "integration: Integration tests for end-to-end workflows",
-    "property: Property-based tests using Hypothesis",
+    "property: Property-based tests using Hypothesis (excluded from fast PR lane)",
     "slow: Tests that take significant time to run",
+    "live_api: Tests that require real external provider credentials or network access",
 ]
 
 [tool.coverage.run]
@@ -103,7 +107,4 @@ target-version = "py310"
 select = ["E", "F", "W"]
 ignore = ["E501"]
 
-[tool.uv.workspace]
-members = [
-    "manimations",
-]
+[tool.uv]

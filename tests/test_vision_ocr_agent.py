@@ -379,10 +379,11 @@ class TestMathExpressionExtraction:
 class TestDiagramDetection:
     """Test diagram detection and classification"""
     
-    def test_detect_diagrams_basic(self):
-        """Test basic diagram detection"""
+    def test_detect_diagrams_basic(self, monkeypatch):
+        """Test basic diagram detection using the local mock fallback (no API key)."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         agent = VisionOCRAgent()
-        
+
         mock_page = Mock()
         mock_page.number = 0
         mock_page.get_text.return_value = {
@@ -393,10 +394,10 @@ class TestDiagramDetection:
                 }
             ]
         }
-        
+
         mock_img = Mock(spec=Image.Image)
         text_blocks = []
-        
+
         diagrams = agent._detect_diagrams(mock_page, mock_img, text_blocks)
         
         assert len(diagrams) == 1

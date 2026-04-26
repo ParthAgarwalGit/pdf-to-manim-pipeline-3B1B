@@ -371,14 +371,14 @@ class VisionOCRAgent(Agent):
         """
         Processes a specific cropped area of the page image using GPT-4o Vision.
         """
-        # Safety fallback
+        # Safety fallback — use local aspect-ratio heuristic when no client
         if not self.client:
             if self.strict:
                 raise AgentExecutionError(
                     "MISSING_API_KEY",
                     "OPENAI_API_KEY is required in --strict mode for diagram analysis"
                 )
-            return "unknown", "Visual analysis unavailable (No API Key)", []
+            return self._mock_diagram_analysis(img, bbox)
 
         # 1. Crop the image to the diagram's bounding box (x0, y0, x1, y1)
         cropped_img = img.crop(bbox)
@@ -391,7 +391,7 @@ class VisionOCRAgent(Agent):
         # 3. Call the Vision Model
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5",
                 messages=[{
                     "role": "user",
                     "content": [
@@ -399,7 +399,7 @@ class VisionOCRAgent(Agent):
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}
                     ]
                 }],
-                max_tokens=300
+                max_completion_tokens=300
             )
             
             full_description = response.choices[0].message.content
@@ -415,6 +415,33 @@ class VisionOCRAgent(Agent):
         except Exception as e:
             logger.error(f"Vision API call failed: {e}")
             return "unknown", f"Failed to extract description: {e}", []
+
+    def _mock_diagram_analysis(
+        self,
+        img: "Image.Image",
+        bbox: "Tuple[float, float, float, float]",
+    ) -> "Tuple[str, str, List[str]]":
+        """Classify a diagram by aspect ratio without making an API call.
+
+        Returns (diagram_type, description, visual_elements).
+        Used as a fallback when no OpenAI client is available.
+        """
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        ratio = width / height if height > 0 else 1.0
+
+        area = width * height
+
+        if ratio > 1.5:
+            return "graph", "A graph or chart (wider than tall)", ["x-axis", "y-axis", "data-series"]
+        elif ratio < 0.67:
+            return "flowchart", "A flowchart or diagram (taller than wide)", ["boxes", "arrows", "labels"]
+        elif area >= 10000:
+            # Large approximately-square region → mathematical plot or figure
+            return "plot", "A mathematical plot", ["axes", "curve", "labels"]
+        else:
+            # Small approximately-square region → geometric shape or symbol
+            return "geometric", "A geometric diagram", ["shapes", "labels", "annotations"]
 
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is a FileReference object"""

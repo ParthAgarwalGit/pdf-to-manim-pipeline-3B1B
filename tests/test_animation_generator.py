@@ -905,6 +905,45 @@ def test_animation_prompt_omits_opening_state_when_no_live_objects(monkeypatch):
     assert "OPENING STATE" not in captured["system"]
 
 
+def test_animation_prompt_renders_color_continuity_when_bindings_present(monkeypatch):
+    """When SharedContext.color_bindings is populated, the system prompt
+    must surface the variable→color mapping as a tex_to_color_map hint
+    (so the LLM uses the same color for the same variable across scenes)."""
+    spec = build_test_scene_spec(scene_id="scene_002", narration="Continue.", duration=15.0)
+    context = build_test_context()
+    context.color_bindings = {"x": "#58C4DD", "y": "#83C167"}
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=1,
+    )
+    sys_prompt = captured["system"]
+    assert "COLOR CONTINUITY" in sys_prompt
+    assert "tex_to_color_map" in sys_prompt
+    assert "#58C4DD" in sys_prompt
+    assert "#83C167" in sys_prompt
+
+
+def test_animation_prompt_omits_color_continuity_when_no_bindings(monkeypatch):
+    """First scene has no color bindings; the section must NOT appear."""
+    spec = build_test_scene_spec(scene_id="scene_001", narration="Intro.", duration=15.0)
+    context = build_test_context()  # color_bindings default-empty
+
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, context, scene_index=0,
+    )
+    assert "COLOR CONTINUITY" not in captured["system"]
+
+
+def test_animation_generator_imports_animation_patterns_helpers():
+    """Generated Manim files must import the 3B1B animation pattern helpers
+    so the LLM can call progressive_write / dim_and_focus directly."""
+    agent = AnimationCodeGeneratorAgent()
+    imports = agent._get_imports()
+    joined = "\n".join(imports)
+    assert "animation_patterns" in joined
+    assert "progressive_write" in joined
+
+
 # ============================================================================
 # Task 12: Closed-vocabulary primitive emitter
 # ============================================================================

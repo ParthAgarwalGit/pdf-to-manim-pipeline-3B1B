@@ -286,3 +286,139 @@ class TestRetryPolicy:
         delay2 = agent_with_client._calculate_backoff(2)
         assert delay1 > delay0
         assert delay2 > delay1
+
+
+# ---------------------------------------------------------------------------
+# Long-narration chunking (4096-char limit)
+# ---------------------------------------------------------------------------
+
+class TestNarrationChunking:
+    """Reproduces the bug from output/machine_learning/2026-04-23T18-58-09:
+    every scene narration was 4568–7967 chars, OpenAI rejects > 4096."""
+
+    def test_split_returns_single_chunk_under_threshold(self):
+        from src.agents.tts_agent import _split_for_tts
+        text = "This is short. Just a sentence or two."
+        chunks = _split_for_tts(text, max_chars=4000)
+        assert chunks == [text]
+
+    def test_split_chunks_long_narration_under_threshold(self):
+        from src.agents.tts_agent import _split_for_tts
+        text = ("This is a sentence. " * 400)  # ≈ 8000 chars
+        chunks = _split_for_tts(text, max_chars=4000)
+        assert len(chunks) >= 2
+        assert all(len(c) <= 4000 for c in chunks)
+
+    def test_split_only_breaks_at_sentence_boundaries_when_possible(self):
+        from src.agents.tts_agent import _split_for_tts
+        text = ("Sentence one ends here. " * 300)  # ≈ 7200 chars
+        chunks = _split_for_tts(text, max_chars=4000)
+        # Each chunk (except possibly the last) ends on a sentence terminator
+        for c in chunks[:-1]:
+            assert c.rstrip().endswith(("."), )
+        assert all(len(c) <= 4000 for c in chunks)
+
+    def test_split_preserves_total_word_count(self):
+        from src.agents.tts_agent import _split_for_tts
+        text = ("Word " * 2000).strip() + "."
+        original_words = len(text.split())
+        chunks = _split_for_tts(text, max_chars=4000)
+        rejoined_words = sum(len(c.split()) for c in chunks)
+        assert rejoined_words == original_words
+
+    def test_split_handles_pathological_long_sentence(self):
+        from src.agents.tts_agent import _split_for_tts
+        # A single 5000-char sentence with no period — must still split.
+        text = ("nopunct " * 700)  # ~5600 chars no terminators
+        chunks = _split_for_tts(text, max_chars=4000)
+        assert all(len(c) <= 4000 for c in chunks)
+        assert len(chunks) >= 2
+
+
+class TestLongNarrationGeneration:
+    """End-to-end: a 7000-char narration must be split into multiple
+    API calls and ffmpeg-concatenated into a single MP3."""
+
+    def test_long_narration_makes_multiple_api_calls(self, agent_with_client, tmp_path, monkeypatch):
+        # Patch subprocess.run so neither ffmpeg nor ffprobe needs a real binary.
+        # Capture all subprocess calls so we can verify ffmpeg concat was invoked.
+        all_calls = []
+
+        def fake_run(cmd, **kwargs):
+            all_calls.append(list(cmd))
+            # If this is an ffmpeg concat (output is the last positional arg),
+            # write a non-empty file at that path so downstream code doesn't fail.
+            if "concat" in cmd:
+                from pathlib import Path as _P
+                _P(cmd[-1]).write_bytes(b"\x00" * 4096)
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": "10.0"})
+
+        monkeypatch.setattr("src.agents.tts_agent.subprocess.run", fake_run)
+
+        long_narration = ("This is a complete sentence about machine learning. " * 200)  # ≈ 10400 chars
+        input_data = TTSInput(
+            narration=long_narration,
+            scene_id="scene_long",
+            output_dir=str(tmp_path),
+        )
+        result = agent_with_client.execute(input_data)
+
+        assert isinstance(result, TTSOutput), f"Expected TTSOutput, got {type(result).__name__}: {getattr(result, 'error', None)}"
+        # OpenAI TTS API was called more than once (chunked)
+        assert agent_with_client.client.audio.speech.create.call_count >= 2
+        # Every call's `input` was under the 4096-char limit
+        for call in agent_with_client.client.audio.speech.create.call_args_list:
+            assert len(call.kwargs["input"]) <= 4000
+        # ffmpeg concat was invoked at some point
+        assert any("concat" in c for c in all_calls), f"No concat call in {all_calls!r}"
+
+
+# ---------------------------------------------------------------------------
+# Structured logging in orchestrator wrapper
+# ---------------------------------------------------------------------------
+
+class TestStructuredLoggingWrapper:
+    """The orchestrator's TTS branch must emit agent_start / agent_complete
+    events so failures show up in pipeline.log."""
+
+    def test_run_tts_generation_logged_emits_start_and_complete(self, tmp_path):
+        from unittest.mock import MagicMock
+        from src.orchestrator.pipeline import Orchestrator, PipelineConfig
+
+        orch = Orchestrator(config=PipelineConfig(enable_tts=True, enable_render=False))
+        orch._quality_reports = {}
+
+        # Stub TTS agent to return one success + one failure
+        ok = TTSOutput(audio_file_path=str(tmp_path / "s1.mp3"), duration_seconds=5.0,
+                       scene_id="s1", cost_usd=0.01)
+        bad = TTSError(scene_id="s2", error="some api error")
+        orch.tts_agent = MagicMock()
+        orch.tts_agent.process_all_scenes.return_value = [ok, bad]
+
+        # Build a fake storyboard with two scenes
+        storyboard = MagicMock()
+        scene1 = MagicMock(); scene1.scene_id = "s1"; scene1.narration = "n1"
+        scene2 = MagicMock(); scene2.scene_id = "s2"; scene2.narration = "n2"
+        storyboard.scenes = [scene1, scene2]
+
+        # Fake manifest with output dir
+        manifest = MagicMock()
+        manifest.output_directory = str(tmp_path)
+
+        # Spy on the structured logger
+        spy_logger = MagicMock()
+
+        results = orch._run_tts_generation_logged(storyboard, manifest, spy_logger)
+
+        spy_logger.log_agent_start.assert_called_once()
+        spy_logger.log_agent_complete.assert_called_once()
+        # status reflects partial failure (1 ok + 1 failed)
+        call = spy_logger.log_agent_complete.call_args
+        status = call.kwargs.get("status")
+        if status is None and len(call.args) > 3:
+            status = call.args[3]
+        assert status == "PARTIAL", f"expected PARTIAL, got {status!r}"
+        # quality report captured the failure
+        assert "tts" in orch._quality_reports
+        assert orch._quality_reports["tts"]["failed"] == 1
+        assert orch._quality_reports["tts"]["succeeded"] == 1

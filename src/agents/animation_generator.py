@@ -255,6 +255,12 @@ class AnimationCodeGeneratorAgent(Agent):
         # chunk. Empty narrative => empty blocks => no token waste.
         briefing_block, opening_state_block = self._build_narrative_blocks(context)
 
+        # Variable -> color bindings carried across scenes via SharedContext.
+        # The ColorManager renders them as a tex_to_color_map hint so the LLM
+        # uses the SAME color for the same variable in every scene of the
+        # video (the 3B1B "one variable, one color" rule).
+        color_block = self._build_color_block(context)
+
         # ── THE NARRATION-AWARE 3B1B SYSTEM PROMPT ───────────────────
         system_prompt = f"""You are an expert Manim Community v0.19 developer who creates
 3Blue1Brown-quality educational animations.
@@ -343,6 +349,7 @@ Do not invent helper objects that are not present in the visual intent.
 - Smooth pacing: run_time between 1.0 and 3.0 for most animations.
 - After every major visual change, add self.wait(2) to self.wait(5)
   so the narrator can explain.
+{color_block}
 
 ═══════════════════════  CONTENT FIDELITY  ═══════════════════════
 The narration is extracted from an academic PDF.  Your animation MUST
@@ -476,6 +483,33 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
             )
 
         return briefing, opening_state
+
+    def _build_color_block(self, context: SharedContext) -> str:
+        """Render ``context.color_bindings`` as a `tex_to_color_map` hint.
+
+        Empty bindings => empty string so the prompt does not carry a dead
+        header for the first scene of a video.
+        """
+        bindings = getattr(context, "color_bindings", None) or {}
+        if not bindings:
+            return ""
+
+        from src.utils.color_manager import ColorManager
+
+        cm = ColorManager.from_context_bindings(bindings)
+        tex_map = cm.build_tex_color_map()
+        if not tex_map:
+            return ""
+
+        lines = "\n".join(f"  {var!r}: {color!r}" for var, color in tex_map.items())
+        return (
+            "\n═══════════════════════  COLOR CONTINUITY  ═══════════════════════\n"
+            "These variables already have a color from earlier scenes — REUSE the\n"
+            "same color so the viewer's eye keeps tracking them across the video:\n\n"
+            f"  tex_to_color_map = {{\n{lines}\n  }}\n\n"
+            "Pass this dict into MathTex(..., tex_to_color_map=tex_to_color_map)\n"
+            "for any equation that mentions one of these variables.\n"
+        )
 
     def _enforce_duration(self, code: str, target_duration: float) -> str:
         """Parse run_time and self.wait values; distribute padding waits if short.
@@ -852,6 +886,7 @@ Generated: {datetime.now().isoformat()}
             "from src.utils.coordinate_system_helpers import attach_axis_labels, create_coordinate_system, plot_function_on_system",
             "from src.utils.notation_helpers import create_notation, create_notation_transform_target, create_text_label",
             "from src.utils.pi_characters import create_character_for_role, create_character_lineup, create_pi_teacher, create_pi_students, create_speech_bubble",
+            "from src.utils.animation_patterns import progressive_write, dim_and_focus, staged_transform, execute_animation_steps",
             "from src.utils.layout_tracker import LayoutTracker",
         ]
 

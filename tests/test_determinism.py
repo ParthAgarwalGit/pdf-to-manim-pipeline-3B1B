@@ -158,6 +158,7 @@ def temp_output_dir():
 class TestPipelineDeterminism:
     """Property-based tests for pipeline determinism."""
     
+    @pytest.mark.property
     @given(storyboard=storyboard_strategy())
     @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_property_identical_inputs_produce_equivalent_outputs(
@@ -218,6 +219,7 @@ class TestPipelineDeterminism:
         assert file_types1 == file_types2, \
             "Output file types should be identical"
     
+    @pytest.mark.property
     @given(
         storyboard=storyboard_strategy(),
         config=configuration_strategy
