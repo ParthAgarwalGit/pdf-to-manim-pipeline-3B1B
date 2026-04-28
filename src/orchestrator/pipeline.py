@@ -1489,9 +1489,31 @@ class Orchestrator:
                 rel = str(Path(final_video_path).name)
             manifest.final_video_path = rel
 
+        self._populate_cost_summary(manifest)
         self._persist_quality_reports(manifest)
         self._write_manifest_to_disk(manifest)
         return manifest
+
+    def _populate_cost_summary(self, manifest: OutputManifest) -> None:
+        """Snapshot the CostTracker singleton into manifest.cost_summary so
+        operators can audit per-PDF spend from manifest.json without parsing
+        a separate cost report. Silent no-op on any tracker error — cost
+        accounting must never abort the pipeline."""
+        try:
+            from src.schemas.output_manifest import CostSummary
+            from src.utils.cost_tracker import CostTracker
+
+            tracker = CostTracker.get_instance()
+            breakdown = tracker.get_breakdown()
+            manifest.cost_summary = CostSummary(
+                total_usd=round(float(breakdown.get("total", 0.0)), 4),
+                by_provider=breakdown.get("by_provider", {}),
+                by_model=breakdown.get("by_model", {}),
+                by_call_type=breakdown.get("by_call_type", {}),
+                call_count=len(tracker.get_calls()),
+            )
+        except Exception as exc:  # pragma: no cover — accounting must never break the run
+            logger.warning("Cost summary not recorded (tracker error): %s", exc)
 
     def _persist_quality_reports(self, manifest: OutputManifest) -> None:
         """Write quality review artifacts to disk when the output directory exists."""

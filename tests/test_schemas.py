@@ -1488,3 +1488,73 @@ class TestTimingContract:
         assert "SMOOTH MORPHING" in prompt
         assert "ANTI-PATTERNS" in prompt
         assert "BREATHING ROOM" in prompt
+
+
+class TestCostSummary:
+    """CostSummary schema and its integration into OutputManifest (Bug #5)."""
+
+    def test_cost_summary_defaults_are_empty(self):
+        from src.schemas.output_manifest import CostSummary
+        cs = CostSummary(total_usd=0.0)
+        assert cs.total_usd == 0.0
+        assert cs.by_provider == {}
+        assert cs.by_model == {}
+        assert cs.by_call_type == {}
+        assert cs.call_count == 0
+
+    def test_cost_summary_round_trips_breakdown(self):
+        from src.schemas.output_manifest import CostSummary
+        cs = CostSummary(
+            total_usd=1.2345,
+            by_provider={"openai": 0.8345, "anthropic": 0.4},
+            by_model={"gpt-5": 0.6, "claude-sonnet-4-6": 0.6345},
+            by_call_type={"chat": 1.0, "tts": 0.2345},
+            call_count=12,
+        )
+        dumped = cs.model_dump()
+        assert dumped["total_usd"] == 1.2345
+        assert dumped["by_provider"]["openai"] == 0.8345
+        assert dumped["call_count"] == 12
+
+    def test_cost_summary_total_must_be_non_negative(self):
+        import pytest
+        from pydantic import ValidationError
+        from src.schemas.output_manifest import CostSummary
+        with pytest.raises(ValidationError):
+            CostSummary(total_usd=-1.0)
+
+    def test_output_manifest_cost_summary_optional(self):
+        """OutputManifest must accept None for cost_summary so legacy
+        manifests stay valid."""
+        from datetime import datetime, timezone
+        from src.schemas.output_manifest import OutputManifest, OutputFile
+        manifest = OutputManifest(
+            output_directory="/tmp/out",
+            files=[OutputFile(path="manifest.json", size_bytes=100, type="manifest")],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+        )
+        assert manifest.cost_summary is None
+
+    def test_output_manifest_carries_cost_summary_when_set(self):
+        from datetime import datetime, timezone
+        from src.schemas.output_manifest import CostSummary, OutputManifest, OutputFile
+        manifest = OutputManifest(
+            output_directory="/tmp/out",
+            files=[OutputFile(path="manifest.json", size_bytes=100, type="manifest")],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+            cost_summary=CostSummary(
+                total_usd=0.42,
+                by_provider={"openai": 0.42},
+                call_count=3,
+            ),
+        )
+        assert manifest.cost_summary is not None
+        assert manifest.cost_summary.total_usd == 0.42

@@ -1,5 +1,12 @@
 # Reusable Manim Primitives And Helper Layer Implementation Plan
 
+> **Status:** ✅ COMPLETED — shipped across commits `a0365a4` (coordinate
+> system helpers), `d7b6829` (notation helpers), `1fda037` (pi_creature role
+> helpers), `6717159` (wired helper layer into animation generator). The
+> `src/utils/coordinate_system_helpers.py`, `notation_helpers.py`, and
+> `pi_characters.py` modules are the artifacts. Retained as historical
+> context for the helper-layer architecture.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Introduce a reusable Manim helper layer for coordinate systems, notation, and character roles so the pipeline compiles recurring visual patterns through deterministic helper functions instead of ad hoc prompt text or anonymous object code.

@@ -12,6 +12,7 @@ from src.schemas.ocr_output import (
     TextBlock,
 )
 from src.schemas.output_manifest import (
+    CostSummary,
     FailedSceneManifest,
     OutputFile,
     OutputManifest,
@@ -83,6 +84,7 @@ __all__ = [
     "OutputFile",
     "FailedSceneManifest",
     "OutputManifest",
+    "CostSummary",
     # Video Script (unified narration + chunker contract)
     "Beat",
     "VideoScript",

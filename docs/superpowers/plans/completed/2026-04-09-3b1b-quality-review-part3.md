@@ -1,5 +1,13 @@
 # Part 3: Quality Review Against 3Blue1Brown Patterns
 
+> **Status:** ✅ COMPLETED — shipped in commit `33f8a0a` ("feat: 3B1B quality
+> review — timing contract, color palette, animation patterns, progressive
+> reveal, anti-pattern detection"). Helper-layer wiring lives in commits
+> `a6c933d`, `7156271`, `6717159`. Retained as historical context for the
+> shipped 3B1B quality contract.
+
+# Part 3: Quality Review Against 3Blue1Brown Patterns
+
 **Goal:** Upgrade the video quality reviewer, animation generator prompts, and helper layer so generated videos match the visual grammar of 3Blue1Brown videos — progressive reveal, color-coded variables, deliberate pacing, smooth morphing, and narration-visual fidelity.
 
 **Design Choices (user-confirmed):**

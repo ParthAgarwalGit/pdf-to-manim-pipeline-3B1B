@@ -53,11 +53,23 @@ class Model(Enum):
 PRICING_TABLE: Dict[Tuple[str, str], Tuple[float, float]] = {
     ("openai", "gpt-4o"): (2.50, 10.00),
     ("openai", "gpt-4o-mini"): (0.15, 0.60),
+    ("openai", "gpt-5"): (2.50, 10.00),    # Used by ScriptArchitect; placeholder rate
     ("openai", "tts"): (15.00, 0.00),      # TTS pricing is per 1M characters, not tokens
     ("openai", "tts-1"): (15.00, 0.00),    # Standard TTS model
     ("openai", "tts-1-hd"): (30.00, 0.00), # HD TTS model
     ("anthropic", "claude-sonnet"): (3.00, 15.00),
     ("anthropic", "claude-sonnet-4-20250514"): (3.00, 15.00),
+    ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),  # Used by AnimationCodeGenerator
+    ("anthropic", "claude-opus-4-7"): (15.00, 75.00),   # Opus tier; placeholder rate
+    ("anthropic", "claude-haiku-4-5"): (0.25, 1.25),    # Haiku tier; placeholder rate
+}
+
+# Per-provider fallback rate when an exact (provider, model) pair is missing.
+# Picked conservatively (highest reasonable rate) so cost is overestimated
+# rather than underreported when a new model name appears mid-run.
+PROVIDER_FALLBACK_RATES: Dict[str, Tuple[float, float]] = {
+    "openai":    (2.50, 10.00),
+    "anthropic": (3.00, 15.00),
 }
 
 
@@ -162,13 +174,25 @@ class CostTracker:
         """
         key = (provider.lower(), model.lower())
 
-        if key not in PRICING_TABLE:
+        if key in PRICING_TABLE:
+            input_price, output_price = PRICING_TABLE[key]
+        elif provider.lower() in PROVIDER_FALLBACK_RATES:
+            # Unknown model from a known provider — use the conservative
+            # provider-level fallback so cost accounting never crashes a run.
+            # The pipeline used to ValueError here, which made adding a new
+            # model name a silent landmine.
+            import logging
+            logging.getLogger(__name__).warning(
+                "CostTracker: unknown model %s/%s — falling back to %s "
+                "provider rate. Add an entry to PRICING_TABLE for accurate "
+                "accounting.", provider, model, provider.lower(),
+            )
+            input_price, output_price = PROVIDER_FALLBACK_RATES[provider.lower()]
+        else:
             raise ValueError(
                 f"Unknown provider/model combination: {provider}/{model}. "
                 f"Available models: {list(PRICING_TABLE.keys())}"
             )
-
-        input_price, output_price = PRICING_TABLE[key]
 
         # Convert token counts to per-1M-token basis
         input_cost = (input_tokens / 1_000_000) * input_price

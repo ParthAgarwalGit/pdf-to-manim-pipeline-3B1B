@@ -109,3 +109,96 @@ class TestManifestContract:
         assert manifest.final_video_path is None
         video_files = [f for f in manifest.files if f.type == "final_video"]
         assert len(video_files) == 0
+
+
+class TestCostSummaryInManifest:
+    """Bug #5: cost must surface in the canonical run artifact, not just stdout."""
+
+    def test_orchestrator_populates_cost_summary_from_tracker(self, monkeypatch, tmp_path):
+        """After tracked API calls fire, the orchestrator's _populate_cost_summary
+        must snapshot the CostTracker singleton into manifest.cost_summary."""
+        from datetime import datetime, timezone
+        from src.orchestrator.pipeline import Orchestrator, PipelineConfig
+        from src.schemas.output_manifest import OutputFile, OutputManifest
+        from src.utils.cost_tracker import CostTracker
+
+        # Make sure we start clean — the autouse conftest fixture does this
+        # too, but be explicit about the precondition.
+        CostTracker.reset_instance()
+        tracker = CostTracker.get_instance()
+        tracker.track_call(
+            provider="openai",
+            model="gpt-5",
+            input_tokens=1000,
+            output_tokens=500,
+            call_type="chat",
+        )
+        tracker.track_call(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=2000,
+            output_tokens=800,
+            call_type="chat",
+        )
+
+        config = PipelineConfig(base_output_dir=str(tmp_path))
+        orchestrator = Orchestrator(config=config)
+
+        manifest = OutputManifest(
+            output_directory=str(tmp_path),
+            files=[OutputFile(path="manifest.json", size_bytes=100, type="manifest")],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+        )
+
+        orchestrator._populate_cost_summary(manifest)
+
+        assert manifest.cost_summary is not None
+        assert manifest.cost_summary.call_count == 2
+        assert manifest.cost_summary.total_usd > 0.0
+        assert "openai" in manifest.cost_summary.by_provider
+        assert "anthropic" in manifest.cost_summary.by_provider
+        assert "gpt-5" in manifest.cost_summary.by_model
+
+    def test_populate_cost_summary_is_silent_no_op_on_tracker_failure(
+        self, monkeypatch, tmp_path
+    ):
+        """Cost accounting must NEVER abort the pipeline. Even if the tracker
+        raises, _populate_cost_summary must swallow and leave cost_summary
+        as None so the manifest still serializes."""
+        from datetime import datetime, timezone
+        from src.orchestrator.pipeline import Orchestrator, PipelineConfig
+        from src.schemas.output_manifest import OutputFile, OutputManifest
+        from src.utils import cost_tracker as ct_module
+
+        config = PipelineConfig(base_output_dir=str(tmp_path))
+        orchestrator = Orchestrator(config=config)
+
+        # Sabotage CostTracker.get_instance to raise.
+        original = ct_module.CostTracker.get_instance
+
+        def _boom(cls):
+            raise RuntimeError("tracker corrupted")
+
+        monkeypatch.setattr(ct_module.CostTracker, "get_instance", classmethod(_boom))
+
+        manifest = OutputManifest(
+            output_directory=str(tmp_path),
+            files=[OutputFile(path="manifest.json", size_bytes=100, type="manifest")],
+            timestamp=datetime.now(timezone.utc),
+            status="SUCCESS",
+            scene_success_rate=1.0,
+            total_scenes=1,
+            successful_scenes=1,
+        )
+
+        # Must not raise.
+        orchestrator._populate_cost_summary(manifest)
+
+        # cost_summary remains None — pipeline succeeds, accounting is silent.
+        assert manifest.cost_summary is None
+
+        monkeypatch.setattr(ct_module.CostTracker, "get_instance", original)

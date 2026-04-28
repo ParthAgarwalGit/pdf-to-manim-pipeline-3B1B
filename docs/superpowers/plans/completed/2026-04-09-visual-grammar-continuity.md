@@ -1,5 +1,13 @@
 # Visual Grammar Continuity Implementation Plan
 
+> **Status:** ✅ COMPLETED — `coordinate_system_bindings`, `notation_registry`,
+> `character_registry`, and `color_bindings` fields on `SharedContext` ship
+> in `src/schemas/scene_processing.py`; the visual planner emits and
+> propagates them via `scene_state_in`/`scene_state_out`. Wiring landed in
+> commits `7156271` ("propagate continuity registries via SharedContext")
+> and `a6c933d` ("reviewer checks helper-layer semantics"). Retained as
+> historical context for the continuity contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Introduce a deterministic visual continuity contract for storyboard planning so recurring axes, reused notation, and persistent character roles survive retries and compile cleanly into later Manim stages.

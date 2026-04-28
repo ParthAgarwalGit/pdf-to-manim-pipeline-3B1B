@@ -1,5 +1,14 @@
 # PDF to Manim Professionalization Implementation Plan
 
+> **Status:** 🟡 LARGELY SHIPPED, NOT FULLY AUDITED — most goals are in tree:
+> single canonical CLI (`src/cli.py`), one canonical output directory per
+> run, manifest as the canonical contract (see `docs/output-contract.md`),
+> bounded quality-review loops, GitHub Actions CI, ADR-001
+> (sync vs async orchestrator), `docs/troubleshooting.md`, structured
+> `pipeline.log`. The 37 individual checkboxes have not been verified
+> task-by-task. Treat this plan as historical scaffolding rather than
+> an active backlog. Promote to `completed/` after a per-task audit.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the current local PDF-to-video research pipeline into a reliable, documented, testable professional CLI tool that consistently produces inspectable outputs and can be run from a clean checkout on Windows and Linux.
