@@ -61,7 +61,18 @@ src = ["py.typed"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-v --strict-markers --tb=short --cov=src --cov-report=term-missing --cov-report=html"
+# Default ("fast") lane: skip property + live_api tests so the sweep is reliably
+# under 3 minutes and never hangs. Run them explicitly:
+#   pytest tests/test_determinism.py tests/test_persistence_agent.py \
+#          tests/test_animation_generator.py tests/test_validation_agent.py \
+#          tests/test_json_sanitizer.py tests/test_scene_controller.py -m property
+#   pytest -m live_api                                       # real-API smoke
+# IMPORTANT: invoke the property lane with explicit file paths, not
+# `pytest -m property tests/`. Collecting all 549 tests just to filter to 8
+# triggers cross-file import-time pollution that hangs the run.
+# Coverage is opt-in (pass --cov=src) — leaving it on by default makes ad-hoc
+# iteration slow without adding signal.
+addopts = "-v --strict-markers --tb=short -m 'not property and not live_api'"
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"

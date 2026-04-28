@@ -20,10 +20,15 @@ from src.schemas.storyboard import Configuration, StoryboardJSON
 
 class TestScriptArchitectAgent:
     """Test suite for ScriptArchitectAgent"""
-    
+
     @pytest.fixture
-    def agent(self):
-        """Create a ScriptArchitectAgent instance"""
+    def agent(self, monkeypatch):
+        """Create a ScriptArchitectAgent instance with the deterministic
+        mock fallback forced on so tests do not depend on the developer's
+        OPENAI_API_KEY (which can rate-limit, quota-out, or simply be absent
+        in CI). Tests that exercise the real LLM path use a fake client and
+        set the key explicitly via monkeypatch.setenv."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         return ScriptArchitectAgent()
     
     @pytest.fixture

@@ -1,5 +1,6 @@
 """Global pytest configuration: Hypothesis profiles and marker discipline."""
 
+import logging
 import os
 import pytest
 from hypothesis import settings
@@ -12,6 +13,31 @@ from hypothesis import settings
 settings.register_profile("fast", max_examples=50, deadline=None)
 settings.register_profile("ci",   max_examples=200, deadline=None)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "fast"))
+
+
+# ---------------------------------------------------------------------------
+# Cross-test state isolation
+# ---------------------------------------------------------------------------
+# Property tests instantiate the Orchestrator dozens of times per example;
+# without reset, the CostTracker singleton accumulates entries and the root
+# logger collects handlers, making each successive test slower until the
+# property lane appears to hang. This fixture wipes the known global state
+# before every test so each one starts from a clean slate.
+
+@pytest.fixture(autouse=True)
+def _reset_cross_test_state():
+    """Reset known global singletons between tests so property-lane runs do
+    not balloon. Cheap (microseconds) for non-property tests."""
+    # Cost tracker singleton
+    try:
+        from src.utils.cost_tracker import CostTracker
+        CostTracker.reset_instance()
+    except Exception:
+        pass
+    # Root logger handlers piled up by Orchestrator._setup_logging across runs
+    pipeline_logger = logging.getLogger("src.orchestrator.pipeline")
+    pipeline_logger.handlers.clear()
+    yield
 
 
 # ---------------------------------------------------------------------------
