@@ -749,33 +749,57 @@ Return JSON in this EXACT shape:
     def _generate_fallback_visual_intent(self, narration: str) -> VisualIntent:
         """Build a minimal visual intent from the narration text.
 
-        Instead of the old generic `f(x)=x^2` mock, this scans the narration
-        for keywords and creates placeholder objects the animation generator
-        can use to at least show relevant text on screen.
-        """
-        objs = []
-        # Show the key narration summary as a text object
-        # Take the first sentence as a title-like object
-        first_sentence = narration.split(".")[0].strip() if narration else "Introduction"
-        objs.append(MathematicalObject(
-            object_id="intro_text",
-            object_role="title",
-            object_type="text",
-            content=first_sentence[:80],
-            style=ObjectStyle(color="BLUE", position="top")
-        ))
+        Emits closed-vocabulary catalog primitives (Task 12) so the
+        animation generator's catalog path handles the fallback the same
+        way it handles real LLM output. The legacy if/elif heuristic chain
+        in ``AnimationCodeGeneratorAgent._generate_mathematical_objects``
+        is no longer reached for fallback intents.
 
-        # If narration mentions equations, add a placeholder
+        Layout (Task 13): every emitted object carries a bbox + interval
+        so the layout validator can run unchanged. Positions are picked
+        from a small "canonical 2-object stack" (title on top, equation
+        in centre) inside the safe area.
+        """
+        from src.schemas.storyboard import BBox, TimeInterval
+
+        first_sentence = (
+            narration.split(".")[0].strip() if narration else "Introduction"
+        )
+        title_text = first_sentence[:80] or "Introduction"
+
+        # Title object — Text primitive at the top of the safe area.
+        objs = [
+            MathematicalObject(
+                object_id="intro_text",
+                object_role="title",
+                object_type="text",
+                content=title_text,
+                primitive="Text",
+                args={"text": title_text, "font_size": 36},
+                bbox=BBox(x=0.0, y=2.5, w=10.0, h=1.0),
+                interval=TimeInterval(t_in=0.0, t_out=15.0),
+                style=ObjectStyle(color="BLUE", position="top"),
+            )
+        ]
+
+        # If narration mentions trig/equations, add a centred MathTex.
         import re as _re
-        latex_hints = _re.findall(r'(sin|cos|tan|theta|pi|equation|formula)', narration.lower())
+        latex_hints = _re.findall(
+            r"(sin|cos|tan|theta|pi|equation|formula)", narration.lower()
+        )
         if latex_hints:
+            tex = r"\sin(\theta) = \frac{\text{opposite}}{\text{hypotenuse}}"
             objs.append(MathematicalObject(
                 object_id="main_equation",
                 object_role="main_equation",
                 object_type="equation",
                 notation_key="main_equation",
-                content=r"\sin(\theta) = \frac{\text{opposite}}{\text{hypotenuse}}",
-                style=ObjectStyle(color="YELLOW", position="center")
+                content=tex,
+                primitive="MathTex",
+                args={"tex": tex},
+                bbox=BBox(x=0.0, y=0.0, w=8.0, h=1.5),
+                interval=TimeInterval(t_in=0.0, t_out=15.0),
+                style=ObjectStyle(color="YELLOW", position="center"),
             ))
 
         active_object_ids = [obj.object_id for obj in objs if obj.object_id]
@@ -797,7 +821,7 @@ Return JSON in this EXACT shape:
             beats=[
                 VisualBeat(
                     beat_id="beat_001",
-                    narration_excerpt=first_sentence[:80],
+                    narration_excerpt=title_text,
                     start_time=0.0,
                     end_time=5.0,
                     active_object_ids=active_object_ids,

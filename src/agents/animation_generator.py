@@ -685,6 +685,23 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
                     code_lines.append(bbox_line)
                 continue
 
+            # ─── LEGACY PATH (deprecated) ─────────────────────────────────
+            # No `primitive` was set on this object. As of the closed-catalog
+            # ADR (003), every code path that produces a MathematicalObject
+            # — real LLM, mock fallback, hand-built test fixture — should
+            # emit `primitive` + `args`. Hitting this branch means a producer
+            # was missed. Logged so CI / dev runs surface the regression
+            # before it reaches production. The branch itself is retained
+            # as a safety net until catalog adoption is proven on real PDFs
+            # (target: delete after 2-3 successful real-API runs).
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Animation generator falling back to legacy if/elif chain for "
+                "object %s (object_type=%s). Producer should set "
+                "MathematicalObject.primitive — see ADR-003.",
+                var_name, obj_type,
+            )
+
             if obj_type == "equation":
                 # Use create_notation so the object carries a stable notation_key
                 latex = self._escape_latex(content)
