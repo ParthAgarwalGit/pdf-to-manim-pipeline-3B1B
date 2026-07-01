@@ -38,6 +38,7 @@ from src.orchestrator.logger import StructuredJSONLogger
 from src.agents.ingestion import CloudStorageEvent, IngestAgent, IngestionError, IngestionOutput
 from src.agents.validation import ValidationAgent, ValidationError
 from src.agents.vision_ocr import VisionOCRAgent
+from src.agents.document_segmenter import DocumentSegmenterAgent, DocumentSegmenterInput
 from src.agents.script_architect import ScriptArchitectAgent, ScriptArchitectInput
 from src.agents.storyboard_grader import StoryboardGraderAgent, StoryboardGraderFailure, StoryboardGraderInput, StoryboardGraderOutput
 from src.agents.json_sanitizer import JSONSanitizerAgent, JSONSanitizerInput, SanitizationError
@@ -91,6 +92,7 @@ class PipelineConfig:
     enable_quality_loops: bool = True
     max_quality_retries: int = 2
     storyboard_quality_threshold: float = 6.0
+    granularity: str = "balanced"
     enable_manim_dry_run_validation: bool = False
     enable_final_video_review: bool = True
     strict: bool = False
@@ -105,7 +107,8 @@ class PipelineConfig:
         return Configuration(
             verbosity=self.verbosity,
             depth=self.depth,
-            audience=self.audience
+            audience=self.audience,
+            granularity=self.granularity,
         )
 
 
@@ -163,6 +166,7 @@ class Orchestrator:
         self.ingestion_agent = IngestAgent()
         self.validation_agent = ValidationAgent()
         self.vision_ocr_agent = VisionOCRAgent(strict=strict)
+        self.document_segmenter_agent = DocumentSegmenterAgent()
         self.script_architect_agent = ScriptArchitectAgent(strict=strict)
         self.storyboard_grader_agent = StoryboardGraderAgent(strict=strict)
         self.json_sanitizer_agent = JSONSanitizerAgent()
@@ -273,11 +277,14 @@ class Orchestrator:
             
             # Step 3: Vision+OCR
             ocr_output = self._run_vision_ocr(validated_ref, self.structured_logger)
+
+            # Step 4: Document Segmentation
+            source_segments = self._run_document_segmenter(ocr_output, self.structured_logger)
             
-            # Step 4: Script/Storyboard Architect
-            storyboard = self._run_script_architect(ocr_output, self.structured_logger)
+            # Step 5: Script/Storyboard Architect
+            storyboard = self._run_script_architect(ocr_output, self.structured_logger, source_segments)
             
-            # Step 5: JSON Sanitization
+            # Step 6: JSON Sanitization
             sanitized_storyboard = self._run_json_sanitizer(storyboard, self.structured_logger)
 
             # ── dry_run gate ─────────────────────────────────────
@@ -569,11 +576,36 @@ class Orchestrator:
         )
         
         return result
+
+    def _run_document_segmenter(
+        self,
+        ocr_output,
+        structured_logger: StructuredJSONLogger,
+    ):
+        """Run deterministic document segmentation after OCR."""
+        target_words = {
+            "coarse": 300,
+            "balanced": 150,
+            "fine": 90,
+        }.get(self.config.granularity, 150)
+        input_data = DocumentSegmenterInput(
+            ocr_output=ocr_output,
+            target_words_per_segment=target_words,
+        )
+        input_data.constraints = StepConstraints(timeout_seconds=30)
+        result = self._execute_agent(
+            agent=self.document_segmenter_agent,
+            input_data=input_data,
+            stage_name="DocumentSegmenter",
+            structured_logger=structured_logger,
+        )
+        return result.segments
     
     def _run_script_architect(
         self,
         ocr_output,
-        structured_logger: StructuredJSONLogger
+        structured_logger: StructuredJSONLogger,
+        source_segments=None,
     ):
         """Run Script Architect Agent with retry logic.
         
@@ -585,6 +617,10 @@ class Orchestrator:
             StoryboardJSON object (as dict for sanitizer)
         """
         config = self.config.to_storyboard_config()
+        source_segments = source_segments or self._run_document_segmenter(
+            ocr_output,
+            structured_logger,
+        )
         review_feedback: List[str] = []
         grading_attempts: List[Dict[str, Any]] = []
         latest_storyboard = None
@@ -594,6 +630,7 @@ class Orchestrator:
             input_data = ScriptArchitectInput(
                 ocr_output=ocr_output,
                 configuration=config,
+                segments=source_segments,
                 review_feedback=review_feedback,
             )
             input_data.constraints = StepConstraints(budget_tokens=16000, timeout_seconds=180)
@@ -614,7 +651,8 @@ class Orchestrator:
 
             grader_input = StoryboardGraderInput(
                 storyboard=latest_storyboard,
-                source_text_summary=self._summarize_ocr_for_review(ocr_output),
+                source_text_summary=self._summarize_segments_for_review(source_segments),
+                source_segments=source_segments,
                 pass_threshold=self.config.storyboard_quality_threshold,
             )
             grader_input.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=60)
@@ -1246,6 +1284,16 @@ class Orchestrator:
                 if getattr(block, "text", None):
                     text_chunks.append(block.text.strip())
         return "\n".join(text_chunks)[:2000]
+
+    def _summarize_segments_for_review(self, source_segments) -> str:
+        """Build a coverage-oriented source summary for storyboard review."""
+        lines = []
+        for segment in source_segments or []:
+            preview = " ".join(segment.text.split())[:300]
+            lines.append(
+                f"{segment.segment_id} pages {segment.page_start}-{segment.page_end}: {preview}"
+            )
+        return "\n".join(lines)[:6000]
 
     def _serialize_scene_validation_attempt(
         self,

@@ -25,7 +25,9 @@ from src.agents.base import (
     BackoffStrategy,
     RetryPolicy,
 )
+from src.agents.document_segmenter import DocumentSegmenterAgent, DocumentSegmenterInput
 from src.schemas.ocr_output import OCROutput
+from src.schemas.source_segment import SourceSegment
 from src.schemas.storyboard import (
     Configuration,
     ConceptHierarchy,
@@ -91,6 +93,7 @@ class ScriptArchitectInput(AgentInput):
         self,
         ocr_output: OCROutput,
         configuration: Configuration,
+        segments: Optional[List[SourceSegment]] = None,
         review_feedback: Optional[List[str]] = None,
     ):
         """Initialize input
@@ -98,11 +101,13 @@ class ScriptArchitectInput(AgentInput):
         Args:
             ocr_output: OCR output from Vision+OCR Agent
             configuration: Configuration parameters for storyboard generation
+            segments: Ordered source segments covering the OCR output
             review_feedback: Optional critique to apply on a regeneration pass
         """
         
         self.ocr_output = ocr_output
         self.configuration = configuration
+        self.segments = segments or []
         self.review_feedback = review_feedback or []
 
 
@@ -131,6 +136,13 @@ class ScriptArchitectAgent(Agent):
     TARGET_SCENE_DURATION = 60.0  # Target scene duration in seconds
     WORDS_PER_SECOND = 3.0  # Average narration speed used by prompt + TTS estimates
     MAX_JSON_RETRIES = 3  # Maximum retries for invalid JSON
+    MAX_SOURCE_CHARS = 120_000
+    WORDS_PER_BEAT = 60
+    GRANULARITY_WORD_TARGETS = {
+        "coarse": 300,
+        "balanced": 150,
+        "fine": 90,
+    }
     
     # Default configuration values
     DEFAULT_VERBOSITY = "medium"
@@ -189,6 +201,7 @@ class ScriptArchitectAgent(Agent):
         ocr_output = script_input.ocr_output
         config = script_input.configuration
         review_feedback = script_input.review_feedback or []
+        segments = script_input.segments or self._segment_ocr_output(ocr_output, config)
 
         logger.info(f"Starting storyboard generation for: {ocr_output.pdf_metadata.filename}")
         logger.info(
@@ -200,7 +213,12 @@ class ScriptArchitectAgent(Agent):
 
         try:
             # Phase 1: ONE unified video script.
-            video_script = self._generate_video_script(ocr_output, config, review_feedback)
+            video_script = self._generate_video_script(
+                ocr_output,
+                config,
+                review_feedback,
+                segments=segments,
+            )
             logger.info(
                 f"Generated video script: {len(video_script.beats)} beats, "
                 f"{len(video_script.concept_ledger())} unique concepts"
@@ -239,7 +257,7 @@ class ScriptArchitectAgent(Agent):
                 )
 
             storyboard = self._assemble_storyboard_from_script(
-                ocr_output, config, video_script, scenes,
+                ocr_output, config, video_script, scenes, segments,
             )
             logger.info(f"Storyboard generation completed: {len(scenes)} scenes")
             return storyboard
@@ -262,6 +280,7 @@ class ScriptArchitectAgent(Agent):
         config: Configuration,
         video_script,
         scenes: List[Scene],
+        segments: Optional[List[SourceSegment]] = None,
     ) -> StoryboardJSON:
         """Build a StoryboardJSON from a unified VideoScript + chunked scenes.
 
@@ -283,12 +302,52 @@ class ScriptArchitectAgent(Agent):
             )
             for i, concept in enumerate(ledger)
         ]
+        self._log_segment_coverage(scenes, segments or [])
         return StoryboardJSON(
             pdf_metadata=pdf_metadata,
             configuration=config,
             concept_hierarchy=concept_hierarchy,
             scenes=scenes,
         )
+
+    def _segment_ocr_output(
+        self,
+        ocr_output: OCROutput,
+        config: Configuration,
+    ) -> List[SourceSegment]:
+        target_words = self.GRANULARITY_WORD_TARGETS.get(config.granularity, 150)
+        result = DocumentSegmenterAgent().execute(
+            DocumentSegmenterInput(
+                ocr_output=ocr_output,
+                target_words_per_segment=target_words,
+            )
+        )
+        return result.segments
+
+    def _log_segment_coverage(
+        self,
+        scenes: List[Scene],
+        segments: List[SourceSegment],
+    ) -> None:
+        if not segments:
+            return
+        expected = {segment.segment_id for segment in segments}
+        scene_segment_ids = [
+            segment_id
+            for scene in scenes
+            for segment_id in getattr(scene, "source_segment_ids", [])
+        ]
+        covered = set(scene_segment_ids)
+        missing = sorted(expected - covered)
+        redundant = sorted(
+            segment_id
+            for segment_id in expected
+            if scene_segment_ids.count(segment_id) > 1
+        )
+        if missing:
+            logger.warning("Storyboard missing source segments: %s", ", ".join(missing))
+        if redundant:
+            logger.warning("Storyboard redundantly covers source segments: %s", ", ".join(redundant))
 
     def _generate_visual_intent_for_chunk(
         self,
@@ -466,6 +525,7 @@ class ScriptArchitectAgent(Agent):
         ocr_output: OCROutput,
         config: Configuration,
         review_feedback: Optional[List[str]] = None,
+        segments: Optional[List[SourceSegment]] = None,
     ):
         """Generate ONE continuous video script with a concept-introduction ledger.
 
@@ -489,7 +549,15 @@ class ScriptArchitectAgent(Agent):
                     "OPENAI_API_KEY is required in --strict mode for video script generation",
                 )
             logger.warning("No OpenAI API key found — using mock VideoScript fallback.")
-            return self._mock_video_script_fallback(ocr_output, config)
+            return self._mock_video_script_fallback(ocr_output, config, segments=segments)
+
+        segments = segments or self._segment_ocr_output(ocr_output, config)
+        if segments:
+            return self._generate_segmented_video_script(
+                segments=segments,
+                config=config,
+                review_feedback=review_feedback or [],
+            )
 
         # Build full source-material context — only this call sees the full PDF.
         # Downstream chunks see only their slice + the narrative briefing
@@ -506,9 +574,18 @@ class ScriptArchitectAgent(Agent):
         if math_expressions:
             math_block = (
                 "\n--- KEY FORMULAS ---\n"
-                + "\n".join(f"  • {e}" for e in math_expressions[:30])
+                + "\n".join(f"  - {e}" for e in math_expressions)
                 + "\n"
             )
+
+        source_prompt_text = source_text
+        if len(source_text) > self.MAX_SOURCE_CHARS:
+            logger.warning(
+                "Source text %d chars truncated to %d; use document segmentation for full coverage.",
+                len(source_text),
+                self.MAX_SOURCE_CHARS,
+            )
+            source_prompt_text = source_text[:self.MAX_SOURCE_CHARS]
 
         review_block = ""
         if review_feedback:
@@ -531,7 +608,7 @@ class ScriptArchitectAgent(Agent):
         prompt = f"""You are a Grant Sanderson–style educational scriptwriter (3Blue1Brown).
 
 --- SOURCE MATERIAL ---
-{source_text[:8000]}
+{source_prompt_text}
 {math_block}
 --- END SOURCE MATERIAL ---
 
@@ -549,7 +626,7 @@ CRITICAL RULES:
 4. Mark `references_prior_beats` with the beat_ids whose visuals/ideas this
    beat builds on.
 5. Cover every formula and definition in the source material exactly once.
-6. Aim for 8–20 beats total. Each beat MUST be 40–80 words of narration —
+6. Produce approximately {self._target_beat_count(source_text)} beats (plus or minus 20%). Each beat MUST be 40-80 words of narration.
    if a topic needs more, split into multiple beats with references_prior_beats.
 
 STYLE:
@@ -598,6 +675,148 @@ Return JSON in this EXACT shape:
 
         return VideoScript(title=data.get("title", ""), beats=beats)
 
+    def _generate_segmented_video_script(
+        self,
+        segments: List[SourceSegment],
+        config: Configuration,
+        review_feedback: List[str],
+    ):
+        """Generate a global VideoScript through one LLM call per source segment."""
+        from src.schemas.video_script import Beat, VideoScript
+
+        all_beats: List[Beat] = []
+        covered_concepts: List[str] = []
+        title = ""
+
+        for segment in segments:
+            prompt = self._build_segment_script_prompt(
+                segment=segment,
+                config=config,
+                covered_concepts=covered_concepts,
+                review_feedback=review_feedback,
+            )
+            response = self.client.chat.completions.create(
+                model="gpt-5",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(response.choices[0].message.content)
+            if not title:
+                title = data.get("title", "")
+
+            local_to_global: Dict[str, str] = {}
+            pending_beats = data.get("beats", [])
+            for raw in pending_beats:
+                local_id = raw.get("beat_id", "")
+                global_id = f"beat_{len(all_beats) + 1:03d}"
+                local_to_global[local_id] = global_id
+
+                concepts = [
+                    canonical
+                    for label in raw.get("introduces_concepts", [])
+                    if (canonical := _canonicalize_concept(label))
+                ]
+                for concept in concepts:
+                    if concept not in covered_concepts:
+                        covered_concepts.append(concept)
+
+                all_beats.append(Beat(
+                    beat_id=global_id,
+                    narration=raw["narration"],
+                    visual_hint=raw.get("visual_hint", ""),
+                    introduces_concepts=concepts,
+                    references_prior_beats=[
+                        local_to_global.get(ref, ref)
+                        for ref in raw.get("references_prior_beats", [])
+                    ],
+                    source_segment_id=segment.segment_id,
+                ))
+
+        return VideoScript(title=title, beats=all_beats)
+
+    def _build_segment_script_prompt(
+        self,
+        segment: SourceSegment,
+        config: Configuration,
+        covered_concepts: List[str],
+        review_feedback: List[str],
+    ) -> str:
+        audience_line = {
+            "high-school": "Use real-world analogies; avoid jargon.",
+            "graduate": "Lean into theoretical structure and generalizations.",
+        }.get(config.audience, "Balance intuition with mathematical structure.")
+
+        verbosity_line = {
+            "low": "Be terse - only the core ideas.",
+            "high": "Be detailed; explain why each step matters.",
+        }.get(config.verbosity, "Balanced explanation.")
+
+        math_block = ""
+        if segment.math_latex:
+            math_block = (
+                "\nFORMULAS IN THIS SEGMENT:\n"
+                + "\n".join(f"- {expr}" for expr in segment.math_latex)
+                + "\n"
+            )
+        already_block = ""
+        if covered_concepts:
+            already_block = (
+                "\nCONCEPTS ALREADY COVERED:\n"
+                + "\n".join(f"- {concept}" for concept in covered_concepts)
+                + "\nReference these by name only; do not redefine them.\n"
+            )
+        review_block = ""
+        if review_feedback:
+            review_block = (
+                "\nREVISION FEEDBACK:\n"
+                + "\n".join(f"- {item}" for item in review_feedback[:8])
+                + "\n"
+            )
+
+        target_beats = max(1, self._target_beat_count(segment.text))
+
+        return f"""You are a Grant Sanderson-style educational scriptwriter (3Blue1Brown).
+
+SOURCE SEGMENT:
+- segment_id: {segment.segment_id}
+- order: {segment.order}
+- pages: {segment.page_start}-{segment.page_end}
+- heading: {segment.heading or "(none)"}
+
+TEXT:
+{segment.text}
+{math_block}{already_block}{review_block}
+TASK: Explain THIS segment fully as part of a larger continuous video.
+Do not preview or re-explain other sections. If a concept was already covered,
+reference it by name without redefining it.
+
+TARGET: Produce approximately {target_beats} beat(s). Each beat should be 40-80
+words of narration. Split only when this segment needs multiple visual/narrative
+steps.
+
+STYLE:
+- Audience ({config.audience}): {audience_line}
+- Verbosity ({config.verbosity}): {verbosity_line}
+- Tone: Friendly, intuitive, conversational.
+
+Return JSON in this exact shape:
+{{
+  "title": "...",
+  "beats": [
+    {{
+      "beat_id": "beat_local_001",
+      "narration": "spoken text...",
+      "visual_hint": "what is on screen during this beat",
+      "introduces_concepts": ["concept_label"],
+      "references_prior_beats": []
+    }}
+  ]
+}}
+"""
+
+    def _target_beat_count(self, source_text: str) -> int:
+        return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))
+
     def _chunk_script_into_scenes(self, script) -> List[Scene]:
         """Group beats into ~30-90 s scenes (Task 4 chunker).
 
@@ -629,8 +848,20 @@ Return JSON in this EXACT shape:
                     "to keep beats under 80 words.",
                     beat.beat_id, bd, self.MAX_SCENE_DURATION,
                 )
+            beat_segment = getattr(beat, "source_segment_id", "")
+            current_segment_ids = {
+                getattr(existing, "source_segment_id", "")
+                for existing in current
+                if getattr(existing, "source_segment_id", "")
+            }
+            crosses_segment = bool(
+                current
+                and beat_segment
+                and current_segment_ids
+                and beat_segment not in current_segment_ids
+            )
             # If adding this beat overflows the current chunk, flush first.
-            if current and current_dur + bd > self.MAX_SCENE_DURATION:
+            if current and (crosses_segment or current_dur + bd > self.MAX_SCENE_DURATION):
                 chunks.append(current)
                 current, current_dur = [], 0.0
             current.append(beat)
@@ -685,6 +916,11 @@ Return JSON in this EXACT shape:
             )
             if chunk_first_concept:
                 most_recent_concept_iter = chunk_first_concept
+            source_segment_ids: List[str] = []
+            for beat in chunk_beats:
+                segment_id = getattr(beat, "source_segment_id", "")
+                if segment_id and segment_id not in source_segment_ids:
+                    source_segment_ids.append(segment_id)
 
             scenes.append(Scene(
                 scene_id=scene_id,
@@ -695,6 +931,7 @@ Return JSON in this EXACT shape:
                 duration_estimate=round(duration, 1),
                 dependencies=[f"scene_{idx:03d}"] if idx > 0 else [],
                 source_beats=chunk_beats,
+                source_segment_ids=source_segment_ids,
             ))
 
         return scenes
@@ -711,7 +948,12 @@ Return JSON in this EXACT shape:
             emphasis_points=[],
         )
 
-    def _mock_video_script_fallback(self, ocr_output, config):
+    def _mock_video_script_fallback(
+        self,
+        ocr_output,
+        config,
+        segments: Optional[List[SourceSegment]] = None,
+    ):
         """Deterministic fallback for runs without OPENAI_API_KEY.
 
         Returns a minimal 2-beat script so the pipeline degrades gracefully
@@ -720,6 +962,27 @@ Return JSON in this EXACT shape:
         """
         from src.schemas.video_script import VideoScript, Beat
         title_text = ocr_output.pdf_metadata.filename
+        if segments:
+            beats = []
+            previous_beat_id = ""
+            for index, segment in enumerate(segments, start=1):
+                beat_id = f"beat_{index:03d}"
+                heading = segment.heading or f"source segment {index}"
+                preview = segment.text.strip().split(".")[0][:160] or heading
+                beats.append(Beat(
+                    beat_id=beat_id,
+                    narration=(
+                        f"This part covers {heading}. "
+                        f"The key idea is: {preview}."
+                    ),
+                    visual_hint="Show the source idea as a clear visual summary.",
+                    introduces_concepts=[f"segment_{index:03d}"],
+                    references_prior_beats=[previous_beat_id] if previous_beat_id else [],
+                    source_segment_id=segment.segment_id,
+                ))
+                previous_beat_id = beat_id
+            return VideoScript(title=f"Overview of {title_text}", beats=beats)
+
         return VideoScript(
             title=f"Overview of {title_text}",
             beats=[

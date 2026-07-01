@@ -119,6 +119,12 @@ def pdf2manim():
     help='Target audience level (default: undergraduate)'
 )
 @click.option(
+    '--granularity',
+    type=click.Choice(['coarse', 'balanced', 'fine'], case_sensitive=False),
+    default='balanced',
+    help='Source coverage granularity (default: balanced)'
+)
+@click.option(
     '-q', '--quality',
     type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
     default='medium',
@@ -160,6 +166,7 @@ def convert(
     verbosity: str,
     depth: str,
     audience: str,
+    granularity: str,
     quality: str,
     voice: str,
     skip_tts: bool,
@@ -190,6 +197,7 @@ def convert(
         verbosity = verbosity.lower()
         depth = depth.lower()
         audience = audience.lower()
+        granularity = granularity.lower()
         quality = quality.lower()
         voice = voice.lower()
 
@@ -208,6 +216,7 @@ def convert(
         click.echo(f"  Verbosity:    {verbosity}")
         click.echo(f"  Depth:        {depth}")
         click.echo(f"  Audience:     {audience}")
+        click.echo(f"  Granularity:  {granularity}")
         click.echo()
 
         click.echo(click.style("Rendering Configuration:", bold=True))
@@ -224,6 +233,7 @@ def convert(
             verbosity=verbosity,
             depth=depth,
             audience=audience,
+            granularity=granularity,
             base_output_dir=output_dir,
             enable_ocr_debug=False,
             strict=strict,

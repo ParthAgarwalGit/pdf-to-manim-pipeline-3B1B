@@ -258,6 +258,8 @@ class TestScriptArchitectInput:
     
     def test_input_initialization(self):
         """Test ScriptArchitectInput initialization"""
+        from src.schemas.source_segment import SourceSegment
+
         ocr_output = OCROutput(
             pdf_metadata=PDFMetadata(
                 filename="test.pdf",
@@ -283,6 +285,20 @@ class TestScriptArchitectInput:
         
         assert input_data.ocr_output == ocr_output
         assert input_data.configuration == config
+        assert input_data.segments == []
+
+        segments = [
+            SourceSegment(
+                segment_id="seg_001",
+                order=0,
+                page_start=1,
+                page_end=1,
+                heading="Intro",
+                text="Segment text",
+            )
+        ]
+        input_data = ScriptArchitectInput(ocr_output, config, segments=segments)
+        assert input_data.segments == segments
 
 
 class TestGenerateVideoScript:
@@ -291,6 +307,7 @@ class TestGenerateVideoScript:
 
     def test_generate_video_script_returns_videoscript_with_ledger(self, monkeypatch):
         """One LLM call → VideoScript with concept ledger preserved."""
+        from src.schemas.source_segment import SourceSegment
         from src.schemas.video_script import VideoScript
         from tests.fixtures.ocr_fixtures import minimal_trig_ocr_output
 
@@ -339,15 +356,113 @@ class TestGenerateVideoScript:
 
         ocr = minimal_trig_ocr_output()
         config = Configuration(verbosity="medium", depth="intermediate", audience="undergraduate")
+        segments = [
+            SourceSegment(
+                segment_id="seg_001",
+                order=0,
+                page_start=1,
+                page_end=1,
+                text="Sine and cosine on the unit circle.",
+            )
+        ]
 
         # Call _generate_video_script directly (Task 3 method)
         monkeypatch.setenv("OPENAI_API_KEY", "test")
-        script = agent._generate_video_script(ocr, config, review_feedback=[])
+        script = agent._generate_video_script(ocr, config, review_feedback=[], segments=segments)
 
         assert isinstance(script, VideoScript)
         assert script.concept_ledger() == ["unit_circle", "sine", "cosine"]
         assert len(script.beats) == 2
         assert script.beats[1].references_prior_beats == ["beat_001"]
+        assert [beat.source_segment_id for beat in script.beats] == ["seg_001", "seg_001"]
+
+    def test_generate_video_script_uses_one_prompt_per_segment(self, monkeypatch):
+        """Segment-scoped generation sees later pages instead of one truncated prefix."""
+        from src.schemas.source_segment import SourceSegment
+        from tests.fixtures.ocr_fixtures import minimal_trig_ocr_output
+
+        responses = [
+            {
+                "title": "Segment 1",
+                "beats": [
+                    {
+                        "beat_id": "beat_local_001",
+                        "narration": "Explain the first segment.",
+                        "visual_hint": "Show the first idea.",
+                        "introduces_concepts": ["first"],
+                        "references_prior_beats": [],
+                    }
+                ],
+            },
+            {
+                "title": "Segment 2",
+                "beats": [
+                    {
+                        "beat_id": "beat_local_001",
+                        "narration": "Explain the final page result.",
+                        "visual_hint": "Show the final result.",
+                        "introduces_concepts": ["final_result"],
+                        "references_prior_beats": [],
+                    }
+                ],
+            },
+        ]
+        captured_prompts = []
+
+        class _FakeChoice:
+            def __init__(self, content):
+                self.message = type("M", (), {"content": content})
+
+        class _FakeResp:
+            def __init__(self, content):
+                self.choices = [_FakeChoice(content)]
+
+        class _FakeCompletions:
+            def create(self, *, messages, **_kw):
+                captured_prompts.append(messages[0]["content"])
+                return _FakeResp(json.dumps(responses[len(captured_prompts) - 1]))
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+        agent.client = _FakeClient()
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+
+        segments = [
+            SourceSegment(
+                segment_id="seg_001",
+                order=0,
+                page_start=1,
+                page_end=1,
+                text="Opening material.",
+            ),
+            SourceSegment(
+                segment_id="seg_002",
+                order=1,
+                page_start=18,
+                page_end=18,
+                text="Final page result that used to be beyond 8000 characters.",
+            ),
+        ]
+
+        script = agent._generate_video_script(
+            minimal_trig_ocr_output(),
+            Configuration(verbosity="medium", depth="intermediate", audience="undergraduate"),
+            review_feedback=[],
+            segments=segments,
+        )
+
+        assert len(captured_prompts) == 2
+        assert "Opening material." in captured_prompts[0]
+        assert "Final page result" not in captured_prompts[0]
+        assert "Final page result that used to be beyond 8000 characters." in captured_prompts[1]
+        assert [beat.beat_id for beat in script.beats] == ["beat_001", "beat_002"]
+        assert [beat.source_segment_id for beat in script.beats] == ["seg_001", "seg_002"]
 
     def test_generate_video_script_falls_back_when_no_api_key(self, monkeypatch):
         from src.schemas.video_script import VideoScript
@@ -472,6 +587,31 @@ class TestChunker:
         for s in scenes:
             roundtripped = Scene.model_validate(s.model_dump())
             assert [b.beat_id for b in roundtripped.source_beats] == [b.beat_id for b in s.source_beats]
+
+    def test_chunker_keeps_segment_boundaries_and_tags_scenes(self):
+        from src.schemas.video_script import Beat, VideoScript
+
+        beats = [
+            Beat(
+                beat_id="beat_001",
+                narration=" ".join(["alpha"] * 30),
+                visual_hint="h",
+                introduces_concepts=["a"],
+                source_segment_id="seg_001",
+            ),
+            Beat(
+                beat_id="beat_002",
+                narration=" ".join(["beta"] * 30),
+                visual_hint="h",
+                introduces_concepts=["b"],
+                source_segment_id="seg_002",
+            ),
+        ]
+
+        scenes = self._make_agent()._chunk_script_into_scenes(VideoScript(beats=beats))
+
+        assert len(scenes) == 2
+        assert [scene.source_segment_ids for scene in scenes] == [["seg_001"], ["seg_002"]]
 
 
 class TestVisualIntentForChunk:

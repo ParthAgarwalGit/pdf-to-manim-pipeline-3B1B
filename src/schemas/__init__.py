@@ -17,6 +17,7 @@ from src.schemas.output_manifest import (
     OutputFile,
     OutputManifest,
 )
+from src.schemas.source_segment import SourceSegment
 from src.schemas.scene_processing import (
     FailedScene,
     NarrativeContext,
@@ -70,6 +71,7 @@ __all__ = [
     "VisualIntent",
     "Scene",
     "StoryboardJSON",
+    "SourceSegment",
     # Animation Code
     "AnimationCodeObject",
     # Scene Processing
