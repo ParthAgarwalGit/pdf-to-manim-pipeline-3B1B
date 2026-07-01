@@ -20,6 +20,14 @@ class TestCatalog:
                      "NumberPlane", "NumberLine", "create_pi_teacher"):
             assert name in MOBJECT_CATALOG, f"missing primitive: {name}"
 
+    def test_catalog_has_dynamic_intuition_primitives(self):
+        # The "visualization-first" additions: vectors, annotations and an
+        # animatable number. These are advertised in CANONICAL_RENDER_HINTS and
+        # must be enrollable as first-class, schema-validated primitives.
+        for name in ("Vector", "DoubleArrow", "DashedLine", "Ellipse",
+                     "Triangle", "RoundedRectangle", "DecimalNumber"):
+            assert name in MOBJECT_CATALOG, f"missing dynamic primitive: {name}"
+
     def test_catalog_has_core_animations(self):
         for name in ("Write", "Create", "FadeIn", "FadeOut",
                      "Transform", "ReplacementTransform", "Indicate"):
@@ -123,3 +131,18 @@ class TestMathematicalObjectPrimitiveValidation:
                 args={"color": "RED"},
             ))
         assert "color" in str(exc.value)
+
+    def test_dynamic_vector_primitive_validates(self):
+        obj = MathematicalObject(**self._base(
+            primitive="Vector",
+            args={"direction": (2.0, 1.0, 0.0), "color": "BLUE"},
+        ))
+        assert obj.primitive == "Vector"
+        assert obj.args["direction"] == (2.0, 1.0, 0.0)
+
+    def test_decimal_number_args_validate(self):
+        obj = MathematicalObject(**self._base(
+            primitive="DecimalNumber",
+            args={"number": 3.0, "num_decimal_places": 2},
+        ))
+        assert obj.args["num_decimal_places"] == 2
