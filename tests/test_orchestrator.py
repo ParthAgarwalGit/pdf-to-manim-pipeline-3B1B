@@ -515,7 +515,8 @@ class TestPipelineConfig:
         config = PipelineConfig(
             verbosity="high",
             depth="advanced",
-            audience="graduate"
+            audience="graduate",
+            granularity="fine",
         )
         
         storyboard_config = config.to_storyboard_config()
@@ -523,6 +524,7 @@ class TestPipelineConfig:
         assert storyboard_config.verbosity == "high"
         assert storyboard_config.depth == "advanced"
         assert storyboard_config.audience == "graduate"
+        assert storyboard_config.granularity == "fine"
     
     def test_config_defaults(self):
         """Test default configuration values."""
@@ -532,6 +534,7 @@ class TestPipelineConfig:
         assert config.depth == "intermediate"
         assert config.audience == "undergraduate"
         assert config.base_output_dir == "output"
+        assert config.granularity == "balanced"
         assert config.enable_ocr_debug is False
         assert config.strict is False
 

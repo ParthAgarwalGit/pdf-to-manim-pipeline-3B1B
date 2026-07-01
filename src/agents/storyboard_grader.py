@@ -27,6 +27,7 @@ from src.agents.base import (
     RetryPolicy,
 )
 from src.schemas.storyboard import StoryboardJSON
+from src.schemas.source_segment import SourceSegment
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +66,12 @@ class StoryboardGraderInput(AgentInput):
         self,
         storyboard: StoryboardJSON,
         source_text_summary: str = "",
+        source_segments: Optional[List[SourceSegment]] = None,
         pass_threshold: float = 6.0,
     ):
         self.storyboard = storyboard
         self.source_text_summary = source_text_summary
+        self.source_segments = source_segments or []
         self.pass_threshold = pass_threshold
 
 
@@ -145,9 +148,16 @@ class StoryboardGraderAgent(Agent):
         storyboard = input_data.storyboard
 
         if self.client:
-            report = self._grade_with_llm(storyboard, input_data.source_text_summary)
+            report = self._grade_with_llm(
+                storyboard,
+                input_data.source_text_summary,
+                input_data.source_segments,
+            )
         else:
-            report = self._grade_heuristic(storyboard)
+            report = self._grade_heuristic(
+                storyboard,
+                source_segments=input_data.source_segments,
+            )
 
         report.passed = report.overall_score >= input_data.pass_threshold
 
@@ -181,6 +191,7 @@ class StoryboardGraderAgent(Agent):
         self,
         storyboard: StoryboardJSON,
         source_summary: str,
+        source_segments: Optional[List[SourceSegment]] = None,
     ) -> GradingReport:
         """Use GPT-4o-mini to produce structured grading JSON."""
         assert self.client is not None, "LLM client not initialized"
@@ -193,7 +204,16 @@ class StoryboardGraderAgent(Agent):
                 "num_objects": len(s.visual_intent.mathematical_objects),
                 "num_transforms": len(s.visual_intent.transformations),
                 "duration": s.duration_estimate,
+                "source_segment_ids": getattr(s, "source_segment_ids", []),
             })
+        segment_summary = [
+            {
+                "segment_id": segment.segment_id,
+                "pages": f"{segment.page_start}-{segment.page_end}",
+                "heading": segment.heading,
+            }
+            for segment in source_segments or []
+        ]
 
         prompt = f"""
 You are an expert educational content reviewer.
@@ -205,6 +225,9 @@ STORYBOARD METADATA:
 
 SCENES SUMMARY:
 {json.dumps(scenes_summary, indent=2)}
+
+SOURCE SEGMENTS:
+{json.dumps(segment_summary, indent=2) if segment_summary else "Not provided."}
 
 SOURCE TEXT SUMMARY (if available):
 {source_summary or "Not provided."}
@@ -237,7 +260,7 @@ Return ONLY valid JSON:
 
         except Exception as e:
             logger.error(f"LLM grading failed: {e} — falling back to heuristic.")
-            return self._grade_heuristic(storyboard)
+            return self._grade_heuristic(storyboard, source_segments=source_segments)
 
     def _parse_llm_response(self, data: Dict[str, Any]) -> GradingReport:
         criteria: List[GradingCriterion] = []
@@ -262,7 +285,11 @@ Return ONLY valid JSON:
     # Heuristic (mock / offline) grading
     # ------------------------------------------------------------------
 
-    def _grade_heuristic(self, storyboard: StoryboardJSON) -> GradingReport:
+    def _grade_heuristic(
+        self,
+        storyboard: StoryboardJSON,
+        source_segments: Optional[List[SourceSegment]] = None,
+    ) -> GradingReport:
         """Deterministic heuristic grading — no LLM needed."""
         criteria: List[GradingCriterion] = []
 
@@ -291,12 +318,37 @@ Return ONLY valid JSON:
             feedback=f"Average narration length: {avg_narration_len:.0f} chars.",
         ))
 
-        # 4. Completeness — check scene count relative to page count
-        ratio = len(storyboard.scenes) / max(storyboard.pdf_metadata.page_count, 1)
-        completeness_score = min(10.0, ratio * 5)
+        # 4. Completeness - real source-segment coverage, with a legacy fallback.
+        if source_segments:
+            expected_segment_ids = {segment.segment_id for segment in source_segments}
+            covered_sequence = [
+                segment_id
+                for scene in storyboard.scenes
+                for segment_id in getattr(scene, "source_segment_ids", [])
+                if segment_id in expected_segment_ids
+            ]
+            covered_segment_ids = set(covered_sequence)
+            duplicate_count = sum(
+                max(0, covered_sequence.count(segment_id) - 1)
+                for segment_id in expected_segment_ids
+            )
+            coverage_ratio = len(covered_segment_ids) / max(len(expected_segment_ids), 1)
+            redundancy_penalty = duplicate_count / max(len(expected_segment_ids), 1)
+            completeness_score = max(
+                0.0,
+                min(10.0, (coverage_ratio * 10.0) - (redundancy_penalty * 3.0)),
+            )
+            feedback = (
+                f"{len(covered_segment_ids)}/{len(expected_segment_ids)} source segments covered; "
+                f"{duplicate_count} redundant segment references."
+            )
+        else:
+            ratio = len(storyboard.scenes) / max(storyboard.pdf_metadata.page_count, 1)
+            completeness_score = min(10.0, ratio * 5)
+            feedback = f"{len(storyboard.scenes)} scenes for {storyboard.pdf_metadata.page_count} pages."
         criteria.append(GradingCriterion(
             name="completeness", weight=0.20, score=completeness_score,
-            feedback=f"{len(storyboard.scenes)} scenes for {storyboard.pdf_metadata.page_count} pages.",
+            feedback=feedback,
         ))
 
         weighted = sum(c.score * c.weight for c in criteria)

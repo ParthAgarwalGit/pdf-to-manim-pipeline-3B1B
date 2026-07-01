@@ -38,6 +38,10 @@ class Configuration(BaseModel):
         ...,
         description="Target audience level (high-school|undergraduate|graduate)"
     )
+    granularity: str = Field(
+        default="balanced",
+        description="Source segmentation granularity (coarse|balanced|fine)"
+    )
     
     @field_validator('verbosity')
     @classmethod
@@ -64,6 +68,15 @@ class Configuration(BaseModel):
         allowed = {'high-school', 'undergraduate', 'graduate'}
         if v not in allowed:
             raise ValueError(f"audience must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator('granularity')
+    @classmethod
+    def validate_granularity(cls, v: str) -> str:
+        """Validate segment granularity is one of the allowed values."""
+        allowed = {'coarse', 'balanced', 'fine'}
+        if v not in allowed:
+            raise ValueError(f"granularity must be one of {allowed}, got '{v}'")
         return v
 
 
@@ -506,6 +519,10 @@ class Scene(BaseModel):
         description="The Beats from the unified VideoScript that were grouped "
                     "into this scene by the chunker. Empty for legacy storyboards "
                     "produced before Task 4 of the chunked-render plan."
+    )
+    source_segment_ids: List[str] = Field(
+        default_factory=list,
+        description="SourceSegment ids covered by this scene."
     )
 
     @field_validator('scene_id')

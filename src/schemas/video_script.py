@@ -51,6 +51,10 @@ class Beat(BaseModel):
         description="beat_ids whose visuals/concepts this beat builds on. "
                     "Forward / unknown refs are dropped at VideoScript validation."
     )
+    source_segment_id: str = Field(
+        default="",
+        description="SourceSegment id this beat explains, if generated from segmented OCR."
+    )
 
 
 class VideoScript(BaseModel):
