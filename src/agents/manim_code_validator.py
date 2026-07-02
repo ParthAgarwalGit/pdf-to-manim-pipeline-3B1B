@@ -83,6 +83,35 @@ KNOWN_MANIM_CLASSES = {
 
 
 # ---------------------------------------------------------------------------
+# Security gate — generated scene code is EXECUTED locally by `manim`
+# ---------------------------------------------------------------------------
+# The code under validation comes from an LLM whose prompt embeds text
+# extracted from an arbitrary user-supplied PDF. A malicious document can
+# prompt-inject instructions ("...also call os.system(...)") that would then
+# run on the user's machine at render time. Scene code has no legitimate need
+# for filesystem, network, process, or reflection APIs, so anything outside
+# this allowlist fails validation as an ERROR — the orchestrator feeds the
+# message back to the generator for a clean rewrite.
+
+ALLOWED_IMPORT_ROOTS = {
+    "manim",   # the engine itself
+    "numpy",   # positions/paths (the prompt suggests np.array)
+    "math",    # inline trig for plotted functions
+    "random",  # occasionally used for scatter/jitter effects
+    "src",     # repo helpers (pi characters, layout tracker, notation)
+}
+
+FORBIDDEN_CALL_NAMES = {
+    "eval", "exec", "compile", "__import__", "open", "input", "breakpoint",
+}
+
+FORBIDDEN_ATTRIBUTES = {
+    "__globals__", "__builtins__", "__subclasses__", "__mro__",
+    "__code__", "__reduce__", "__loader__",
+}
+
+
+# ---------------------------------------------------------------------------
 # Data Classes
 # ---------------------------------------------------------------------------
 
@@ -94,6 +123,7 @@ class ValidationResult:
     syntax_ok: bool
     imports_ok: bool
     dry_run_ok: Optional[bool]
+    security_ok: bool = True
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -195,23 +225,32 @@ class ManimCodeValidatorAgent(Agent):
         # 1. AST Parse
         syntax_ok = self._check_syntax(full_source, errors)
 
-        # 2. Import Check (only if syntax passed)
+        # 2. Security gate (only if syntax passed) — errors, never warnings
+        security_ok = True
+        if syntax_ok:
+            security_ok = self._check_security(full_source, errors)
+
+        # 3. Import Check (only if syntax passed)
         imports_ok = True
         if syntax_ok:
             imports_ok = self._check_imports(full_source, errors, warnings)
 
-        # 3. Dry Run (optional, only if previous checks passed)
+        # 4. Dry Run (optional, only if previous checks passed)
         dry_run_ok = None
-        if dry_run and syntax_ok and imports_ok:
+        if dry_run and syntax_ok and security_ok and imports_ok:
             dry_run_ok = self._check_dry_run(full_source, scene_id, errors)
 
-        passed = syntax_ok and imports_ok and (dry_run_ok is None or dry_run_ok)
+        passed = (
+            syntax_ok and security_ok and imports_ok
+            and (dry_run_ok is None or dry_run_ok)
+        )
         return ValidationResult(
             scene_id=scene_id,
             passed=passed,
             syntax_ok=syntax_ok,
             imports_ok=imports_ok,
             dry_run_ok=dry_run_ok,
+            security_ok=security_ok,
             errors=errors,
             warnings=warnings,
         )
@@ -226,6 +265,71 @@ class ManimCodeValidatorAgent(Agent):
         except SyntaxError as e:
             errors.append(f"SyntaxError at line {e.lineno}: {e.msg}")
             return False
+
+    def _check_security(self, source: str, errors: List[str]) -> bool:
+        """Reject imports and constructs a Manim scene has no business using.
+
+        Defends against prompt injection from malicious PDFs reaching local
+        code execution: imports outside ALLOWED_IMPORT_ROOTS, calls to
+        eval/exec/open/…, and dunder-reflection escapes all fail validation
+        with an actionable error message.
+        """
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return False
+
+        ok = True
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if root not in ALLOWED_IMPORT_ROOTS:
+                        errors.append(
+                            f"Security: import of '{alias.name}' is not allowed in "
+                            f"scene code (line {node.lineno}). Allowed roots: "
+                            f"{sorted(ALLOWED_IMPORT_ROOTS)}."
+                        )
+                        ok = False
+            elif isinstance(node, ast.ImportFrom):
+                if node.level and node.level > 0:
+                    errors.append(
+                        f"Security: relative import at line {node.lineno} is not "
+                        "allowed in scene code."
+                    )
+                    ok = False
+                    continue
+                root = (node.module or "").split(".")[0]
+                if root not in ALLOWED_IMPORT_ROOTS:
+                    errors.append(
+                        f"Security: import from '{node.module}' is not allowed in "
+                        f"scene code (line {node.lineno}). Allowed roots: "
+                        f"{sorted(ALLOWED_IMPORT_ROOTS)}."
+                    )
+                    ok = False
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in FORBIDDEN_CALL_NAMES:
+                    errors.append(
+                        f"Security: call to '{func.id}(...)' at line {node.lineno} "
+                        "is not allowed in scene code."
+                    )
+                    ok = False
+            elif isinstance(node, ast.Attribute):
+                if node.attr in FORBIDDEN_ATTRIBUTES:
+                    errors.append(
+                        f"Security: access to '{node.attr}' at line {node.lineno} "
+                        "is not allowed in scene code."
+                    )
+                    ok = False
+            elif isinstance(node, ast.Name) and node.id == "__builtins__":
+                errors.append(
+                    f"Security: access to '__builtins__' at line {node.lineno} "
+                    "is not allowed in scene code."
+                )
+                ok = False
+
+        return ok
 
     def _check_imports(self, source: str, errors: List[str], warnings: List[str]) -> bool:
         """Walk the AST looking for names that aren't known Manim classes."""
