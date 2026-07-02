@@ -1,6 +1,10 @@
 # ADR-004: Strict (x, y, t) Layout Validation with Disjoint-Interval Reuse
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-005](005-visual-first-render-path.md) — the
+standalone `SceneLayoutPlannerAgent`/`LayoutValidatorAgent` pair was never wired
+into the Orchestrator and was removed on 2026-07-02. The (x, y, t) *concepts*
+survive: `MathematicalObject.bbox` + `interval` are validated at the schema
+boundary and forwarded to the code LLM via the visual plan.
 **Date:** 2026-04-26
 **Deciders:** Parth Agarwal
 **Plan:** [`docs/superpowers/plans/2026-04-26-unified-script-chunked-render.md`](../superpowers/plans/2026-04-26-unified-script-chunked-render.md) (Task 13)

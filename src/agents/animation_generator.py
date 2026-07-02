@@ -120,7 +120,6 @@ class AnimationCodeGeneratorAgent(Agent):
         scene_spec = scene_input.scene_spec
         context = scene_input.context
         review_feedback = input_data.review_feedback or []
-        scene_layout = scene_input.scene_layout
 
         try:
             # Generate code with retry logic
@@ -129,7 +128,6 @@ class AnimationCodeGeneratorAgent(Agent):
                     code = self._generate_code(
                         scene_spec, context,
                         review_feedback=review_feedback,
-                        scene_layout=scene_layout,
                     )
                     
                     # Validate syntax
@@ -198,15 +196,12 @@ class AnimationCodeGeneratorAgent(Agent):
         scene_spec: Any,
         context: SharedContext,
         review_feedback: Optional[List[str]] = None,
-        scene_layout: Optional[Any] = None,
     ) -> str:
         """Generate Manim code using Anthropic Claude, synchronized to narration.
 
         The narration is the single source of truth for duration.  We compute
         target_duration = word_count / 3.0 (TTS rate) and instruct the LLM to
         produce animations whose total run_time + wait() gaps equal that value.
-        When a pre-validated scene_layout is provided, the LLM is instructed to
-        place objects at the given coordinates rather than inventing positions.
         """
 
         # Safety: Fallback if no key (in strict mode, constructor already raised)
@@ -397,26 +392,6 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
 - Every self.play() call MUST have an explicit run_time parameter.
 - Do NOT use deprecated Manim APIs (e.g. ShowCreation → Create).
 """
-        # ── Inject pre-validated layout constraints ───────────────────
-        if scene_layout is not None and getattr(scene_layout, "objects", None):
-            layout_lines = [
-                "\n═══════════════════════  PRE-VALIDATED LAYOUT (MANDATORY)  ═══════════════════════",
-                "A spatial layout has been computed and validated for zero overlap.",
-                "You MUST position each object at the coordinates listed below.",
-                "Use mob.move_to(np.array([cx, cy, 0])) where cx/cy is the centre",
-                "computed from the bounding box corners.  Do NOT deviate from these",
-                "positions — the validator has confirmed they do not overlap.\n",
-            ]
-            for bbox in scene_layout.objects:
-                cx = round((bbox.x_min + bbox.x_max) / 2, 3)
-                cy = round((bbox.y_min + bbox.y_max) / 2, 3)
-                layout_lines.append(
-                    f"  object_id={bbox.object_id!r}  type={bbox.object_type}"
-                    f"  centre=({cx}, {cy})  size={bbox.width:.2f}×{bbox.height:.2f}"
-                    f"  visible_for={bbox.duration:.1f}s"
-                )
-            system_prompt += "\n".join(layout_lines) + "\n"
-
         user_prompt = f"""Generate the full class for this scene:
 
 {json.dumps(scene_data, indent=2)}

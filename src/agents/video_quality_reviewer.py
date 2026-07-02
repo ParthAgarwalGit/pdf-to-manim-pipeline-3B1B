@@ -56,7 +56,6 @@ class VideoQualityReviewerInput(AgentInput):
         composition_output: Optional[Any] = None,
         final_video_path: Optional[str] = None,
         final_video_expected: bool = True,
-        scene_layouts: Optional[List[Any]] = None,
     ):
         self.storyboard = storyboard
         self.manifest = manifest
@@ -68,8 +67,6 @@ class VideoQualityReviewerInput(AgentInput):
         # When False, the "no final video" check is suppressed — e.g. when
         # TTS is disabled and composition is intentionally skipped.
         self.final_video_expected = final_video_expected
-        # Validated SceneLayout objects from the SceneController (optional)
-        self.scene_layouts: List[Any] = scene_layouts or []
 
 
 class VideoQualityReviewerOutput(AgentOutput):
@@ -136,7 +133,6 @@ class VideoQualityReviewerAgent(Agent):
             )
         )
         findings.extend(self._review_layout_risk(code_by_scene))
-        findings.extend(self._review_layout_violations(input_data.scene_layouts))
         findings.extend(self._review_helper_semantics(input_data.storyboard, code_by_scene))
         findings.extend(self._review_animation_pacing(code_by_scene))
         findings.extend(self._review_progressive_reveal(code_by_scene))
@@ -392,56 +388,6 @@ class VideoQualityReviewerAgent(Agent):
                         code_hint=self._layout_code_hint(),
                     )
                 )
-        return findings
-
-    def _review_layout_violations(
-        self,
-        scene_layouts: List[Any],
-    ) -> List[VideoQualityFinding]:
-        """Re-validate SceneLayout objects and report any lingering overlaps.
-
-        If the layout planner and validator ran during scene generation the
-        layouts should already be clean.  This is a defence-in-depth pass that
-        catches any regressions (e.g. a validator that was skipped).
-        """
-        if not scene_layouts:
-            return []
-
-        findings: List[VideoQualityFinding] = []
-
-        try:
-            from src.agents.layout_validator import LayoutValidationInput, LayoutValidatorAgent
-            validator = LayoutValidatorAgent()
-
-            for scene_layout in scene_layouts:
-                val_result = validator.execute(LayoutValidationInput(scene_layout=scene_layout))
-                if not val_result.is_valid:
-                    for violation in val_result.violations:
-                        findings.append(
-                            VideoQualityFinding(
-                                issue=(
-                                    f"Bounding-box overlap: '{violation.object_id_a}' and "
-                                    f"'{violation.object_id_b}' overlap by "
-                                    f"{violation.overlap_x:.2f}×{violation.overlap_y:.2f} units."
-                                ),
-                                suspected_stage="scene_layout_planner",
-                                severity="high",
-                                scene_id=scene_layout.scene_id,
-                                evidence=violation.description,
-                                suggested_fix=(
-                                    "Re-run the layout planner with explicit separation constraints "
-                                    "for these two objects."
-                                ),
-                                llm_direction=(
-                                    f"In scene {scene_layout.scene_id}, move '{violation.object_id_a}' "
-                                    f"and '{violation.object_id_b}' apart so their bounding boxes no "
-                                    "longer intersect while both are on screen."
-                                ),
-                            )
-                        )
-        except Exception as exc:
-            logger.warning("Layout violation review failed: %s", exc)
-
         return findings
 
     def _review_helper_semantics(

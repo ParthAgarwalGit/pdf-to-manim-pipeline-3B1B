@@ -1,13 +1,10 @@
 """Scene processing schemas for Scene Controller."""
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.schemas.storyboard import VisualIntent
-
-if TYPE_CHECKING:
-    from src.schemas.scene_layout import SceneLayout
 
 
 class VisualStyle(BaseModel):
@@ -157,8 +154,7 @@ class SceneProcessingInput(BaseModel):
     """
     Input to Animation Code Generator for a single scene.
 
-    Contains scene specification, shared context, scene index, and an
-    optional pre-validated layout (bounding boxes per object).
+    Contains scene specification, shared context, and scene index.
     """
 
     scene_spec: SceneSpec = Field(
@@ -174,11 +170,7 @@ class SceneProcessingInput(BaseModel):
         ge=0,
         description="Sequential index of the scene in the array"
     )
-    scene_layout: Optional[Any] = Field(
-        None,
-        description="Pre-validated SceneLayout with bounding boxes for each object",
-    )
-    
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
