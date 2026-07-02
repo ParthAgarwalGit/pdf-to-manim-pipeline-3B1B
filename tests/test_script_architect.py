@@ -129,8 +129,10 @@ class TestScriptArchitectAgent:
         """Test agent initializes correctly"""
         assert agent is not None
         assert agent.retry_count == 0
-        assert agent.MIN_SCENE_DURATION == 30.0
-        assert agent.MAX_SCENE_DURATION == 90.0
+        # Visual-first vignette pacing (ADR-005): short scenes, no lecture floors.
+        assert agent.MIN_SCENE_DURATION == 8.0
+        assert agent.MAX_SCENE_DURATION == 45.0
+        assert agent.TARGET_SCENE_DURATION == 25.0
     
     def test_validate_input_valid(self, agent, sample_ocr_output, default_config):
         """Test input validation with valid input"""
@@ -539,7 +541,7 @@ class TestChunker:
         from src.schemas.video_script import VideoScript, Beat
         long_beat = Beat(
             beat_id="beat_001",
-            narration=" ".join(["word"] * 600),  # ≈ 200 s — exceeds MAX_SCENE_DURATION (90s)
+            narration=" ".join(["word"] * 600),  # ≈ 200 s — exceeds MAX_SCENE_DURATION (45s)
             visual_hint="hint",
             introduces_concepts=["x"],
         )
@@ -800,6 +802,202 @@ class TestVisualIntentForChunk:
 
         out = agent._generate_visual_intent_for_chunk(scene, script, config, [])
         assert len(out.mathematical_objects) >= 1
+
+
+class TestNonTextVisualInvariant:
+    """Visual-impact invariant: a scene of only Text/Tex/MathTex objects is a
+    text wall. The planner is retried once with explicit feedback; persistent
+    violations are logged, never fatal."""
+
+    def _intent(self, objects):
+        from src.schemas.storyboard import SceneState, VisualIntent
+        return VisualIntent(
+            mathematical_objects=objects,
+            transformations=[],
+            beats=[],
+            scene_state_in=SceneState(),
+            scene_state_out=SceneState(),
+            emphasis_points=[],
+        )
+
+    def _text_obj(self):
+        from src.schemas.storyboard import MathematicalObject
+        return MathematicalObject(
+            object_type="text", content="hello",
+            primitive="Text", args={"text": "hello"},
+        )
+
+    def _equation_obj(self):
+        from src.schemas.storyboard import MathematicalObject
+        return MathematicalObject(
+            object_type="equation", content=r"e^{i\pi}",
+            primitive="MathTex", args={"tex": r"e^{i\pi}"},
+        )
+
+    def _circle_obj(self):
+        from src.schemas.storyboard import MathematicalObject
+        return MathematicalObject(
+            object_type="geometric_shape", content="unit circle",
+            primitive="Circle", args={"radius": 2.0},
+        )
+
+    # ── predicate ─────────────────────────────────────────────────────
+
+    def test_all_text_objects_is_text_only(self):
+        intent = self._intent([self._text_obj(), self._equation_obj()])
+        assert ScriptArchitectAgent._is_text_only_intent(intent) is True
+
+    def test_one_shape_clears_the_invariant(self):
+        intent = self._intent([self._text_obj(), self._circle_obj()])
+        assert ScriptArchitectAgent._is_text_only_intent(intent) is False
+
+    def test_empty_object_list_counts_as_text_only(self):
+        assert ScriptArchitectAgent._is_text_only_intent(self._intent([])) is True
+
+    def test_legacy_objects_without_primitive_use_object_type(self):
+        from src.schemas.storyboard import MathematicalObject
+        legacy_text = MathematicalObject(object_type="text", content="t")
+        legacy_shape = MathematicalObject(object_type="geometric_shape", content="circle")
+        assert ScriptArchitectAgent._is_text_only_intent(self._intent([legacy_text])) is True
+        assert ScriptArchitectAgent._is_text_only_intent(
+            self._intent([legacy_text, legacy_shape])
+        ) is False
+
+    # ── retry wiring in execute() ─────────────────────────────────────
+
+    def _minimal_execute_input(self):
+        from src.schemas.ocr_output import (
+            BoundingBox, OCROutput, Page, PDFMetadata, TextBlock,
+        )
+        from src.schemas.source_segment import SourceSegment
+        ocr = OCROutput(
+            pdf_metadata=PDFMetadata(filename="t.pdf", page_count=1, file_size_bytes=10),
+            pages=[Page(page_number=1, text_blocks=[TextBlock(
+                text="hello world", reading_order=0,
+                bounding_box=BoundingBox(x=0, y=0, width=1, height=1),
+            )])],
+        )
+        config = Configuration(
+            verbosity="medium", depth="intermediate", audience="undergraduate",
+        )
+        segments = [SourceSegment(
+            segment_id="seg_001", order=0, page_start=1, page_end=1, text="hello world",
+        )]
+        return ScriptArchitectInput(
+            ocr_output=ocr, configuration=config, segments=segments,
+        )
+
+    def _agent_with_scripted_intents(self, monkeypatch, intents, key_present=True):
+        """Agent whose script generation is canned and whose visual planner
+        returns the given intents in order, recording each call's feedback."""
+        from src.schemas.video_script import Beat, VideoScript
+
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+        agent.client = object() if key_present else None
+        if key_present:
+            monkeypatch.setenv("OPENAI_API_KEY", "test")
+        else:
+            monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        script = VideoScript(beats=[Beat(
+            beat_id="beat_001", narration=" ".join(["word"] * 30),
+            visual_hint="h", introduces_concepts=["c"],
+            source_segment_id="seg_001",
+        )])
+        monkeypatch.setattr(
+            agent, "_generate_video_script",
+            lambda *a, **kw: script,
+        )
+
+        calls = []
+        intent_iter = iter(intents)
+
+        def fake_planner(scene, video_script, config, review_feedback):
+            calls.append(list(review_feedback))
+            return next(intent_iter)
+
+        monkeypatch.setattr(agent, "_generate_visual_intent_for_chunk", fake_planner)
+        return agent, calls
+
+    def test_text_only_intent_retried_once_with_feedback(self, monkeypatch):
+        text_only = self._intent([self._text_obj()])
+        visual = self._intent([self._circle_obj()])
+        agent, calls = self._agent_with_scripted_intents(monkeypatch, [text_only, visual])
+
+        storyboard = agent.execute(self._minimal_execute_input())
+
+        assert len(calls) == 2
+        assert ScriptArchitectAgent.TEXT_ONLY_RETRY_FEEDBACK in calls[1]
+        assert storyboard.scenes[0].visual_intent is visual
+
+    def test_visual_intent_not_retried_when_already_visual(self, monkeypatch):
+        visual = self._intent([self._circle_obj()])
+        agent, calls = self._agent_with_scripted_intents(monkeypatch, [visual])
+
+        agent.execute(self._minimal_execute_input())
+        assert len(calls) == 1
+
+    def test_persistent_text_only_logs_warning(self, monkeypatch, caplog):
+        import logging
+        text_only = self._intent([self._text_obj()])
+        agent, calls = self._agent_with_scripted_intents(
+            monkeypatch, [text_only, text_only],
+        )
+        with caplog.at_level(logging.WARNING, logger="src.agents.script_architect"):
+            agent.execute(self._minimal_execute_input())
+        assert len(calls) == 2
+        assert any("Text-only visual intent" in r.getMessage() for r in caplog.records)
+
+    def test_no_retry_on_keyless_fallback_path(self, monkeypatch):
+        """The deterministic fallback would reproduce itself — never retried."""
+        text_only = self._intent([self._text_obj()])
+        agent, calls = self._agent_with_scripted_intents(
+            monkeypatch, [text_only], key_present=False,
+        )
+        agent.execute(self._minimal_execute_input())
+        assert len(calls) == 1
+
+    def test_visual_planner_prompt_carries_visual_impact_rule(self, monkeypatch):
+        """The standing anti-text-wall rule must reach every planner prompt."""
+        from src.schemas.video_script import Beat, VideoScript
+
+        captured: dict = {}
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict = False
+
+        class _Resp:
+            choices = [type("C", (), {"message": type("M", (), {
+                "content": '{"objects": [{"object_type": "geometric_shape", '
+                           '"content": "", "primitive": "Circle", '
+                           '"args": {"radius": 1.0}}], "transformations": [], '
+                           '"beats": [], "scene_state_in": {}, '
+                           '"scene_state_out": {}, "emphasis_points": []}',
+            })})]
+
+        class _Completions:
+            def create(self, *, messages, **_kw):
+                captured["prompt"] = messages[0]["content"]
+                return _Resp()
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+        agent.client = _Client()
+        monkeypatch.setenv("OPENAI_API_KEY", "test")
+
+        script = VideoScript(beats=[Beat(
+            beat_id="beat_001", narration="explain sine", visual_hint="circle",
+        )])
+        scene = agent._chunk_script_into_scenes(script)[0]
+        config = Configuration(
+            verbosity="medium", depth="intermediate", audience="undergraduate",
+        )
+        agent._generate_visual_intent_for_chunk(scene, script, config, [])
+        assert "VISUAL IMPACT" in captured["prompt"]
 
 
 if __name__ == "__main__":
