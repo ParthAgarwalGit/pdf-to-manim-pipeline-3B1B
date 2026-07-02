@@ -44,6 +44,7 @@ from src.schemas.storyboard import (
 )
 from src.utils.manim_engine_contract import build_visual_intent_contract_prompt, CANONICAL_RENDER_HINTS, normalize_render_hint
 from src.utils.manim_primitives import catalog_for_prompt
+from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 
 logger = logging.getLogger(__name__)
 
@@ -488,6 +489,19 @@ class ScriptArchitectAgent(Agent):
         engine_contract = build_visual_intent_contract_prompt()
         catalog_block = catalog_for_prompt()
 
+        # Concept → archetype: give the planner a proven visual pattern for
+        # this chunk's concept family instead of a blank page. Underscored
+        # concept labels are space-joined so "unit_circle" matches "circle".
+        classification_text = " ".join([
+            scene.narration,
+            " ".join(c.replace("_", " ") for c in chunk_concepts),
+            visual_hints,
+        ])
+        archetype = classify_concept(classification_text)
+        archetype_block = (
+            archetype_prompt_block(archetype) + "\n" if archetype else ""
+        )
+
         prompt = (
             "You are a 3Blue1Brown animation architect.\n\n"
             "--- CHUNK NARRATION (audio for THIS scene only) ---\n"
@@ -512,6 +526,7 @@ class ScriptArchitectAgent(Agent):
             "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
             "that visually DEPICTS the concept. Text/MathTex are for labels and "
             "the key formula only — never the whole scene.\n\n"
+            f"{archetype_block}"
             "LAYOUT (x, y, t):\n"
             "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
             "    object's intended position in Manim units AND `interval` =\n"
@@ -1089,8 +1104,12 @@ Return JSON in this exact shape:
 
         Layout (Task 13): every emitted object carries a bbox + interval
         so the layout validator can run unchanged. Positions are picked
-        from a small "canonical 2-object stack" (title on top, equation
-        in centre) inside the safe area.
+        from a small canonical stack (title on top, equation in centre,
+        archetype visual below) inside the safe area.
+
+        Visual-impact: when the narration classifies to a visual archetype,
+        its ``fallback_primitive`` is emitted too, so even degraded/keyless
+        runs draw something rather than shipping a text-only slide.
         """
         from src.schemas.storyboard import BBox, TimeInterval
 
@@ -1132,6 +1151,23 @@ Return JSON in this exact shape:
                 bbox=BBox(x=0.0, y=0.0, w=8.0, h=1.5),
                 interval=TimeInterval(t_in=0.0, t_out=15.0),
                 style=ObjectStyle(color="YELLOW", position="center"),
+            ))
+
+        # Archetype visual — the concept family's proven primitive, placed in
+        # the lower half of the safe area so degraded runs still DRAW the idea.
+        archetype = classify_concept(narration)
+        if archetype is not None:
+            primitive_name, primitive_args, object_type = archetype.fallback_primitive
+            objs.append(MathematicalObject(
+                object_id="archetype_visual",
+                object_role="concept_visual",
+                object_type=object_type,
+                content=archetype.description,
+                primitive=primitive_name,
+                args=dict(primitive_args),
+                bbox=BBox(x=0.0, y=-2.0, w=6.0, h=2.5),
+                interval=TimeInterval(t_in=0.0, t_out=15.0),
+                style=ObjectStyle(color="GREEN", position="bottom"),
             ))
 
         active_object_ids = [obj.object_id for obj in objs if obj.object_id]
