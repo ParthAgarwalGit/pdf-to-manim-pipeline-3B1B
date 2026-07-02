@@ -197,11 +197,13 @@ class AnimationCodeGeneratorAgent(Agent):
         context: SharedContext,
         review_feedback: Optional[List[str]] = None,
     ) -> str:
-        """Generate Manim code using Anthropic Claude, synchronized to narration.
+        """Generate Manim code using Anthropic Claude, visual-first (ADR-005).
 
-        The narration is the single source of truth for duration.  We compute
-        target_duration = word_count / 3.0 (TTS rate) and instruct the LLM to
-        produce animations whose total run_time + wait() gaps equal that value.
+        The structured visual plan (primitive/args, (x,y) position, visibility
+        window, continuity keys) is forwarded verbatim to the LLM, which owns
+        the motion design. Narration length is a pacing *hint* only; the scene
+        runs as long as its visual work needs, floored at MIN_SCENE_SECONDS —
+        never padded up to narration length.
         """
 
         # Safety: Fallback if no key (in strict mode, constructor already raised)
