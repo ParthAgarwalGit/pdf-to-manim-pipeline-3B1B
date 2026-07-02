@@ -42,6 +42,12 @@ from src.schemas.ocr_output import (
 
 logger = logging.getLogger(__name__)
 
+# Per-task model tiering. Math OCR is accuracy-critical and error-cascading (a
+# misread formula corrupts every downstream scene), so it uses a full-tier vision
+# model rather than a mini/nano tier. Runs once per document, so cost is bounded.
+OCR_MODEL = "gpt-5.4"
+
+
 class VisionOCRAgent(Agent):
     """Agent responsible for extracting text, math notation, and diagrams from PDFs"""
     
@@ -391,7 +397,7 @@ class VisionOCRAgent(Agent):
         # 3. Call the Vision Model
         try:
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model=OCR_MODEL,
                 messages=[{
                     "role": "user",
                     "content": [

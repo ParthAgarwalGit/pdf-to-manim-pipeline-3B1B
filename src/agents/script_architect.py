@@ -46,6 +46,15 @@ from src.utils.manim_engine_contract import build_visual_intent_contract_prompt,
 from src.utils.manim_primitives import catalog_for_prompt
 from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 
+# Per-task model tiering (see docs). The unified whole-document script — one call
+# per document that sets breadth coverage — runs on Claude Sonnet 5 (best
+# reasoning + instruction-following per dollar). The high-volume per-segment and
+# visual-intent calls run on the cheap gpt-5.4-mini tier: Pydantic schema
+# enforcement + retry are a safety net, so raw capability matters less there.
+UNIFIED_SCRIPT_MODEL = "claude-sonnet-5"   # Anthropic
+SEGMENT_SCRIPT_MODEL = "gpt-5.4-mini"      # OpenAI
+VISUAL_INTENT_MODEL = "gpt-5.4-mini"       # OpenAI
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +94,25 @@ def _canonicalize_concept(label: str) -> str:
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     return _CONCEPT_ALIASES.get(s, s)
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the JSON-object substring from an LLM text response.
+
+    OpenAI's ``response_format=json_object`` guarantees clean JSON, but Claude
+    returns free text — so strip ``` fences and slice from the first ``{`` to
+    the last ``}``. Returns the input unchanged when no object braces are found.
+    """
+    s = text.strip()
+    if s.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and any trailing fence.
+        s = s.strip("`").strip()
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return s[start:end + 1]
+    return s
 
 
 class ScriptArchitectInput(AgentInput):
@@ -190,6 +218,17 @@ class ScriptArchitectAgent(Agent):
                 )
             self.client = None
             logger.warning("OPENAI_API_KEY not found. ScriptArchitect will use mock fallbacks.")
+
+        # The unified whole-document script runs on Claude Sonnet 5. Best-effort:
+        # only constructed when an Anthropic key is present; the unified path falls
+        # back to the OpenAI client (gpt-5.4) when it is absent.
+        self.anthropic_client = None
+        if os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                import anthropic
+                self.anthropic_client = anthropic.Anthropic()
+            except Exception as exc:  # pragma: no cover — optional dependency / init
+                logger.warning("Anthropic client unavailable for unified script: %s", exc)
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute storyboard generation via the unified-script + chunker flow.
@@ -541,7 +580,7 @@ class ScriptArchitectAgent(Agent):
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model=VISUAL_INTENT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
             )
@@ -735,12 +774,7 @@ Return JSON in this EXACT shape:
 }}
 """
 
-        response = self.client.chat.completions.create(
-            model="gpt-5",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(response.choices[0].message.content)
+        data = self._complete_unified_script_json(prompt)
 
         beats = []
         for b in data.get("beats", []):
@@ -758,6 +792,37 @@ Return JSON in this EXACT shape:
             ))
 
         return VideoScript(title=data.get("title", ""), beats=beats)
+
+    def _complete_unified_script_json(self, prompt: str) -> Dict[str, Any]:
+        """Run the unified whole-document script call and return parsed JSON.
+
+        Prefers Claude Sonnet 5 (per-task model tiering — this single call sets
+        breadth coverage and benefits most from strong reasoning). Falls back to
+        the OpenAI client (gpt-5.4) when no Anthropic client is configured, so a
+        key-only-OpenAI deployment keeps working.
+        """
+        client = getattr(self, "anthropic_client", None)
+        if client is not None:
+            response = client.messages.create(
+                model=UNIFIED_SCRIPT_MODEL,
+                max_tokens=8000,
+                # Cost-conscious: no adaptive thinking for a structured JSON task.
+                thinking={"type": "disabled"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = "".join(
+                getattr(block, "text", "")
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            )
+            return json.loads(_extract_json_object(text))
+
+        response = self.client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content)
 
     def _generate_segmented_video_script(
         self,
@@ -780,7 +845,7 @@ Return JSON in this EXACT shape:
                 review_feedback=review_feedback,
             )
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model=SEGMENT_SCRIPT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
             )

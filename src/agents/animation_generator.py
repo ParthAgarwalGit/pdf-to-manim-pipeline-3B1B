@@ -20,6 +20,11 @@ from src.utils.manim_engine_contract import (
     build_3b1b_quality_prompt,
 )
 
+# Per-task model tiering (see docs). Manim code generation is the quality- and
+# retry-critical path, so it runs on Claude Sonnet 5 — best coding/instruction-
+# following per dollar; higher first-pass validity means fewer paid re-renders.
+CODE_GEN_MODEL = "claude-sonnet-5"
+
 
 class AnimationGeneratorInput(AgentInput):
     """Input for Animation Code Generator Agent.
@@ -408,13 +413,18 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
 
         try:
             response = self.client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=8192,
+                model=CODE_GEN_MODEL,
+                max_tokens=12000,
                 system=system_prompt,
                 messages=[
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
+                # Sonnet 5 rejects non-default sampling params (temperature/top_p/
+                # top_k → 400) and runs adaptive thinking by default. Disable
+                # thinking to keep the prior deterministic no-thinking behaviour
+                # and leave the full max_tokens budget for code (the new tokenizer
+                # emits ~30% more tokens, so the budget is raised from 8192).
+                thinking={"type": "disabled"},
             )
 
             raw_code = response.content[0].text

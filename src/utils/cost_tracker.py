@@ -53,15 +53,24 @@ class Model(Enum):
 PRICING_TABLE: Dict[Tuple[str, str], Tuple[float, float]] = {
     ("openai", "gpt-4o"): (2.50, 10.00),
     ("openai", "gpt-4o-mini"): (0.15, 0.60),
-    ("openai", "gpt-5"): (2.50, 10.00),    # Used by ScriptArchitect; placeholder rate
+    ("openai", "gpt-5"): (2.50, 10.00),    # Legacy/deprecated; kept for old runs
+    # GPT-5.4 family (per-task tiering). Rates per OpenAI pricing, 2026-07.
+    ("openai", "gpt-5.4"): (2.50, 15.00),       # Vision/OCR + unified-script fallback
+    ("openai", "gpt-5.4-mini"): (0.75, 4.50),   # Per-segment beats + visual intent
+    ("openai", "gpt-5.4-nano"): (0.20, 1.25),   # Storyboard grading + fidelity review
+    ("openai", "gpt-5.5"): (5.00, 30.00),
     ("openai", "tts"): (15.00, 0.00),      # TTS pricing is per 1M characters, not tokens
     ("openai", "tts-1"): (15.00, 0.00),    # Standard TTS model
     ("openai", "tts-1-hd"): (30.00, 0.00), # HD TTS model
     ("anthropic", "claude-sonnet"): (3.00, 15.00),
     ("anthropic", "claude-sonnet-4-20250514"): (3.00, 15.00),
-    ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),  # Used by AnimationCodeGenerator
-    ("anthropic", "claude-opus-4-7"): (15.00, 75.00),   # Opus tier; placeholder rate
-    ("anthropic", "claude-haiku-4-5"): (0.25, 1.25),    # Haiku tier; placeholder rate
+    ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
+    # Sonnet 5: Manim code gen + unified script. Standard rate (intro $2/$10
+    # through 2026-08-31 makes real spend lower; standard avoids under-billing).
+    ("anthropic", "claude-sonnet-5"): (3.00, 15.00),
+    ("anthropic", "claude-opus-4-7"): (5.00, 25.00),    # Corrected: Opus 4.7/4.8 = $5/$25
+    ("anthropic", "claude-opus-4-8"): (5.00, 25.00),
+    ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),    # Corrected: Haiku 4.5 = $1/$5
 }
 
 # Per-provider fallback rate when an exact (provider, model) pair is missing.

@@ -29,6 +29,10 @@ from src.utils.frame_analysis import analyze_keyframes
 
 logger = logging.getLogger(__name__)
 
+# Per-task model tiering. Narration-fidelity review is a cheap per-scene check
+# with no cascade risk, so it runs on the cheapest capable tier.
+FIDELITY_MODEL = "gpt-5.4-nano"
+
 
 @dataclass
 class VideoQualityFinding:
@@ -669,7 +673,7 @@ class VideoQualityReviewerAgent(Agent):
 
             try:
                 response = client.chat.completions.create(
-                    model="gpt-5",
+                    model=FIDELITY_MODEL,
                     messages=[
                         {
                             "role": "system",

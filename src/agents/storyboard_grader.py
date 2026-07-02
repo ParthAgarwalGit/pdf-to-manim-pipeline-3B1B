@@ -31,6 +31,10 @@ from src.schemas.source_segment import SourceSegment
 
 logger = logging.getLogger(__name__)
 
+# Per-task model tiering. Storyboard grading is cheap rubric scoring (LLM-as-
+# judge) with no cascade risk, so it runs on the cheapest capable tier.
+GRADER_MODEL = "gpt-5.4-nano"
+
 
 # ---------------------------------------------------------------------------
 # Data Classes
@@ -251,7 +255,7 @@ Return ONLY valid JSON:
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model=GRADER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
             )
