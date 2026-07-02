@@ -121,7 +121,7 @@ class StoryboardGraderAgent(Agent):
         if api_key:
             try:
                 import openai
-                self.client = openai.OpenAI(api_key=api_key)
+                self.client = openai.OpenAI(api_key=api_key, max_retries=4)
                 logger.info("StoryboardGraderAgent: OpenAI client initialised.")
             except ImportError:
                 if self.strict:

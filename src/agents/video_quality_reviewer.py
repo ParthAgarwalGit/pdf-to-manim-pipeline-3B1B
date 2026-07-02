@@ -661,7 +661,7 @@ class VideoQualityReviewerAgent(Agent):
             logger.info("OPENAI_API_KEY not set; skipping narration-fidelity check.")
             return findings
 
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(api_key=api_key, max_retries=4)
 
         for scene in getattr(storyboard, "scenes", []):
             code_obj = code_by_scene.get(scene.scene_id)

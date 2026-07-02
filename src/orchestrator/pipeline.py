@@ -583,11 +583,13 @@ class Orchestrator:
         structured_logger: StructuredJSONLogger,
     ):
         """Run deterministic document segmentation after OCR."""
-        target_words = {
-            "coarse": 300,
-            "balanced": 150,
-            "fine": 90,
-        }.get(self.config.granularity, 150)
+        from src.agents.document_segmenter import target_words_for, total_ocr_words
+
+        # Adaptive: honour the granularity dial, but cap total segments so a long
+        # PDF doesn't explode into 100+ scenes (see DocumentSegmenter.MAX_SEGMENTS).
+        target_words = target_words_for(
+            self.config.granularity, total_ocr_words(ocr_output)
+        )
         input_data = DocumentSegmenterInput(
             ocr_output=ocr_output,
             target_words_per_segment=target_words,

@@ -62,7 +62,7 @@ class VisionOCRAgent(Agent):
         # Initialize OpenAI Client safely
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
-            self.client = openai.OpenAI(api_key=api_key)
+            self.client = openai.OpenAI(api_key=api_key, max_retries=4)
         else:
             if self.strict:
                 raise AgentExecutionError(

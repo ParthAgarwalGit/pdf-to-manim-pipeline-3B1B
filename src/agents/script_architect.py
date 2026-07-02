@@ -115,6 +115,65 @@ def _extract_json_object(text: str) -> str:
     return s
 
 
+# Primitive -> canonical object_type, used to backfill the required
+# ``object_type`` field when the visual planner omits it (the #1 cause of
+# visual-intent schema failures — models emit primitive/args/bbox/interval but
+# drop object_type/content).
+_PRIMITIVE_TO_OBJECT_TYPE = {
+    "MathTex": "equation", "Tex": "equation",
+    "Text": "text", "DecimalNumber": "text",
+    "Axes": "axes", "NumberPlane": "axes", "NumberLine": "axes",
+    "Circle": "geometric_shape", "Square": "geometric_shape",
+    "Rectangle": "geometric_shape", "RoundedRectangle": "geometric_shape",
+    "Polygon": "geometric_shape", "Triangle": "geometric_shape",
+    "Line": "geometric_shape", "DashedLine": "geometric_shape",
+    "Arrow": "geometric_shape", "DoubleArrow": "geometric_shape",
+    "Vector": "geometric_shape", "Arc": "geometric_shape",
+    "Dot": "geometric_shape", "Ellipse": "geometric_shape",
+    "create_pi_teacher": "pi_creature", "create_pi_students": "pi_creature",
+    "create_speech_bubble": "pi_creature",
+}
+
+
+def _coerce_visual_object(raw: Any) -> Any:
+    """Backfill the required ``object_type`` / ``content`` fields when omitted.
+
+    The visual planner often emits an object with primitive/args/bbox/interval
+    but no ``object_type`` and no ``content`` — both required by
+    ``MathematicalObject``. Infer object_type from the primitive (or render_hint)
+    and pull content from the tex/text args, so the object validates instead of
+    dropping the whole scene to the deterministic fallback.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    o = dict(raw)
+    if not o.get("object_type"):
+        prim, hint = o.get("primitive"), o.get("render_hint")
+        o["object_type"] = (
+            _PRIMITIVE_TO_OBJECT_TYPE.get(prim)
+            or _PRIMITIVE_TO_OBJECT_TYPE.get(hint)
+            or ("geometric_shape" if prim else "text")
+        )
+    if o.get("content") in (None, ""):
+        args = o.get("args") if isinstance(o.get("args"), dict) else {}
+        o["content"] = args.get("tex") or args.get("text") or o.get("notation_key") or ""
+    return o
+
+
+def _validate_items(items: Any, model: Any) -> list:
+    """Validate a list against a Pydantic model, dropping (not raising on) the
+    items that fail — one malformed object never voids the whole scene."""
+    out = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        try:
+            out.append(model.model_validate(item))
+        except Exception as exc:
+            logger.debug("Dropping invalid %s item: %s", getattr(model, "__name__", model), exc)
+    return out
+
+
 class ScriptArchitectInput(AgentInput):
     """Input for Script/Storyboard Architect Agent"""
     
@@ -209,7 +268,10 @@ class ScriptArchitectAgent(Agent):
         super().__init__()
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
-            self.client = openai.OpenAI(api_key=api_key)
+            # max_retries=4 (default 2): the per-segment / visual-intent loop
+            # fires many calls and saw transient RemoteProtocolError disconnects
+            # that were degrading scenes to the fallback. Retry them first.
+            self.client = openai.OpenAI(api_key=api_key, max_retries=4)
         else:
             if self.strict:
                 raise AgentExecutionError(
@@ -398,7 +460,11 @@ class ScriptArchitectAgent(Agent):
         ocr_output: OCROutput,
         config: Configuration,
     ) -> List[SourceSegment]:
-        target_words = self.GRANULARITY_WORD_TARGETS.get(config.granularity, 150)
+        from src.agents.document_segmenter import target_words_for, total_ocr_words
+
+        target_words = target_words_for(
+            config.granularity, total_ocr_words(ocr_output)
+        )
         result = DocumentSegmenterAgent().execute(
             DocumentSegmenterInput(
                 ocr_output=ocr_output,
@@ -556,7 +622,10 @@ class ScriptArchitectAgent(Agent):
             f"{engine_contract}\n"
             "CLOSED VOCABULARY:\n"
             f"{catalog_block}\n\n"
-            "For every mathematical_object you emit, set `primitive` to one of "
+            "For every mathematical_object you emit, ALWAYS include these REQUIRED "
+            "fields: `object_type` (one of: equation, text, axes, graph, "
+            "geometric_shape, pi_creature) and `content` (the LaTeX/text string, "
+            "or \"\" for a pure shape). Then set `primitive` to one of "
             "the MOBJECT names above and `args` to its kwargs. Free-form "
             "`content` is ONLY permitted for MathTex / Tex / Text (where it "
             "goes into the `tex` or `text` arg).\n\n"
@@ -620,19 +689,29 @@ class ScriptArchitectAgent(Agent):
             # something on screen.
             return self._generate_fallback_visual_intent(fallback_narration)
 
-        try:
-            objs = [MathematicalObject.model_validate(o) for o in raw_objects]
-            trans = [Transformation.model_validate(t) for t in raw_trans]
-            beats = [VisualBeat.model_validate(b) for b in raw_beats]
-            emphasis = [EmphasisPoint.model_validate(e) for e in raw_emphasis]
-            state_in = SceneState.model_validate(raw_in if isinstance(raw_in, dict) else {})
-            state_out = SceneState.model_validate(raw_out if isinstance(raw_out, dict) else {})
-        except Exception as exc:
+        # Coerce missing required fields, then validate item-by-item so a single
+        # malformed object doesn't void the entire scene's plan (F6). Only fall
+        # back when NO objects survive.
+        objs = _validate_items(
+            [_coerce_visual_object(o) for o in raw_objects], MathematicalObject
+        )
+        if not objs:
             logger.warning(
-                "Visual-intent JSON failed schema validation (%s); using fallback.",
-                exc,
+                "Visual-intent objects all failed validation; using fallback."
             )
             return self._generate_fallback_visual_intent(fallback_narration)
+
+        trans = _validate_items(raw_trans, Transformation)
+        beats = _validate_items(raw_beats, VisualBeat)
+        emphasis = _validate_items(raw_emphasis, EmphasisPoint)
+        try:
+            state_in = SceneState.model_validate(raw_in if isinstance(raw_in, dict) else {})
+        except Exception:
+            state_in = SceneState()
+        try:
+            state_out = SceneState.model_validate(raw_out if isinstance(raw_out, dict) else {})
+        except Exception:
+            state_out = SceneState()
 
         return VisualIntent(
             mathematical_objects=objs,

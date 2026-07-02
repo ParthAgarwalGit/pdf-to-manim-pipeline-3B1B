@@ -9,6 +9,38 @@ from src.schemas.ocr_output import OCROutput
 from src.schemas.source_segment import SourceSegment
 
 
+# Words-per-segment by the --granularity dial.
+GRANULARITY_WORD_TARGETS = {"coarse": 300, "balanced": 150, "fine": 90}
+# Hard ceiling on segment count. Without this, a long PDF at fine granularity
+# explodes: a ~10k-word doc at 90 words/segment yields ~110 segments -> 100+
+# scenes -> hours of render for an unwatchably fragmented video.
+MAX_SEGMENTS = 40
+
+
+def target_words_for(granularity: str, total_words: int) -> int:
+    """Words-per-segment target, adaptive to document length.
+
+    Honours the granularity dial for short documents, but for long ones raises
+    the target so the segment count stays under ``MAX_SEGMENTS``. Short PDFs are
+    unaffected (the base target already keeps them under the cap); long PDFs get
+    proportionally larger segments instead of an unbounded scene explosion.
+    """
+    base = GRANULARITY_WORD_TARGETS.get(granularity, 150)
+    if total_words <= 0:
+        return base
+    cap_target = -(-total_words // MAX_SEGMENTS)  # ceil(total_words / MAX_SEGMENTS)
+    return max(base, cap_target)
+
+
+def total_ocr_words(ocr_output: OCROutput) -> int:
+    """Total word count across all OCR text blocks (drives adaptive sizing)."""
+    return sum(
+        len(block.text.split())
+        for page in ocr_output.pages
+        for block in page.text_blocks
+    )
+
+
 class DocumentSegmenterInput(AgentInput):
     """Input for the deterministic document segmenter."""
 
