@@ -24,7 +24,8 @@ from src.agents.video_renderer import VideoRendererFailure, VideoRendererOutput
 from src.schemas.animation_code import AnimationCodeObject
 from src.schemas.output_manifest import OutputManifest
 from src.schemas.storyboard import StoryboardJSON
-from src.utils.ffmpeg_finder import get_ffprobe
+from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
+from src.utils.frame_analysis import analyze_keyframes
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ class VideoQualityReviewerAgent(Agent):
         findings.extend(self._review_animation_pacing(code_by_scene))
         findings.extend(self._review_progressive_reveal(code_by_scene))
         findings.extend(self._review_anti_patterns(input_data.storyboard, code_by_scene))
+        findings.extend(self._review_rendered_frames(render_map))
 
         if input_data.final_video_expected and (
             not final_video_path or not Path(final_video_path).exists()
@@ -854,6 +856,133 @@ class VideoQualityReviewerAgent(Agent):
             'theta = MathTex(r"\\\\theta", color=YELLOW)\n'
             'layout.place_label(theta, "theta", anchor="triangle", preferred=RIGHT, buff=0.2)\n'
         )
+
+    # ------------------------------------------------------------------
+    # Frame-level visual QA (ADR-005) — judge what is actually ON SCREEN
+    # ------------------------------------------------------------------
+
+    KEYFRAME_SAMPLE_FRACTIONS = (0.15, 0.4, 0.65, 0.9)
+
+    def _extract_keyframes(self, video_path: str) -> List[Any]:
+        """Extract PIL keyframes at fixed fractions of the video's duration.
+
+        Best-effort: any failure (no ffmpeg, unreadable file, missing PIL)
+        returns [] with a warning so review never blocks the pipeline.
+        Sampling starts at 15% to skip the black lead-in before the first
+        Write/Create finishes.
+        """
+        import tempfile
+
+        try:
+            from PIL import Image
+        except ImportError:
+            logger.warning("PIL unavailable — skipping frame-level visual QA.")
+            return []
+
+        duration = self._get_media_duration(video_path)
+        if duration <= 0:
+            return []
+
+        frames: List[Any] = []
+        try:
+            ffmpeg = get_ffmpeg()
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                for i, fraction in enumerate(self.KEYFRAME_SAMPLE_FRACTIONS):
+                    out_path = str(Path(tmp_dir) / f"frame_{i}.png")
+                    result = subprocess.run(
+                        [
+                            ffmpeg, "-v", "quiet",
+                            "-ss", f"{duration * fraction:.3f}",
+                            "-i", video_path,
+                            "-frames:v", "1",
+                            "-y", out_path,
+                        ],
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    if result.returncode == 0 and Path(out_path).exists():
+                        with Image.open(out_path) as img:
+                            frames.append(img.convert("RGB").copy())
+        except Exception as exc:
+            logger.warning("Keyframe extraction failed for %s: %s", video_path, exc)
+            return []
+        return frames
+
+    def _review_rendered_frames(self, render_map: Dict[str, Any]) -> List[VideoQualityFinding]:
+        """Flag scenes whose rendered pixels violate the visualization thesis.
+
+        Empty frames mean nothing was drawn when something should be on
+        screen; a static sample means the 'animation' is a still slide.
+        Both route back to the animation generator, not the renderer — the
+        video encoded exactly what the code drew.
+        """
+        findings: List[VideoQualityFinding] = []
+        for scene_id, scene_result in render_map.items():
+            if not getattr(scene_result, "success", False):
+                continue
+            video_path = getattr(scene_result, "video_path", None)
+            if not video_path or not Path(video_path).exists():
+                continue
+
+            frames = self._extract_keyframes(video_path)
+            if not frames:
+                continue
+            report = analyze_keyframes(frames)
+
+            if report.mostly_empty:
+                findings.append(VideoQualityFinding(
+                    issue="Rendered video is mostly empty — almost nothing is drawn on screen.",
+                    suspected_stage="animation_generator",
+                    severity="critical",
+                    scene_id=scene_id,
+                    evidence=(
+                        f"{len(report.empty_frame_indices)}/{report.frame_count} sampled "
+                        f"keyframes are blank (non-background fractions: "
+                        f"{[round(f, 4) for f in report.nonblank_fractions]})."
+                    ),
+                    suggested_fix="Regenerate the scene so its planned objects are actually created and remain visible.",
+                    llm_direction=(
+                        "The scene rendered to blank frames. Ensure every planned object is "
+                        "instantiated, added via self.play/self.add, positioned inside the "
+                        "visible frame (x in [-6.5, 6.5], y in [-3.5, 3.5]), and not faded "
+                        "out immediately after creation."
+                    ),
+                ))
+            elif report.empty_frame_indices:
+                findings.append(VideoQualityFinding(
+                    issue="Some sampled keyframes are blank.",
+                    suspected_stage="animation_generator",
+                    severity="medium",
+                    scene_id=scene_id,
+                    evidence=(
+                        f"Blank keyframes at sample indices {report.empty_frame_indices} "
+                        f"of {report.frame_count}."
+                    ),
+                    suggested_fix="Overlap object lifetimes so the screen is never empty mid-scene.",
+                    llm_direction=(
+                        "Part of the scene shows an empty screen. Stagger FadeOut/Create so "
+                        "the next visual appears before the previous one is fully removed."
+                    ),
+                ))
+
+            if report.is_static and not report.mostly_empty:
+                findings.append(VideoQualityFinding(
+                    issue="Scene appears static — all sampled keyframes are nearly identical.",
+                    suspected_stage="animation_generator",
+                    severity="medium",
+                    scene_id=scene_id,
+                    evidence=(
+                        f"All {report.frame_count} sampled keyframes are nearly identical; "
+                        "the video is a still slide, not an animation."
+                    ),
+                    suggested_fix="Replace long static holds with transformations, movement, or progressive reveal.",
+                    llm_direction=(
+                        "This is a visualization tool: fill the scene with motion. Use "
+                        "Transform/ReplacementTransform, .animate moves, or progressive "
+                        "reveal instead of drawing everything once and waiting."
+                    ),
+                ))
+        return findings
 
     def _get_media_duration(self, file_path: str) -> float:
         """Return duration in seconds, or -1.0 if detection fails."""
