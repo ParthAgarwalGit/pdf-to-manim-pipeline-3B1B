@@ -844,42 +844,92 @@ Return JSON in this EXACT shape:
                 covered_concepts=covered_concepts,
                 review_feedback=review_feedback,
             )
-            response = self.client.chat.completions.create(
-                model=SEGMENT_SCRIPT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-            )
-            data = json.loads(response.choices[0].message.content)
+            # Failure isolation: a single bad segment response (API error, invalid
+            # JSON, or a malformed beat) must never abort the whole storyboard —
+            # skip it and keep the rest. LLMs occasionally emit `narration: null`
+            # or drop a required field; that one beat is dropped, not the run.
+            try:
+                response = self.client.chat.completions.create(
+                    model=SEGMENT_SCRIPT_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                )
+                data = json.loads(response.choices[0].message.content)
+            except Exception as exc:
+                logger.warning(
+                    "Segment %s script generation failed (%s); skipping segment.",
+                    segment.segment_id, exc,
+                )
+                continue
+
+            if not isinstance(data, dict):
+                continue
             if not title:
-                title = data.get("title", "")
+                title = data.get("title") or ""
 
             local_to_global: Dict[str, str] = {}
-            pending_beats = data.get("beats", [])
+            pending_beats = data.get("beats")
+            if not isinstance(pending_beats, list):
+                continue
             for raw in pending_beats:
-                local_id = raw.get("beat_id", "")
+                if not isinstance(raw, dict):
+                    continue
+                narration = raw.get("narration")
+                if not isinstance(narration, str) or not narration.strip():
+                    logger.warning(
+                        "Segment %s returned a beat with missing/invalid narration; dropping it.",
+                        segment.segment_id,
+                    )
+                    continue
+
+                local_id = str(raw.get("beat_id") or "")
                 global_id = f"beat_{len(all_beats) + 1:03d}"
                 local_to_global[local_id] = global_id
 
                 concepts = [
                     canonical
-                    for label in raw.get("introduces_concepts", [])
-                    if (canonical := _canonicalize_concept(label))
+                    for label in (raw.get("introduces_concepts") or [])
+                    if isinstance(label, str) and (canonical := _canonicalize_concept(label))
                 ]
                 for concept in concepts:
                     if concept not in covered_concepts:
                         covered_concepts.append(concept)
 
-                all_beats.append(Beat(
-                    beat_id=global_id,
-                    narration=raw["narration"],
-                    visual_hint=raw.get("visual_hint", ""),
-                    introduces_concepts=concepts,
-                    references_prior_beats=[
-                        local_to_global.get(ref, ref)
-                        for ref in raw.get("references_prior_beats", [])
-                    ],
-                    source_segment_id=segment.segment_id,
-                ))
+                refs = [
+                    local_to_global.get(str(ref), str(ref))
+                    for ref in (raw.get("references_prior_beats") or [])
+                    if isinstance(ref, str)
+                ]
+                visual_hint = raw.get("visual_hint")
+                if not isinstance(visual_hint, str):
+                    visual_hint = ""
+
+                try:
+                    all_beats.append(Beat(
+                        beat_id=global_id,
+                        narration=narration,
+                        visual_hint=visual_hint,
+                        introduces_concepts=concepts,
+                        references_prior_beats=refs,
+                        source_segment_id=segment.segment_id,
+                    ))
+                except Exception as exc:
+                    logger.warning(
+                        "Dropping malformed beat in segment %s: %s", segment.segment_id, exc,
+                    )
+
+        # VideoScript requires >= 1 beat. If every segment failed, ship a minimal
+        # placeholder so the pipeline degrades gracefully instead of aborting.
+        if not all_beats:
+            logger.warning("All segment script calls produced no usable beats; using placeholder.")
+            all_beats = [Beat(
+                beat_id="beat_001",
+                narration="This video introduces the key ideas from the source material.",
+                visual_hint="Title card with the main concept.",
+                introduces_concepts=["overview"],
+                references_prior_beats=[],
+                source_segment_id=segments[0].segment_id if segments else "",
+            )]
 
         return VideoScript(title=title, beats=all_beats)
 
