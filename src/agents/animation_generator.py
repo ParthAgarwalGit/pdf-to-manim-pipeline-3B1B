@@ -73,6 +73,13 @@ class AnimationCodeGeneratorAgent(Agent):
     an LLM (GPT-4, Claude 3.5 Sonnet) with temperature=0 for code generation.
     """
     
+    # Visual-first pacing floor. This is a VISUALIZATION tool, not a narrated
+    # lecture: scene length is driven by how much visual work is on screen,
+    # not by how many words of narration exist. We only guarantee a minimum
+    # so a scene doesn't flash by — there is deliberately no narration-derived
+    # maximum that we pad up to (that produced long, static "dead-air" videos).
+    MIN_SCENE_SECONDS = 8.0
+
     def __init__(self, max_retries: int = 3, strict: bool = False):
         super().__init__()
         self.max_retries = max_retries
@@ -113,7 +120,6 @@ class AnimationCodeGeneratorAgent(Agent):
         scene_spec = scene_input.scene_spec
         context = scene_input.context
         review_feedback = input_data.review_feedback or []
-        scene_layout = scene_input.scene_layout
 
         try:
             # Generate code with retry logic
@@ -122,7 +128,6 @@ class AnimationCodeGeneratorAgent(Agent):
                     code = self._generate_code(
                         scene_spec, context,
                         review_feedback=review_feedback,
-                        scene_layout=scene_layout,
                     )
                     
                     # Validate syntax
@@ -191,15 +196,14 @@ class AnimationCodeGeneratorAgent(Agent):
         scene_spec: Any,
         context: SharedContext,
         review_feedback: Optional[List[str]] = None,
-        scene_layout: Optional[Any] = None,
     ) -> str:
-        """Generate Manim code using Anthropic Claude, synchronized to narration.
+        """Generate Manim code using Anthropic Claude, visual-first (ADR-005).
 
-        The narration is the single source of truth for duration.  We compute
-        target_duration = word_count / 3.0 (TTS rate) and instruct the LLM to
-        produce animations whose total run_time + wait() gaps equal that value.
-        When a pre-validated scene_layout is provided, the LLM is instructed to
-        place objects at the given coordinates rather than inventing positions.
+        The structured visual plan (primitive/args, (x,y) position, visibility
+        window, continuity keys) is forwarded verbatim to the LLM, which owns
+        the motion design. Narration length is a pacing *hint* only; the scene
+        runs as long as its visual work needs, floored at MIN_SCENE_SECONDS —
+        never padded up to narration length.
         """
 
         # Safety: Fallback if no key (in strict mode, constructor already raised)
@@ -216,9 +220,12 @@ class AnimationCodeGeneratorAgent(Agent):
         # ── Compute narration-driven duration ────────────────────────
         narration = scene_spec.narration or ""
         word_count = len(narration.split())
-        target_duration = round(word_count / 3.0, 1)  # ~3 words/sec TTS
-        if target_duration < 15:
-            target_duration = 15.0  # floor
+        # Reference pacing only — a rough guide for the LLM, NOT a quota we pad
+        # up to. The visuals drive the real length; narration is fit to them
+        # downstream by the composer.
+        narration_seconds = round(word_count / 3.0, 1)  # ~3 words/sec TTS
+        min_seconds = self.MIN_SCENE_SECONDS
+        target_duration = round(max(min_seconds, narration_seconds), 1)
 
         # ── Prepare structured scene data for the LLM ────────────────
         scene_data = {
@@ -226,12 +233,7 @@ class AnimationCodeGeneratorAgent(Agent):
             "target_duration_seconds": target_duration,
             "word_count": word_count,
             "objects": [
-                {
-                    "type": obj.object_type,
-                    "content": obj.content,
-                    "render_hint": getattr(obj, "render_hint", None),
-                    "style": obj.style.model_dump(),
-                }
+                self._object_plan_for_prompt(obj)
                 for obj in scene_spec.visual_intent.mathematical_objects
             ],
             "transformations": [
@@ -271,15 +273,23 @@ CLASS NAME: {class_name}  (must inherit from Scene)
 
 {quality_contract}
 {briefing_block}{opening_state_block}
-═══════════════════════  DURATION  ═══════════════════════
-The narration is {word_count} words.  TTS will produce ~{target_duration}s of
-audio.  Your total animation time (sum of all run_time + self.wait) MUST equal
-{target_duration}s (±2 s).  Add self.wait() calls between animations so the
-viewer can absorb what's on screen while the narrator speaks.
+═══════════════════════  PACING (VISUAL-FIRST)  ═══════════════════════
+This is a VISUALIZATION, not a narrated lecture. Let the VISUALS decide the
+length. The narration is ~{word_count} words (~{narration_seconds}s of audio),
+which is a rough guide only. Aim for a tight, visually dense scene of about
+{target_duration}s.
+- Fill time with MOTION, TRANSFORMATION and progressive reveal — never with
+  empty waits.
+- Do NOT pad to hit a number. A shorter scene full of animation is better than
+  a long scene sitting on a static frame.
+- Minimum scene length: {min_seconds}s. Every second on screen must be doing
+  visual work.
+- Use self.wait() only to let a specific reveal land (typically 0.5-2s), not to
+  burn time.
 
 At the END of construct(), add a comment:
-  # Total animation time: Xs  (target: {target_duration}s)
-with your manually-computed running total so you can self-check.
+  # Total animation time: Xs
+with your manually-computed running total.
 
 ═══════════════════════  SCREEN LAYOUT (NO OVERLAP)  ═══════════════════════
 A LayoutTracker is imported for you.  Use it to REGISTER every Mobject after
@@ -351,6 +361,23 @@ Do not invent helper objects that are not present in the visual intent.
   so the narrator can explain.
 {color_block}
 
+═══════════════════════  VISUAL PLAN (HONOR IT)  ═══════════════════════
+Each entry in `objects` is a PRE-PLANNED visual. Treat it as the intended
+design, not a loose suggestion:
+- `primitive` + `args`  → construct THIS Manim class with these kwargs
+  (e.g. primitive="Vector", args={{"direction": [2,1,0]}} → Vector([2,1,0])).
+  You may add helpers/labels around it, but do not silently swap the primitive
+  for a plainer one (e.g. don't downgrade a planned Vector to a static Line).
+- `position` {{x, y}}   → place the object there: mob.move_to([x, y, 0]).
+- `visible` {{t_in, t_out}} → reveal it around t_in and remove/fade it near
+  t_out so the screen stays uncluttered.
+- `id` / `role`         → use `id` as the variable name; `role` tells you its
+  job (main_equation, shared_axes, label, …).
+- `notation_key` / `coordinate_system_id` → REUSE the matching helper instead
+  of redrawing; these mark objects shared across scenes.
+When an object has no `primitive`, fall back to the type/content and choose the
+most visually intuitive Manim primitive yourself.
+
 ═══════════════════════  CONTENT FIDELITY  ═══════════════════════
 The narration is extracted from an academic PDF.  Your animation MUST
 show every formula, definition, and example the narration mentions:
@@ -367,26 +394,6 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
 - Every self.play() call MUST have an explicit run_time parameter.
 - Do NOT use deprecated Manim APIs (e.g. ShowCreation → Create).
 """
-        # ── Inject pre-validated layout constraints ───────────────────
-        if scene_layout is not None and getattr(scene_layout, "objects", None):
-            layout_lines = [
-                "\n═══════════════════════  PRE-VALIDATED LAYOUT (MANDATORY)  ═══════════════════════",
-                "A spatial layout has been computed and validated for zero overlap.",
-                "You MUST position each object at the coordinates listed below.",
-                "Use mob.move_to(np.array([cx, cy, 0])) where cx/cy is the centre",
-                "computed from the bounding box corners.  Do NOT deviate from these",
-                "positions — the validator has confirmed they do not overlap.\n",
-            ]
-            for bbox in scene_layout.objects:
-                cx = round((bbox.x_min + bbox.x_max) / 2, 3)
-                cy = round((bbox.y_min + bbox.y_max) / 2, 3)
-                layout_lines.append(
-                    f"  object_id={bbox.object_id!r}  type={bbox.object_type}"
-                    f"  centre=({cx}, {cy})  size={bbox.width:.2f}×{bbox.height:.2f}"
-                    f"  visible_for={bbox.duration:.1f}s"
-                )
-            system_prompt += "\n".join(layout_lines) + "\n"
-
         user_prompt = f"""Generate the full class for this scene:
 
 {json.dumps(scene_data, indent=2)}
@@ -412,12 +419,66 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
 
             raw_code = response.content[0].text
             cleaned = self._clean_llm_code(raw_code, class_name)
-            return self._enforce_duration(cleaned, target_duration)
+            # Visual-first: only guarantee the minimum floor. We deliberately do
+            # NOT stretch the scene up to narration length — that inflated
+            # visuals with dead-air waits. Narration is fit to the visuals by
+            # the composer, not the other way round.
+            return self._enforce_duration(cleaned, self.MIN_SCENE_SECONDS)
 
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"LLM generation failed: {e}")
             return self._mock_generate_code(scene_spec, context)
+
+    def _object_plan_for_prompt(self, obj: Any) -> Dict[str, Any]:
+        """Serialize ONE planned math object for the code LLM.
+
+        The upstream visual planner already chose a concrete Manim primitive,
+        its kwargs, an on-screen position (bbox centre) and a visibility
+        window. Earlier this method dropped all of that and passed only
+        type/content/style, forcing the code LLM to re-invent the visual from
+        scratch — the "plan then discard" gap. We now forward the structured
+        plan (omitting empty fields to keep the prompt tight) so the render
+        honours the plan instead of diverging from it.
+        """
+        plan: Dict[str, Any] = {
+            "type": obj.object_type,
+            "content": obj.content,
+        }
+        # Identity / role — lets the LLM reuse a stable variable name and know
+        # what job the object does in the scene.
+        if getattr(obj, "object_id", None):
+            plan["id"] = obj.object_id
+        if getattr(obj, "object_role", None):
+            plan["role"] = obj.object_role
+        # Concrete primitive + kwargs chosen by the planner.
+        if getattr(obj, "primitive", None):
+            plan["primitive"] = obj.primitive
+            if getattr(obj, "args", None):
+                plan["args"] = obj.args
+        render_hint = getattr(obj, "render_hint", None)
+        if render_hint:
+            plan["render_hint"] = render_hint
+        # Continuity keys so shared notation / axes are reused, not redrawn.
+        if getattr(obj, "notation_key", None):
+            plan["notation_key"] = obj.notation_key
+        if getattr(obj, "coordinate_system_id", None):
+            plan["coordinate_system_id"] = obj.coordinate_system_id
+        if getattr(obj, "character_role", None):
+            plan["character_role"] = obj.character_role
+        # (x, y, t) placement — where and when the object should be on screen.
+        bbox = getattr(obj, "bbox", None)
+        if bbox is not None:
+            b = bbox.model_dump() if hasattr(bbox, "model_dump") else bbox
+            plan["position"] = {"x": round(b["x"], 3), "y": round(b["y"], 3)}
+        interval = getattr(obj, "interval", None)
+        if interval is not None:
+            iv = interval.model_dump() if hasattr(interval, "model_dump") else interval
+            plan["visible"] = {"t_in": iv["t_in"], "t_out": iv["t_out"]}
+        style = obj.style.model_dump() if hasattr(obj.style, "model_dump") else obj.style
+        if style:
+            plan["style"] = style
+        return plan
 
     def _build_narrative_blocks(self, context: SharedContext) -> tuple[str, str]:
         """Build the NARRATIVE BRIEFING (Task 8) and OPENING STATE (Task 9)
@@ -511,13 +572,16 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
             "for any equation that mentions one of these variables.\n"
         )
 
-    def _enforce_duration(self, code: str, target_duration: float) -> str:
-        """Parse run_time and self.wait values; distribute padding waits if short.
+    def _enforce_duration(self, code: str, min_seconds: float) -> str:
+        """Guarantee a scene runs at least ``min_seconds`` — nothing more.
 
-        Sums every numeric ``run_time=X`` and ``self.wait(X)`` in the code.
-        If the total is significantly less than *target_duration*, it distributes
-        extra wait time by boosting existing self.wait() calls proportionally
-        and adding a small tail wait if needed.
+        Visual-first policy: we sum every numeric ``run_time=X`` and
+        ``self.wait(X)`` in the code and, ONLY if the total falls under the
+        floor, append a single small tail wait to reach it. We never scale a
+        scene UP to match narration length — that was the old behaviour and it
+        inflated visually-rich scenes with dead-air waits, producing long,
+        static videos. A scene whose animation already clears the floor is
+        returned untouched so the visuals set the pace.
         """
         import re as _re3
 
@@ -527,49 +591,13 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
         for m in _re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code):
             total += float(m.group(1))
 
-        gap = target_duration - total
-        if gap <= 3.0:
-            return code  # close enough
+        gap = round(min_seconds - total, 1)
+        if gap <= 0.5:
+            return code  # visuals already fill the floor — leave the pacing alone
 
-        # Strategy: find all existing self.wait(X) calls and scale them up
-        # proportionally, then add any remainder as a tail wait.
-        wait_calls = list(_re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code))
-        existing_wait_total = sum(float(m.group(1)) for m in wait_calls)
-
-        if existing_wait_total > 0 and wait_calls:
-            # Scale factor: how much to multiply each wait by
-            scale = (existing_wait_total + gap) / existing_wait_total
-            # Cap individual waits at 8s to avoid absurdly long pauses
-            max_single_wait = 8.0
-
-            new_code = code
-            # Process in reverse so indices stay valid
-            for m in reversed(wait_calls):
-                old_val = float(m.group(1))
-                new_val = min(round(old_val * scale, 1), max_single_wait)
-                new_code = (new_code[:m.start()]
-                            + f"self.wait({new_val})"
-                            + new_code[m.end():])
-
-            # Recompute total after scaling
-            new_total = 0.0
-            for m2 in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', new_code):
-                new_total += float(m2.group(1))
-            for m2 in _re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', new_code):
-                new_total += float(m2.group(1))
-
-            remaining = target_duration - new_total
-            if remaining > 2.0:
-                lines = new_code.rstrip().split("\n")
-                lines.append(f"        self.wait({round(remaining, 1)})  # duration padding")
-                new_code = "\n".join(lines) + "\n"
-
-            return new_code
-        else:
-            # No existing waits — just add a tail wait
-            lines = code.rstrip().split("\n")
-            lines.append(f"        self.wait({round(gap, 1)})  # duration padding")
-            return "\n".join(lines) + "\n"
+        lines = code.rstrip().split("\n")
+        lines.append(f"        self.wait({gap})  # floor padding to {min_seconds}s")
+        return "\n".join(lines) + "\n"
 
     def _clean_llm_code(self, raw_code: str, class_name: str) -> str:
         """Strip markdown, duplicate headers, and ensure class structure.

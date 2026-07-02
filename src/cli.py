@@ -12,27 +12,42 @@ Usage:
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
 import click
 
-# Load .env file from project root (if it exists) before any agent
-# tries to read API keys from the environment.
-try:
-    from dotenv import load_dotenv
-    # Walk up from this file to find the project root .env or keys.env
-    _project_root = Path(__file__).resolve().parent.parent
-    for _env_name in (".env", "keys.env"):
-        _env_path = _project_root / _env_name
-        if _env_path.is_file():
-            load_dotenv(_env_path)
-            break
-except ImportError:
-    pass  # python-dotenv is optional; keys can be set manually
-
 from src.orchestrator.pipeline import Orchestrator, PipelineConfig, PipelineAbortError
 from src.utils.cost_tracker import CostTracker
+
+
+def _load_env_files() -> None:
+    """Load .env / keys.env from the project root into the environment.
+
+    Called from the CLI group callback — NOT at import time. Loading at import
+    time leaked real API keys into every process that merely imported this
+    module (most damagingly pytest: collecting test_cli put live credentials
+    in the whole suite, turning the fast mock-path lane into slow, paid,
+    non-deterministic live-API calls).
+    """
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        # Under pytest, CliRunner fires this callback inside tests; loading
+        # keys.env here would re-inject real credentials after the hermetic
+        # conftest fixture stripped them. live_api tests provide keys
+        # explicitly via their own environment.
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return  # python-dotenv is optional; keys can be set manually
+
+    project_root = Path(__file__).resolve().parent.parent
+    for env_name in (".env", "keys.env"):
+        env_path = project_root / env_name
+        if env_path.is_file():
+            load_dotenv(env_path)
+            break
 
 
 # Setup logging for the application
@@ -89,7 +104,8 @@ def pdf2manim():
     Transform educational PDFs into engaging Manim video animations with
     narration. Customize content depth, audience level, and output quality.
     """
-    pass
+    # Runs before every subcommand — the only place env files are loaded.
+    _load_env_files()
 
 
 @pdf2manim.command()

@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.animation_code import AnimationCodeObject
-from src.schemas.scene_layout import SceneLayout
 from src.schemas.scene_processing import (
     FailedScene,
     SceneProcessingInput,
@@ -29,8 +28,6 @@ class SceneControllerInput(AgentInput):
         storyboard: Sanitized StoryboardJSON object
         output_directory: Path to output directory for generated files
         animation_generator: Animation Generator agent instance (for scene processing)
-        layout_planner: Optional SceneLayoutPlannerAgent instance
-        layout_validator: Optional LayoutValidatorAgent instance
     """
 
     def __init__(
@@ -39,15 +36,11 @@ class SceneControllerInput(AgentInput):
         output_directory: str,
         animation_generator: Optional[Any] = None,
         scene_feedback: Optional[Dict[str, List[str]]] = None,
-        layout_planner: Optional[Any] = None,
-        layout_validator: Optional[Any] = None,
     ):
         self.storyboard = storyboard
         self.output_directory = output_directory
         self.animation_generator = animation_generator
         self.scene_feedback = scene_feedback or {}
-        self.layout_planner = layout_planner
-        self.layout_validator = layout_validator
 
 
 class SceneControllerOutput(AgentOutput):
@@ -57,7 +50,6 @@ class SceneControllerOutput(AgentOutput):
         report: Scene processing report with success/failure statistics
         animation_code_objects: List of successfully generated animation code objects
         shared_context: Final shared context after all scenes processed
-        scene_layouts: Validated SceneLayout for each successfully processed scene
     """
 
     def __init__(
@@ -65,12 +57,10 @@ class SceneControllerOutput(AgentOutput):
         report: SceneProcessingReport,
         animation_code_objects: List[AnimationCodeObject],
         shared_context: SharedContext,
-        scene_layouts: Optional[List[SceneLayout]] = None,
     ):
         self.report = report
         self.animation_code_objects = animation_code_objects
         self.shared_context = shared_context
-        self.scene_layouts: List[SceneLayout] = scene_layouts or []
 
 
 class SceneControllerAgent(Agent):
@@ -86,15 +76,13 @@ class SceneControllerAgent(Agent):
     - Generates scene processing report with success/failure statistics
     """
     
-    def __init__(self, max_retries_per_scene: int = 3, max_layout_retries: int = 3):
+    def __init__(self, max_retries_per_scene: int = 3):
         """Initialize Scene Controller Agent.
 
         Args:
             max_retries_per_scene: Maximum retry attempts for individual scene generation
-            max_layout_retries: Maximum attempts to get an overlap-free layout
         """
         self.max_retries_per_scene = max_retries_per_scene
-        self.max_layout_retries = max_layout_retries
     
     def execute(self, input_data: SceneControllerInput) -> SceneControllerOutput:
         """Execute scene iteration and processing.
@@ -119,8 +107,6 @@ class SceneControllerAgent(Agent):
         output_directory = input_data.output_directory
         animation_generator = input_data.animation_generator
         scene_feedback = input_data.scene_feedback or {}
-        layout_planner = input_data.layout_planner
-        layout_validator = input_data.layout_validator
 
         # Extract scene array
         scenes = storyboard.scenes
@@ -131,7 +117,6 @@ class SceneControllerAgent(Agent):
 
         # Track results
         animation_code_objects: List[AnimationCodeObject] = []
-        scene_layouts: List[SceneLayout] = []
         failed_scenes: List[FailedScene] = []
 
         # Iterate over scenes in deterministic order (Requirements 10.2, 10.3)
@@ -139,23 +124,10 @@ class SceneControllerAgent(Agent):
             try:
                 scene_spec = self._scene_to_spec(scene)
 
-                # ── Phase 1: Layout planning (evaluator loop) ──────────
-                scene_layout: Optional[SceneLayout] = None
-                if layout_planner is not None:
-                    scene_layout = self._plan_scene_layout(
-                        layout_planner,
-                        layout_validator,
-                        scene_spec,
-                        scene_index,
-                        shared_context,
-                    )
-
-                # ── Phase 2: Animation code generation ────────────────
                 processing_input = SceneProcessingInput(
                     scene_spec=scene_spec,
                     context=copy.deepcopy(shared_context),
                     scene_index=scene_index,
-                    scene_layout=scene_layout,
                 )
 
                 if animation_generator is not None:
@@ -171,8 +143,6 @@ class SceneControllerAgent(Agent):
                 # Success: update context and collect results
                 self._update_context(shared_context, scene, scene_spec)
                 animation_code_objects.append(animation_code)
-                if scene_layout is not None:
-                    scene_layouts.append(scene_layout)
 
             except Exception as e:
                 failed_scenes.append(FailedScene(
@@ -193,7 +163,6 @@ class SceneControllerAgent(Agent):
             report=report,
             animation_code_objects=animation_code_objects,
             shared_context=shared_context,
-            scene_layouts=scene_layouts,
         )
     
     def validate_input(self, input_data: AgentInput) -> bool:
@@ -273,50 +242,6 @@ class SceneControllerAgent(Agent):
             duration_estimate=scene.duration_estimate
         )
     
-    def _plan_scene_layout(
-        self,
-        layout_planner: Any,
-        layout_validator: Optional[Any],
-        scene_spec: SceneSpec,
-        scene_index: int,
-        context: SharedContext,
-    ) -> SceneLayout:
-        """Run the layout planning evaluator loop.
-
-        Calls the layout planner, validates the result, and retries with
-        violation feedback until the layout is clean or retries are exhausted.
-        Returns the last layout even if violations remain (best effort).
-        """
-        from src.agents.layout_validator import LayoutValidationInput
-        from src.agents.scene_layout_planner import SceneLayoutPlannerInput
-
-        violation_feedback: List[str] = []
-        scene_layout: Optional[SceneLayout] = None
-
-        for attempt in range(self.max_layout_retries):
-            plan_input = SceneLayoutPlannerInput(
-                scene_spec=scene_spec,
-                scene_index=scene_index,
-                context=context,
-                violation_feedback=violation_feedback,
-            )
-            plan_output = layout_planner.execute(plan_input)
-            scene_layout = plan_output.scene_layout
-
-            if layout_validator is None:
-                break  # No validator — accept layout as-is
-
-            val_result = layout_validator.execute(
-                LayoutValidationInput(scene_layout=scene_layout)
-            )
-            if val_result.is_valid:
-                break  # Clean layout — proceed to code generation
-
-            # Prepare feedback for next attempt
-            violation_feedback = [v.description for v in val_result.violations]
-
-        return scene_layout  # type: ignore[return-value]  # always set after ≥1 iteration
-
     def _process_scene_with_generator(
         self,
         animation_generator: Any,

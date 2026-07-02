@@ -20,6 +20,21 @@ from src.schemas.scene_processing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _default_to_mock_path(monkeypatch):
+    """Pin every test in this module to the deterministic mock generator.
+
+    ``src/cli.py`` calls ``load_dotenv(keys.env)`` at IMPORT time, so as soon
+    as ``test_cli`` is collected the real ANTHROPIC_API_KEY leaks into the whole
+    pytest process. Tests here assert on the mock emitter's exact output
+    (``create_notation``, ``FadeIn``, ``scale(2.0)`` …), which is meaningless
+    against live, non-deterministic LLM code. Defaulting to the mock path makes
+    the suite order-independent. The prompt-capture tests re-set the key
+    themselves via their own monkeypatch, which runs after this fixture.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -1024,4 +1039,121 @@ class TestPrimitiveEmitter:
         # Legacy fallback would have produced a `create_notation` / generic
         # Polygon; it must NOT appear when the catalog path fires.
         assert "create_notation" not in emitted
-    assert callable(getattr(AnimationCodeGeneratorAgent, "execute", None))
+
+
+# ============================================================================
+# Plan-to-render: the structured visual plan must reach the code LLM
+# ============================================================================
+
+
+def _agent_no_init():
+    """AnimationCodeGeneratorAgent without __init__ (no API client needed)."""
+    return AnimationCodeGeneratorAgent.__new__(AnimationCodeGeneratorAgent)
+
+
+def test_object_plan_forwards_primitive_position_and_interval():
+    """`_object_plan_for_prompt` must carry the planner's primitive, kwargs,
+    (x, y) position and (t_in, t_out) window — not just type/content/style."""
+    from src.schemas.storyboard import MathematicalObject, ObjectStyle, BBox, TimeInterval
+
+    obj = MathematicalObject(
+        object_id="v0",
+        object_role="main_vector",
+        object_type="geometric_shape",
+        content="velocity vector",
+        primitive="Vector",
+        args={"direction": [2.0, 1.0, 0.0]},
+        bbox=BBox(x=1.0, y=-0.5, w=2.0, h=2.0),
+        interval=TimeInterval(t_in=0.0, t_out=6.0),
+        style=ObjectStyle(color="blue"),
+    )
+    plan = _agent_no_init()._object_plan_for_prompt(obj)
+    assert plan["primitive"] == "Vector"
+    assert plan["args"] == {"direction": [2.0, 1.0, 0.0]}
+    assert plan["position"] == {"x": 1.0, "y": -0.5}
+    assert plan["visible"] == {"t_in": 0.0, "t_out": 6.0}
+    assert plan["id"] == "v0"
+    assert plan["role"] == "main_vector"
+
+
+def test_object_plan_omits_absent_fields():
+    """A bare legacy object must not sprout empty primitive/position keys."""
+    from src.schemas.storyboard import MathematicalObject, ObjectStyle
+
+    obj = MathematicalObject(
+        object_type="text",
+        content="hello",
+        style=ObjectStyle(),
+    )
+    plan = _agent_no_init()._object_plan_for_prompt(obj)
+    assert plan["type"] == "text"
+    assert plan["content"] == "hello"
+    for absent in ("primitive", "args", "position", "visible"):
+        assert absent not in plan
+
+
+def test_animation_prompt_carries_planned_primitive_and_position(monkeypatch):
+    """End-to-end: a planned Vector with a bbox must appear in the code LLM's
+    prompt (primitive + coordinates) and the 'HONOR IT' instruction present."""
+    spec = build_test_scene_spec(
+        scene_id="scene_003",
+        narration="The velocity points up and to the right.",
+        duration=15.0,
+        math_objects=[
+            {
+                "object_id": "v0",
+                "object_type": "geometric_shape",
+                "content": "velocity vector",
+                "primitive": "Vector",
+                "args": {"direction": [2, 1, 0]},
+                "bbox": {"x": 1.5, "y": -0.5, "w": 2.0, "h": 2.0},
+                "style": {"color": "blue"},
+            }
+        ],
+        transformations=[],
+    )
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent, monkeypatch, spec, build_test_context(),
+        scene_index=0,
+    )
+    assert "VISUAL PLAN (HONOR IT)" in captured["system"]
+    user = captured["user"]
+    assert "Vector" in user            # planned primitive survived
+    assert '"x": 1.5' in user          # planned position survived
+    assert "direction" in user         # planned kwargs survived
+
+
+# ============================================================================
+# Visual-first timing: _enforce_duration is a floor, not a narration quota
+# ============================================================================
+
+
+def test_enforce_duration_leaves_visually_rich_scene_untouched():
+    """A scene whose animation already clears the floor must be returned as-is
+    — no dead-air padding to stretch it toward narration length."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Create(c), run_time=5.0)\n"
+        "        self.wait(2.0)\n"
+        "        self.play(Transform(a, b), run_time=3.0)\n"
+    )  # total = 10.0s > floor
+    out = agent._enforce_duration(code, 8.0)
+    assert out == code
+    assert "floor padding" not in out
+
+
+def test_enforce_duration_pads_only_up_to_floor():
+    """A too-short scene gets ONE small tail wait to reach the floor, and the
+    existing animation timings are left exactly as authored (no scaling)."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Write(t), run_time=2.0)\n"
+    )
+    out = agent._enforce_duration(code, 8.0)
+    assert "self.wait(6.0)" in out
+    assert "floor padding" in out
+    assert "run_time=2.0" in out  # original animation untouched, not stretched

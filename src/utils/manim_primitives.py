@@ -53,6 +53,12 @@ MOBJECT_CATALOG: Dict[str, PrimitiveSpec] = {
         (("text", "str", ""), ("font_size", "int", 36)),
         True,
     ),
+    "DecimalNumber": PrimitiveSpec(
+        "DecimalNumber", "mobject",
+        (("number", "float", 0.0), ("num_decimal_places", "int", 2)),
+        True,
+        notes="An animatable number; pair with a ValueTracker for live counters.",
+    ),
     # Geometry
     "Circle": PrimitiveSpec(
         "Circle", "mobject",
@@ -97,6 +103,41 @@ MOBJECT_CATALOG: Dict[str, PrimitiveSpec] = {
     "Dot": PrimitiveSpec(
         "Dot", "mobject",
         (("point", "tuple", (0.0, 0.0, 0.0)),),
+        True,
+    ),
+    # Vectors & annotations — the "intuition-builder" primitives. These are
+    # already advertised in CANONICAL_RENDER_HINTS; enrolling them here lets
+    # the visual planner emit them as first-class, schema-validated objects
+    # instead of collapsing everything to a static Line/Circle.
+    "Vector": PrimitiveSpec(
+        "Vector", "mobject",
+        (("direction", "tuple", (1.0, 0.0, 0.0)),),
+        True,
+        notes="direction is a 3-tuple (x, y, 0) from the origin.",
+    ),
+    "DoubleArrow": PrimitiveSpec(
+        "DoubleArrow", "mobject",
+        (("start", "tuple", (-1.0, 0.0, 0.0)), ("end", "tuple", (1.0, 0.0, 0.0))),
+        True,
+    ),
+    "DashedLine": PrimitiveSpec(
+        "DashedLine", "mobject",
+        (("start", "tuple", (-1.0, 0.0, 0.0)), ("end", "tuple", (1.0, 0.0, 0.0))),
+        True,
+    ),
+    "Ellipse": PrimitiveSpec(
+        "Ellipse", "mobject",
+        (("width", "float", 2.0), ("height", "float", 1.0)),
+        True,
+    ),
+    "Triangle": PrimitiveSpec(
+        "Triangle", "mobject",
+        (),
+        True,
+    ),
+    "RoundedRectangle": PrimitiveSpec(
+        "RoundedRectangle", "mobject",
+        (("width", "float", 4.0), ("height", "float", 2.0), ("corner_radius", "float", 0.5)),
         True,
     ),
     # Coordinate systems

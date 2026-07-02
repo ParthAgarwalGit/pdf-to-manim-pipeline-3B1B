@@ -41,6 +41,28 @@ def _reset_cross_test_state():
 
 
 # ---------------------------------------------------------------------------
+# API-key isolation (hermetic default lane)
+# ---------------------------------------------------------------------------
+# src/cli.py calls load_dotenv() at IMPORT time, so the moment test_cli is
+# collected the real ANTHROPIC_API_KEY / OPENAI_API_KEY leak into the whole
+# pytest process. Any test that doesn't explicitly clear them then takes the
+# live-provider path — slow (~11 min), costs real money, and flakes on
+# non-deterministic LLM output. This fixture makes the default lane hermetic:
+# every test starts keyless unless it is explicitly marked @pytest.mark.live_api
+# (those legitimately need credentials and are excluded from the default sweep).
+# Tests that exercise a "key present" branch set their own key via monkeypatch
+# in the test body, which runs after this fixture.
+
+@pytest.fixture(autouse=True)
+def _isolate_api_keys(request, monkeypatch):
+    """Strip real provider API keys for every non-live_api test."""
+    if request.node.get_closest_marker("live_api"):
+        return
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+# ---------------------------------------------------------------------------
 # @property marker discipline
 # ---------------------------------------------------------------------------
 

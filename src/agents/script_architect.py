@@ -44,6 +44,7 @@ from src.schemas.storyboard import (
 )
 from src.utils.manim_engine_contract import build_visual_intent_contract_prompt, CANONICAL_RENDER_HINTS, normalize_render_hint
 from src.utils.manim_primitives import catalog_for_prompt
+from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +132,32 @@ class ScriptArchitectAgent(Agent):
     """
     
     # Configuration constants
-    MIN_SCENE_DURATION = 30.0  # Minimum scene duration in seconds
-    MAX_SCENE_DURATION = 90.0  # Maximum scene duration in seconds
-    TARGET_SCENE_DURATION = 60.0  # Target scene duration in seconds
+    # Visual-first pacing (ADR-005): scenes are short, dense vignettes — one
+    # focused visual idea each — not lecture-length segments. MIN matches the
+    # animation generator's MIN_SCENE_SECONDS floor.
+    MIN_SCENE_DURATION = 8.0  # Minimum scene duration in seconds
+    MAX_SCENE_DURATION = 45.0  # Maximum scene duration in seconds
+    TARGET_SCENE_DURATION = 25.0  # Target scene duration in seconds
+
+    # Primitives / object families that put words (not pictures) on screen.
+    # A scene whose every object is text-like violates the visualization-first
+    # thesis ("text wall") and gets one retry with explicit feedback.
+    TEXT_ONLY_PRIMITIVES = frozenset({"Text", "Tex", "MathTex"})
+    TEXT_ONLY_OBJECT_TYPES = frozenset({"text", "equation"})
+    TEXT_ONLY_RETRY_FEEDBACK = (
+        "Your previous plan for this scene contained ONLY text/equation objects "
+        "— a text wall. Replace it with a plan where at least one object is a "
+        "non-text primitive (Axes + plotted idea, Vector, Circle, Polygon, "
+        "Arrow, NumberLine, Dot, ...) that visually depicts the concept; keep "
+        "Text/MathTex only as labels."
+    )
     WORDS_PER_SECOND = 3.0  # Average narration speed used by prompt + TTS estimates
     MAX_JSON_RETRIES = 3  # Maximum retries for invalid JSON
     MAX_SOURCE_CHARS = 120_000
-    WORDS_PER_BEAT = 60
+    # ~45 words ≈ 15 s of narration — one beat is one vignette-sized idea.
+    # Smaller beats => more beats per document => more, shorter videos that
+    # cover the same breadth without compressing topics together.
+    WORDS_PER_BEAT = 45
     GRANULARITY_WORD_TARGETS = {
         "coarse": 300,
         "balanced": 150,
@@ -234,6 +254,7 @@ class ScriptArchitectAgent(Agent):
             # storyboard end-to-end. F6: any per-chunk failure is isolated
             # and never aborts the whole storyboard.
             visual_failures: List[Dict[str, str]] = []
+            text_only_scenes: List[str] = []
             for scene in scenes:
                 try:
                     scene.visual_intent = self._generate_visual_intent_for_chunk(
@@ -242,6 +263,24 @@ class ScriptArchitectAgent(Agent):
                         config=config,
                         review_feedback=review_feedback,
                     )
+                    # Visual-impact invariant: a scene of nothing but text /
+                    # equations is a slideshow, not a visualization. Retry the
+                    # planner ONCE with explicit feedback. Only meaningful on
+                    # the LLM path — the no-key fallback is deterministic, so
+                    # retrying it would reproduce the same intent.
+                    if (
+                        self._is_text_only_intent(scene.visual_intent)
+                        and self.client is not None
+                        and os.getenv("OPENAI_API_KEY")
+                    ):
+                        scene.visual_intent = self._generate_visual_intent_for_chunk(
+                            scene=scene,
+                            video_script=video_script,
+                            config=config,
+                            review_feedback=review_feedback + [self.TEXT_ONLY_RETRY_FEEDBACK],
+                        )
+                        if self._is_text_only_intent(scene.visual_intent):
+                            text_only_scenes.append(scene.scene_id)
                 except Exception as exc:
                     logger.warning(
                         "Visual intent failed for %s: %s — falling back to narration-derived intent",
@@ -254,6 +293,11 @@ class ScriptArchitectAgent(Agent):
                 logger.warning(
                     "Visual intent fallback used for %d/%d scenes",
                     len(visual_failures), len(scenes),
+                )
+            if text_only_scenes:
+                logger.warning(
+                    "Text-only visual intent persisted after retry for %d/%d scenes: %s",
+                    len(text_only_scenes), len(scenes), ", ".join(text_only_scenes),
                 )
 
             storyboard = self._assemble_storyboard_from_script(
@@ -349,6 +393,27 @@ class ScriptArchitectAgent(Agent):
         if redundant:
             logger.warning("Storyboard redundantly covers source segments: %s", ", ".join(redundant))
 
+    @classmethod
+    def _is_text_only_intent(cls, intent: VisualIntent) -> bool:
+        """True when the plan puts nothing but words on screen.
+
+        An object is text-like when its catalog ``primitive`` is Text/Tex/
+        MathTex, or — for legacy objects without a primitive — when its
+        ``object_type`` is text/equation. An empty object list also counts:
+        a blank screen is no more a visualization than a text wall.
+        """
+        objs = intent.mathematical_objects
+        if not objs:
+            return True
+        for obj in objs:
+            primitive = getattr(obj, "primitive", None)
+            if primitive is not None:
+                if primitive not in cls.TEXT_ONLY_PRIMITIVES:
+                    return False
+            elif obj.object_type not in cls.TEXT_ONLY_OBJECT_TYPES:
+                return False
+        return True
+
     def _generate_visual_intent_for_chunk(
         self,
         scene: Scene,
@@ -424,6 +489,19 @@ class ScriptArchitectAgent(Agent):
         engine_contract = build_visual_intent_contract_prompt()
         catalog_block = catalog_for_prompt()
 
+        # Concept → archetype: give the planner a proven visual pattern for
+        # this chunk's concept family instead of a blank page. Underscored
+        # concept labels are space-joined so "unit_circle" matches "circle".
+        classification_text = " ".join([
+            scene.narration,
+            " ".join(c.replace("_", " ") for c in chunk_concepts),
+            visual_hints,
+        ])
+        archetype = classify_concept(classification_text)
+        archetype_block = (
+            archetype_prompt_block(archetype) + "\n" if archetype else ""
+        )
+
         prompt = (
             "You are a 3Blue1Brown animation architect.\n\n"
             "--- CHUNK NARRATION (audio for THIS scene only) ---\n"
@@ -443,6 +521,12 @@ class ScriptArchitectAgent(Agent):
             "the MOBJECT names above and `args` to its kwargs. Free-form "
             "`content` is ONLY permitted for MathTex / Tex / Text (where it "
             "goes into the `tex` or `text` arg).\n\n"
+            "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
+            "a slideshow. At least ONE object MUST be a non-text primitive "
+            "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
+            "that visually DEPICTS the concept. Text/MathTex are for labels and "
+            "the key formula only — never the whole scene.\n\n"
+            f"{archetype_block}"
             "LAYOUT (x, y, t):\n"
             "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
             "    object's intended position in Manim units AND `interval` =\n"
@@ -626,7 +710,7 @@ CRITICAL RULES:
 4. Mark `references_prior_beats` with the beat_ids whose visuals/ideas this
    beat builds on.
 5. Cover every formula and definition in the source material exactly once.
-6. Produce approximately {self._target_beat_count(source_text)} beats (plus or minus 20%). Each beat MUST be 40-80 words of narration.
+6. Produce approximately {self._target_beat_count(source_text)} beats (plus or minus 20%). Each beat MUST be 30-60 words of narration.
    if a topic needs more, split into multiple beats with references_prior_beats.
 
 STYLE:
@@ -790,9 +874,9 @@ TASK: Explain THIS segment fully as part of a larger continuous video.
 Do not preview or re-explain other sections. If a concept was already covered,
 reference it by name without redefining it.
 
-TARGET: Produce approximately {target_beats} beat(s). Each beat should be 40-80
-words of narration. Split only when this segment needs multiple visual/narrative
-steps.
+TARGET: Produce approximately {target_beats} beat(s). Each beat should be 30-60
+words of narration — one vignette-sized visual idea. Split only when this
+segment needs multiple visual/narrative steps.
 
 STYLE:
 - Audience ({config.audience}): {audience_line}
@@ -818,7 +902,7 @@ Return JSON in this exact shape:
         return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))
 
     def _chunk_script_into_scenes(self, script) -> List[Scene]:
-        """Group beats into ~30-90 s scenes (Task 4 chunker).
+        """Group beats into ~8-45 s vignette scenes (Task 4 chunker, ADR-005).
 
         Greedy packer: walk the beats in order, accumulating beats into the
         current chunk until adding the next beat would push the chunk over
@@ -1020,8 +1104,12 @@ Return JSON in this exact shape:
 
         Layout (Task 13): every emitted object carries a bbox + interval
         so the layout validator can run unchanged. Positions are picked
-        from a small "canonical 2-object stack" (title on top, equation
-        in centre) inside the safe area.
+        from a small canonical stack (title on top, equation in centre,
+        archetype visual below) inside the safe area.
+
+        Visual-impact: when the narration classifies to a visual archetype,
+        its ``fallback_primitive`` is emitted too, so even degraded/keyless
+        runs draw something rather than shipping a text-only slide.
         """
         from src.schemas.storyboard import BBox, TimeInterval
 
@@ -1063,6 +1151,23 @@ Return JSON in this exact shape:
                 bbox=BBox(x=0.0, y=0.0, w=8.0, h=1.5),
                 interval=TimeInterval(t_in=0.0, t_out=15.0),
                 style=ObjectStyle(color="YELLOW", position="center"),
+            ))
+
+        # Archetype visual — the concept family's proven primitive, placed in
+        # the lower half of the safe area so degraded runs still DRAW the idea.
+        archetype = classify_concept(narration)
+        if archetype is not None:
+            primitive_name, primitive_args, object_type = archetype.fallback_primitive
+            objs.append(MathematicalObject(
+                object_id="archetype_visual",
+                object_role="concept_visual",
+                object_type=object_type,
+                content=archetype.description,
+                primitive=primitive_name,
+                args=dict(primitive_args),
+                bbox=BBox(x=0.0, y=-2.0, w=6.0, h=2.5),
+                interval=TimeInterval(t_in=0.0, t_out=15.0),
+                style=ObjectStyle(color="GREEN", position="bottom"),
             ))
 
         active_object_ids = [obj.object_id for obj in objs if obj.object_id]
