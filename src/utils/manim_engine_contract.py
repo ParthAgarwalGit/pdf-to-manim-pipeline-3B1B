@@ -25,11 +25,13 @@ from typing import Dict, Optional, Tuple
 # ~0.5-1s, transforms at ~1-2s.  Violations are flagged by the reviewer.
 
 TIMING_CONTRACT: Dict[str, Tuple[float, float]] = {
-    # Introductory / creation animations
-    "Write": (1.0, 3.0),
-    "Create": (1.0, 2.5),
-    "ShowCreation": (1.0, 2.5),
-    "DrawBorderThenFill": (1.0, 2.5),
+    # Introductory / creation animations. Minimums were relaxed 1.0 -> 0.6 for
+    # vignette pacing (ADR-005): short scenes legitimately write labels in
+    # ~0.8s, and the old floor produced dozens of noise findings per run.
+    "Write": (0.6, 3.0),
+    "Create": (0.6, 2.5),
+    "ShowCreation": (0.6, 2.5),
+    "DrawBorderThenFill": (0.6, 2.5),
     "GrowFromCenter": (0.5, 1.5),
     "GrowArrow": (0.5, 1.5),
     # Fade family

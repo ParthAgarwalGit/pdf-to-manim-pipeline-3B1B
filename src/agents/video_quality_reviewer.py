@@ -753,10 +753,16 @@ class VideoQualityReviewerAgent(Agent):
                         ),
                     ))
 
-            # 2. No self.wait() between consecutive self.play() calls
+            # 2. No self.wait() between consecutive self.play() calls.
+            # Occasional back-to-back plays are legitimate vignette pacing;
+            # only a systematic absence of breathing room is worth reporting —
+            # and as ONE aggregated finding, not one per gap (a real run
+            # produced 180 medium findings from this check alone, drowning
+            # the genuine issues).
             play_line_nos = [
                 i for i, line in enumerate(lines) if "self.play(" in line
             ]
+            gaps_without_wait = []
             for j in range(len(play_line_nos) - 1):
                 start_line = play_line_nos[j]
                 end_line = play_line_nos[j + 1]
@@ -765,18 +771,24 @@ class VideoQualityReviewerAgent(Agent):
                     for k in range(start_line + 1, end_line)
                 )
                 if not has_wait:
-                    findings.append(VideoQualityFinding(
-                        issue="Missing self.wait() between consecutive self.play() calls.",
-                        suspected_stage="animation_generator",
-                        severity="medium",
-                        scene_id=scene_id,
-                        evidence=f"Lines {start_line + 1} and {end_line + 1} have no wait in between.",
-                        suggested_fix="Add self.wait(0.5) or more between play() calls for breathing room.",
-                        llm_direction=(
-                            f"In scene {scene_id}, add self.wait() calls between consecutive self.play() "
-                            "calls to give viewers time to absorb changes."
-                        ),
-                    ))
+                    gaps_without_wait.append(start_line + 1)
+            if len(gaps_without_wait) >= 3:
+                findings.append(VideoQualityFinding(
+                    issue="Scene has little breathing room between animations.",
+                    suspected_stage="animation_generator",
+                    severity="low",
+                    scene_id=scene_id,
+                    evidence=(
+                        f"{len(gaps_without_wait)} consecutive self.play() pairs "
+                        f"without a self.wait() (first gaps near lines "
+                        f"{gaps_without_wait[:3]})."
+                    ),
+                    suggested_fix="Add self.wait(0.3-1.0) after key reveals so viewers can absorb them.",
+                    llm_direction=(
+                        f"In scene {scene_id}, add brief self.wait() pauses after the "
+                        "major reveals (not after every single play)."
+                    ),
+                ))
 
             # 3. Text walls (>3 Text objects visible simultaneously)
             text_creates = re.findall(r'(\w+)\s*=\s*Text\(', source)

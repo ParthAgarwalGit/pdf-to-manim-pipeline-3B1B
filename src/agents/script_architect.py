@@ -224,6 +224,57 @@ def _resolve_bbox_overlaps(objs: List[Any], iterations: int = 4) -> None:
             return
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _visual_intent_static_prompt() -> str:
+    """The byte-identical prefix of every visual-intent prompt.
+
+    OpenAI prefix caching only fires on identical leading tokens — the old
+    prompt put the (per-scene) narration FIRST, so ~45 planner calls per run
+    paid full price for the same ~2K-token contract every time. All static
+    content lives here, in one stable string; per-scene data is appended
+    after it.
+    """
+    engine_contract = build_visual_intent_contract_prompt()
+    catalog_block = catalog_for_prompt()
+    return (
+        "You are a 3Blue1Brown animation architect. You plan the visuals for "
+        "ONE scene of a longer video; the scene's narration and context follow "
+        "after these standing rules.\n\n"
+        f"{engine_contract}\n"
+        "CLOSED VOCABULARY:\n"
+        f"{catalog_block}\n\n"
+        "For every mathematical_object you emit, ALWAYS include these REQUIRED "
+        "fields: `object_type` (one of: equation, text, axes, graph, "
+        "geometric_shape, pi_creature) and `content` (the LaTeX/text string, "
+        "or \"\" for a pure shape). Then set `primitive` to one of "
+        "the MOBJECT names above and `args` to its kwargs. Free-form "
+        "`content` is ONLY permitted for MathTex / Tex / Text (where it "
+        "goes into the `tex` or `text` arg).\n\n"
+        "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
+        "a slideshow. At least ONE object MUST be a non-text primitive "
+        "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
+        "that visually DEPICTS the concept. Text/MathTex are for labels and "
+        "the key formula only — never the whole scene.\n"
+        "AT MOST 7 objects total — a short scene with 16 objects is an "
+        "unreadable collage. One anchor visual + a few labels beats many "
+        "competing shapes.\n\n"
+        "LAYOUT (x, y, t):\n"
+        "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
+        "    object's intended position in Manim units AND `interval` =\n"
+        "    {t_in, t_out} — when in scene-time the object is visible.\n"
+        "  - SAFE AREA: keep bbox.x in [-6.5, 6.5] and bbox.y in [-3.5, 3.5].\n"
+        "  - Two objects may share the same (x, y) only if their intervals\n"
+        "    are disjoint (one fades out before the other appears).\n\n"
+        "Return JSON with keys: objects (list), transformations (list), "
+        "beats (list), scene_state_in (object), scene_state_out (object), "
+        "emphasis_points (list).\n\n"
+        "───────────────  SCENE-SPECIFIC CONTEXT BELOW  ───────────────\n\n"
+    )
+
+
 def _validate_items(items: Any, model: Any) -> list:
     """Validate a list against a Pydantic model, dropping (not raising on) the
     items that fail — one malformed object never voids the whole scene."""
@@ -733,9 +784,6 @@ class ScriptArchitectAgent(Agent):
                 + "\n"
             )
 
-        engine_contract = build_visual_intent_contract_prompt()
-        catalog_block = catalog_for_prompt()
-
         # Concept → archetype: give the planner a proven visual pattern for
         # this chunk's concept family instead of a blank page. Underscored
         # concept labels are space-joined so "unit_circle" matches "circle".
@@ -771,8 +819,10 @@ class ScriptArchitectAgent(Agent):
                 "scene_state_in.active_object_ids.\n\n"
             )
 
-        prompt = (
-            "You are a 3Blue1Brown animation architect.\n\n"
+        # Static contract first (byte-identical across all scenes → provider
+        # prefix caching), per-scene context after.
+        prompt = _visual_intent_static_prompt() + (
+            f"{archetype_block}"
             "--- CHUNK NARRATION (audio for THIS scene only) ---\n"
             f"{scene.narration}\n"
             "--- END NARRATION ---\n\n"
@@ -784,35 +834,8 @@ class ScriptArchitectAgent(Agent):
             f"{visual_hints}\n\n"
             f"TIMING: {word_count} words at ~3 wps => visuals should fill ~{target}s.\n"
             f"{review_block}"
-            f"{engine_contract}\n"
-            "CLOSED VOCABULARY:\n"
-            f"{catalog_block}\n\n"
-            "For every mathematical_object you emit, ALWAYS include these REQUIRED "
-            "fields: `object_type` (one of: equation, text, axes, graph, "
-            "geometric_shape, pi_creature) and `content` (the LaTeX/text string, "
-            "or \"\" for a pure shape). Then set `primitive` to one of "
-            "the MOBJECT names above and `args` to its kwargs. Free-form "
-            "`content` is ONLY permitted for MathTex / Tex / Text (where it "
-            "goes into the `tex` or `text` arg).\n\n"
-            "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
-            "a slideshow. At least ONE object MUST be a non-text primitive "
-            "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
-            "that visually DEPICTS the concept. Text/MathTex are for labels and "
-            "the key formula only — never the whole scene.\n"
-            "AT MOST 7 objects total — a short scene with 16 objects is an "
-            "unreadable collage. One anchor visual + a few labels beats many "
-            "competing shapes.\n\n"
-            f"{archetype_block}"
-            "LAYOUT (x, y, t):\n"
-            "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
-            "    object's intended position in Manim units AND `interval` =\n"
-            "    {t_in, t_out} — when in scene-time the object is visible.\n"
-            "  - SAFE AREA: keep bbox.x in [-6.5, 6.5] and bbox.y in [-3.5, 3.5].\n"
-            "  - Two objects may share the same (x, y) only if their intervals\n"
-            "    are disjoint (one fades out before the other appears).\n\n"
-            "Return JSON with keys: objects (list), transformations (list), "
-            "beats (list), scene_state_in (object), scene_state_out (object), "
-            "emphasis_points (list)."
+            "\nNow plan THIS scene following every standing rule above. "
+            "Return ONLY the JSON object."
         )
 
         try:

@@ -801,7 +801,13 @@ def _capture_animation_prompt(agent_factory, monkeypatch, scene_spec, context, s
 
     class _Messages:
         def create(self, *, system, messages, **_kw):
-            captured["system"] = system
+            captured["system_raw"] = system
+            # The real call sends system as a list of blocks (cached static +
+            # dynamic tail); normalize to one string for substring assertions.
+            if isinstance(system, list):
+                captured["system"] = "".join(b.get("text", "") for b in system)
+            else:
+                captured["system"] = system
             captured["user"] = messages[0]["content"]
             return _Resp()
 
