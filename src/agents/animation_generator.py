@@ -354,22 +354,24 @@ RULES:
    may extend past the frame edge at any point of the animation, including
    mid-shift positions.
 
-═══════════════════════  PI CHARACTERS  ═══════════════════════
-If and only if the storyboard intent includes a `pi_creature` object or a
-PiCreature* render_hint, use the pre-built Pi character helpers (already
-imported for you):
+═══════════════════════  NARRATOR MASCOT (SIG)  ═══════════════════════
+If and only if the storyboard intent includes a `pi_creature` object, use the
+pre-built blob mascot helpers (already imported — do NOT draw a character from
+raw shapes yourself):
 
-    teacher = create_pi_teacher().shift(LEFT * 3)
-    students = create_pi_students().shift(RIGHT * 3)
-    bubble = create_speech_bubble("Key insight text", teacher)
+    sig = create_pi_teacher(height=1.2).to_corner(DL, buff=0.4)
+    bubble = create_speech_bubble("Key insight text", sig)
 
-    self.play(FadeIn(teacher), FadeIn(students), run_time=1.0)
+    self.play(FadeIn(sig, shift=UP * 0.3), run_time=0.8)
     self.play(Write(bubble), run_time=1.0)
-    self.wait(3)
-    self.play(FadeOut(bubble), FadeOut(teacher), FadeOut(students), run_time=1.0)
+    self.wait(2)
+    self.play(FadeOut(bubble), FadeOut(sig), run_time=0.8)
 
-Use this pattern only when the storyboard explicitly asks for that helper beat.
-Do not invent helper objects that are not present in the visual intent.
+RULES:
+- At most ONE mascot appearance per scene, in a corner, small (height <= 1.4).
+- The mascot never overlaps the math content and leaves before dense content
+  animates.
+- Do not invent helper objects that are not present in the visual intent.
 
 ═══════════════════════  STYLE  ═══════════════════════
 - Black background (default).  Use BLUE, YELLOW, GREEN, RED for emphasis.

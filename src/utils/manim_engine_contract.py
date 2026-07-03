@@ -369,7 +369,11 @@ RULES:
 - Do not invent new object types.
 - Do not output pi_character; use pi_creature instead.
 - Use render_hint only when it materially clarifies the intended Manim primitive.
-- For abstract narration beats, use pi_creature with a render_hint rather than inventing a fake object family.
+- pi_creature (the narrator mascot) is a SPICE, not a staple: use it ONLY for
+  an intro, recap, or brief aside beat — at most ONE per scene, and NEVER in a
+  scene that is presenting equations, graphs, or geometric constructions.
+  For abstract narration beats without a natural visual, prefer a simple
+  diagrammatic metaphor over the mascot.
 - Every object should use a stable object_id and object_role when continuity matters.
 - Prefer reusing a named coordinate system or notation key instead of redrawing it from scratch.
 
