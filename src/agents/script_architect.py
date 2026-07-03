@@ -225,6 +225,10 @@ class ScriptArchitectAgent(Agent):
     MIN_SCENE_DURATION = 8.0  # Minimum scene duration in seconds
     MAX_SCENE_DURATION = 45.0  # Maximum scene duration in seconds
     TARGET_SCENE_DURATION = 25.0  # Target scene duration in seconds
+    # Hard ceiling on scenes per video. The chunker escalates its packing
+    # target until the count fits (fewer, slightly longer scenes beat a
+    # choppy 90-cut video for engagement, render time, and cost).
+    MAX_SCENES = 45
 
     # Primitives / object families that put words (not pictures) on screen.
     # A scene whose every object is text-like violates the visualization-first
@@ -356,6 +360,9 @@ class ScriptArchitectAgent(Agent):
             # and never aborts the whole storyboard.
             visual_failures: List[Dict[str, str]] = []
             text_only_scenes: List[str] = []
+            # Visual continuity: intents are generated in scene order so each
+            # scene can be told what the previous one left on screen.
+            carried_objects: List[MathematicalObject] = []
             for scene in scenes:
                 try:
                     scene.visual_intent = self._generate_visual_intent_for_chunk(
@@ -363,6 +370,7 @@ class ScriptArchitectAgent(Agent):
                         video_script=video_script,
                         config=config,
                         review_feedback=review_feedback,
+                        carried_objects=carried_objects,
                     )
                     # Visual-impact invariant: a scene of nothing but text /
                     # equations is a slideshow, not a visualization. Retry the
@@ -379,6 +387,7 @@ class ScriptArchitectAgent(Agent):
                             video_script=video_script,
                             config=config,
                             review_feedback=review_feedback + [self.TEXT_ONLY_RETRY_FEEDBACK],
+                            carried_objects=carried_objects,
                         )
                         if self._is_text_only_intent(scene.visual_intent):
                             text_only_scenes.append(scene.scene_id)
@@ -389,6 +398,7 @@ class ScriptArchitectAgent(Agent):
                     )
                     scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
                     visual_failures.append({"scene_id": scene.scene_id, "error": str(exc)})
+                carried_objects = self._carried_objects_from_intent(scene.visual_intent)
 
             if visual_failures:
                 logger.warning(
@@ -522,6 +532,46 @@ class ScriptArchitectAgent(Agent):
                 len(scene_segment_ids) / max(len(covered), 1),
             )
 
+    # How many objects a scene may hand to its successor. Carrying everything
+    # forward re-creates the clutter problem in the next scene; the anchor
+    # visual plus a label or two is what makes the cut feel continuous.
+    MAX_CARRY_OVER_OBJECTS = 3
+
+    @classmethod
+    def _derive_carry_out_ids(cls, objs: List[MathematicalObject]) -> List[str]:
+        """Objects still on screen at scene end, by their planned intervals.
+
+        An object whose ``interval.t_out`` reaches (within 0.5s of) the scene's
+        final timestamp is considered carried over. Non-text visuals are
+        preferred — carrying the anchor diagram matters more than carrying a
+        caption — and the list is capped at MAX_CARRY_OVER_OBJECTS.
+        """
+        timed = [o for o in objs if o.interval is not None and o.object_id]
+        if not timed:
+            return []
+        scene_end = max(o.interval.t_out for o in timed)
+        surviving = [o for o in timed if o.interval.t_out >= scene_end - 0.5]
+        # Anchor visuals first, then text, preserving plan order within each.
+        text_like = cls.TEXT_ONLY_PRIMITIVES
+        ordered = (
+            [o for o in surviving if (o.primitive or "") not in text_like]
+            + [o for o in surviving if (o.primitive or "") in text_like]
+        )
+        return [o.object_id for o in ordered[: cls.MAX_CARRY_OVER_OBJECTS]]
+
+    @staticmethod
+    def _carried_objects_from_intent(intent: VisualIntent) -> List[MathematicalObject]:
+        """The objects a finished scene hands to its successor.
+
+        Resolves ``scene_state_out.active_object_ids`` back to the full
+        MathematicalObject records so the next scene's prompt can name their
+        primitive and position, not just an id.
+        """
+        active = set(intent.scene_state_out.active_object_ids or [])
+        if not active:
+            return []
+        return [o for o in intent.mathematical_objects if o.object_id in active]
+
     @classmethod
     def _is_text_only_intent(cls, intent: VisualIntent) -> bool:
         """True when the plan puts nothing but words on screen.
@@ -549,6 +599,7 @@ class ScriptArchitectAgent(Agent):
         video_script,
         config: Configuration,
         review_feedback: List[str],
+        carried_objects: Optional[List[MathematicalObject]] = None,
     ) -> VisualIntent:
         """Plan visuals for one chunk via a chunk-scoped LLM call.
 
@@ -631,6 +682,28 @@ class ScriptArchitectAgent(Agent):
             archetype_prompt_block(archetype) + "\n" if archetype else ""
         )
 
+        # Visual continuity: describe what the previous scene left on screen so
+        # this scene starts from it instead of cutting to black.
+        carry_block = ""
+        if carried_objects:
+            carry_lines = []
+            for o in carried_objects:
+                pos = f"({o.bbox.x:.1f}, {o.bbox.y:.1f})" if o.bbox else "(keep position)"
+                carry_lines.append(
+                    f"  - object_id={o.object_id}  {o.primitive or o.object_type}  at {pos}"
+                )
+            carry_block = (
+                "PREVIOUS SCENE ENDS WITH THESE OBJECTS STILL ON SCREEN:\n"
+                + "\n".join(carry_lines)
+                + "\nVISUAL CONTINUITY (important): start THIS scene from that "
+                "arrangement. Re-emit each carried object FIRST in `objects` — "
+                "SAME object_id, same primitive and args, same bbox position, "
+                "interval.t_in = 0 — then transform it or build around it. Do "
+                "not restart from an empty screen unless the topic changes "
+                "completely. List the carried ids in "
+                "scene_state_in.active_object_ids.\n\n"
+            )
+
         prompt = (
             "You are a 3Blue1Brown animation architect.\n\n"
             "--- CHUNK NARRATION (audio for THIS scene only) ---\n"
@@ -639,6 +712,7 @@ class ScriptArchitectAgent(Agent):
             f"NEW CONCEPTS INTRODUCED IN THIS CHUNK: "
             f"{', '.join(chunk_concepts) or '(none)'}\n"
             f"{earlier_block}"
+            f"{carry_block}"
             "VISUAL HINTS FROM THE SCRIPT WRITER:\n"
             f"{visual_hints}\n\n"
             f"TIMING: {word_count} words at ~3 wps => visuals should fill ~{target}s.\n"
@@ -736,6 +810,13 @@ class ScriptArchitectAgent(Agent):
             state_out = SceneState.model_validate(raw_out if isinstance(raw_out, dict) else {})
         except Exception:
             state_out = SceneState()
+
+        # Continuity backbone: planners reliably leave scene_state_out empty
+        # (a real run: 0/90 scenes carried state → every scene restarted from
+        # black). Don't trust the LLM for it — derive it from the plan: the
+        # objects still visible at scene end are the carry-over set.
+        if not state_out.active_object_ids:
+            state_out.active_object_ids = self._derive_carry_out_ids(objs)
 
         return VisualIntent(
             mathematical_objects=objs,
@@ -1162,9 +1243,34 @@ Return JSON in this exact shape:
         def beat_duration(b) -> float:
             return len(b.narration.split()) / self.WORDS_PER_SECOND
 
-        chunks: List[List[Beat]] = []
-        current: List[Beat] = []
-        current_dur = 0.0
+        def pack(target_dur: float, max_dur: float) -> List[List[Beat]]:
+            """Greedy pack beats into chunks, never crossing a segment boundary."""
+            packed: List[List[Beat]] = []
+            cur: List[Beat] = []
+            cur_dur = 0.0
+            for beat in script.beats:
+                bd = beat_duration(beat)
+                beat_segment = getattr(beat, "source_segment_id", "")
+                cur_segment_ids = {
+                    getattr(existing, "source_segment_id", "")
+                    for existing in cur
+                    if getattr(existing, "source_segment_id", "")
+                }
+                crosses_segment = bool(
+                    cur and beat_segment and cur_segment_ids
+                    and beat_segment not in cur_segment_ids
+                )
+                if cur and (crosses_segment or cur_dur + bd > max_dur):
+                    packed.append(cur)
+                    cur, cur_dur = [], 0.0
+                cur.append(beat)
+                cur_dur += bd
+                if cur_dur >= target_dur:
+                    packed.append(cur)
+                    cur, cur_dur = [], 0.0
+            if cur:
+                packed.append(cur)
+            return packed
 
         for beat in script.beats:
             bd = beat_duration(beat)
@@ -1176,30 +1282,25 @@ Return JSON in this exact shape:
                     "to keep beats under 80 words.",
                     beat.beat_id, bd, self.MAX_SCENE_DURATION,
                 )
-            beat_segment = getattr(beat, "source_segment_id", "")
-            current_segment_ids = {
-                getattr(existing, "source_segment_id", "")
-                for existing in current
-                if getattr(existing, "source_segment_id", "")
-            }
-            crosses_segment = bool(
-                current
-                and beat_segment
-                and current_segment_ids
-                and beat_segment not in current_segment_ids
+
+        # Scene-count governance: segments were capped upstream, but beats per
+        # segment can still explode the scene count (a real 14-page run yielded
+        # 90 scenes — choppy, slow, expensive). Escalate the packing target
+        # until the count fits MAX_SCENES. Floor = number of distinct segments
+        # (chunks never cross segment boundaries), which the segmenter caps.
+        target = float(self.TARGET_SCENE_DURATION)
+        max_dur = float(self.MAX_SCENE_DURATION)
+        chunks = pack(target, max_dur)
+        while len(chunks) > self.MAX_SCENES and target < 120.0:
+            target *= 1.4
+            max_dur = max(max_dur, target * 1.8)
+            chunks = pack(target, max_dur)
+        if len(chunks) > self.MAX_SCENES:
+            logger.warning(
+                "Chunker could not reduce scene count below MAX_SCENES=%d "
+                "(got %d) — segment boundaries dominate.",
+                self.MAX_SCENES, len(chunks),
             )
-            # If adding this beat overflows the current chunk, flush first.
-            if current and (crosses_segment or current_dur + bd > self.MAX_SCENE_DURATION):
-                chunks.append(current)
-                current, current_dur = [], 0.0
-            current.append(beat)
-            current_dur += bd
-            # Close the chunk once we've crossed TARGET to avoid trailing tinies.
-            if current_dur >= self.TARGET_SCENE_DURATION:
-                chunks.append(current)
-                current, current_dur = [], 0.0
-        if current:
-            chunks.append(current)
 
         # Concept tracking: each scene's concept_id is the first canonical
         # concept introduced in its beats. Reference-only chunks inherit the

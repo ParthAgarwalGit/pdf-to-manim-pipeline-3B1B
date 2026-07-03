@@ -233,10 +233,18 @@ class AnimationCodeGeneratorAgent(Agent):
         target_duration = round(max(min_seconds, narration_seconds), 1)
 
         # ── Prepare structured scene data for the LLM ────────────────
+        # Continuity contract: these object ids must still be on screen when
+        # the scene ends — the NEXT scene starts from them.
+        carry_out = list(
+            getattr(scene_spec.visual_intent.scene_state_out, "active_object_ids", [])
+            or []
+        )
+
         scene_data = {
             "narration": narration,
             "target_duration_seconds": target_duration,
             "word_count": word_count,
+            "carry_out": carry_out,
             "objects": [
                 self._object_plan_for_prompt(obj)
                 for obj in scene_spec.visual_intent.mathematical_objects
@@ -382,6 +390,15 @@ design, not a loose suggestion:
   of redrawing; these mark objects shared across scenes.
 When an object has no `primitive`, fall back to the type/content and choose the
 most visually intuitive Manim primitive yourself.
+
+═══════════════════════  SCENE ENDING (CONTINUITY)  ═══════════════════════
+`carry_out` in the scene data lists object ids that MUST still be visible when
+this scene ends — the NEXT scene begins from exactly that arrangement:
+- NEVER FadeOut / Uncreate / clear a carry_out object at the end of construct().
+- NEVER use FadeOut(*self.mobjects) or self.clear() when carry_out is non-empty.
+- Objects NOT in carry_out should be faded out before the scene ends so the
+  handoff is clean.
+- Leave each carry_out object at its planned position in the final frame.
 
 ═══════════════════════  CONTENT FIDELITY  ═══════════════════════
 The narration is extracted from an academic PDF.  Your animation MUST
