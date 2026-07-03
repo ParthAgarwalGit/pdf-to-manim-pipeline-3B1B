@@ -25,7 +25,7 @@ Example:
 import json
 import threading
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from enum import Enum
@@ -246,7 +246,7 @@ class CostTracker:
 
         # Create and store the call record
         call = APICall(
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             provider=provider.lower(),
             model=model.lower(),
             input_tokens=input_tokens,
@@ -395,7 +395,7 @@ class CostTracker:
 
         with self._lock:
             log_data = {
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "total_calls": len(self._calls),
                 "total_cost": self.get_total_cost(),
                 "breakdown": self.get_breakdown(),

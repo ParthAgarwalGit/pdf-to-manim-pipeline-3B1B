@@ -166,6 +166,11 @@ class OutputManifest(BaseModel):
         default=None,
         description="Aggregate USD spend for the run (None if cost tracking was skipped)"
     )
+    warning_count: Optional[int] = Field(
+        default=None,
+        description="Number of WARNING+ log records captured during the run "
+                    "(persisted to warnings.log in the output directory)"
+    )
     
     @field_validator('status')
     @classmethod

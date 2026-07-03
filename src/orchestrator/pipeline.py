@@ -112,6 +112,28 @@ class PipelineConfig:
         )
 
 
+class _WarningCaptureHandler(logging.FileHandler):
+    """Persist WARNING+ records from the `src.*` logger tree to a file.
+
+    Console warnings previously vanished when the terminal scrolled away —
+    post-run triage was impossible. This handler writes them to
+    ``<run>/warnings.log`` (created lazily on the first warning) and keeps a
+    count that lands in the manifest.
+    """
+
+    def __init__(self, path: str):
+        super().__init__(path, encoding="utf-8", delay=True)
+        self.setLevel(logging.WARNING)
+        self.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.count += 1
+        super().emit(record)
+
+
 class PipelineAbortError(Exception):
     """Exception raised when pipeline must abort due to non-retryable error.
     
@@ -274,6 +296,13 @@ class Orchestrator:
             self.structured_logger = StructuredJSONLogger(
                 output_directory=self._run_output_dir
             )
+
+            # Capture WARNING+ records from every src.* logger into the run's
+            # warnings.log so post-run triage never depends on console scrollback.
+            self._warning_handler = _WarningCaptureHandler(
+                str(Path(self._run_output_dir) / "warnings.log")
+            )
+            logging.getLogger("src").addHandler(self._warning_handler)
             
             # Step 3: Vision+OCR
             ocr_output = self._run_vision_ocr(validated_ref, self.structured_logger)
@@ -456,6 +485,11 @@ class Orchestrator:
             )
             raise
         finally:
+            # Detach the warnings capture so handlers don't pile up across runs
+            handler = getattr(self, "_warning_handler", None)
+            if handler is not None:
+                logging.getLogger("src").removeHandler(handler)
+                handler.close()
             # Close structured logger
             if self.structured_logger:
                 self.structured_logger.close()
@@ -1490,6 +1524,18 @@ class Orchestrator:
         self._register_runtime_artifact(
             manifest,
             Path(manifest.output_directory) / "pipeline.log",
+            "log",
+        )
+
+        # Warnings observability: count + artifact (file exists only if a
+        # warning actually fired — the handler creates it lazily).
+        handler = getattr(self, "_warning_handler", None)
+        if handler is not None:
+            handler.flush()
+            manifest.warning_count = handler.count
+        self._register_runtime_artifact(
+            manifest,
+            Path(manifest.output_directory) / "warnings.log",
             "log",
         )
 

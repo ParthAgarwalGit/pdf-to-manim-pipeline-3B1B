@@ -9,6 +9,7 @@ Responsibilities:
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -198,6 +199,29 @@ class VideoRendererAgent(Agent):
     # Scene rendering
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _extract_render_error(stderr: str, limit: int = 800) -> str:
+        """Distil actionable error text from Manim's stderr.
+
+        Manim floods stderr with carriage-return progress bars; the old
+        ``stderr[:800]`` kept ONLY those and truncated the actual exception
+        (which is at the END), making every render failure undiagnosable.
+        Strip progress-bar lines and keep the LAST ``limit`` characters.
+        """
+        if not stderr:
+            return "No stderr."
+        lines: list = []
+        for raw_line in stderr.splitlines():
+            # Progress updates arrive as \r-separated frames within one line.
+            line = raw_line.split("\r")[-1].rstrip()
+            if not line:
+                continue
+            if re.search(r"\d+%\|", line) or "it/s]" in line or "it/s," in line:
+                continue  # tqdm-style progress frame
+            lines.append(line)
+        cleaned = "\n".join(lines).strip() or stderr.strip()
+        return cleaned[-limit:]
+
     def _render_scene(
         self, scene_file: str, quality_flag: str, media_dir: str
     ) -> SceneRenderResult:
@@ -237,7 +261,7 @@ class VideoRendererAgent(Agent):
             )
 
             if result.returncode != 0:
-                stderr = result.stderr[:800] if result.stderr else "No stderr."
+                stderr = self._extract_render_error(result.stderr)
                 stdout = result.stdout[:400] if result.stdout else ""
                 logger.error(f"manim stderr: {stderr}")
                 if stdout:

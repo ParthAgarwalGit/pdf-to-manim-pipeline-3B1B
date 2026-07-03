@@ -478,6 +478,17 @@ class ScriptArchitectAgent(Agent):
         scenes: List[Scene],
         segments: List[SourceSegment],
     ) -> None:
+        """Check the two real coverage invariants of the vignette design.
+
+        WARN on genuine defects only:
+          - a segment covered by NO scene (content dropped), or
+          - a beat appearing in MORE than one scene (content duplicated).
+
+        A segment spanning multiple scenes is *by design* — the chunker splits
+        a segment's beats into vignette-sized scenes — so it is reported as an
+        INFO statistic, never a warning (the old check flagged it and spammed
+        one false-positive warning per segment on real runs).
+        """
         if not segments:
             return
         expected = {segment.segment_id for segment in segments}
@@ -488,15 +499,28 @@ class ScriptArchitectAgent(Agent):
         ]
         covered = set(scene_segment_ids)
         missing = sorted(expected - covered)
-        redundant = sorted(
-            segment_id
-            for segment_id in expected
-            if scene_segment_ids.count(segment_id) > 1
-        )
         if missing:
             logger.warning("Storyboard missing source segments: %s", ", ".join(missing))
-        if redundant:
-            logger.warning("Storyboard redundantly covers source segments: %s", ", ".join(redundant))
+
+        beat_ids = [
+            beat.beat_id
+            for scene in scenes
+            for beat in getattr(scene, "source_beats", []) or []
+        ]
+        duplicated = sorted({b for b in beat_ids if beat_ids.count(b) > 1})
+        if duplicated:
+            logger.warning(
+                "Beats duplicated across scenes (content repeated): %s",
+                ", ".join(duplicated),
+            )
+
+        if covered:
+            logger.info(
+                "Segment coverage: %d/%d segments across %d scenes "
+                "(avg %.1f scenes/segment).",
+                len(covered), len(expected), len(scenes),
+                len(scene_segment_ids) / max(len(covered), 1),
+            )
 
     @classmethod
     def _is_text_only_intent(cls, intent: VisualIntent) -> bool:
@@ -946,10 +970,17 @@ Return JSON in this EXACT shape:
             if not title:
                 title = data.get("title") or ""
 
-            local_to_global: Dict[str, str] = {}
             pending_beats = data.get("beats")
             if not isinstance(pending_beats, list):
                 continue
+
+            # Pass 1 — keep the usable beats and pre-assign global ids so
+            # forward references WITHIN the segment resolve too (the old
+            # incremental map only saw beats already processed, leaking
+            # "unknown or forward beat" warnings from the schema validator).
+            usable: List[Dict[str, Any]] = []
+            local_to_global: Dict[str, str] = {}
+            next_index = len(all_beats) + 1
             for raw in pending_beats:
                 if not isinstance(raw, dict):
                     continue
@@ -960,10 +991,20 @@ Return JSON in this EXACT shape:
                         segment.segment_id,
                     )
                     continue
+                local_id = str(raw.get("beat_id") or f"__auto_{next_index}")
+                local_to_global[local_id] = f"beat_{next_index:03d}"
+                usable.append(raw)
+                next_index += 1
 
+            # Pass 2 — build beats, resolving refs against this segment's map
+            # plus all previously emitted global ids. Anything else is a
+            # hallucinated / cross-segment-unknowable id: drop it here at
+            # DEBUG so the VideoScript validator's WARNING only fires for
+            # genuine anomalies.
+            known_global_ids = {b.beat_id for b in all_beats}
+            for raw in usable:
                 local_id = str(raw.get("beat_id") or "")
-                global_id = f"beat_{len(all_beats) + 1:03d}"
-                local_to_global[local_id] = global_id
+                global_id = local_to_global.get(local_id) or f"beat_{len(all_beats) + 1:03d}"
 
                 concepts = [
                     canonical
@@ -974,11 +1015,20 @@ Return JSON in this EXACT shape:
                     if concept not in covered_concepts:
                         covered_concepts.append(concept)
 
-                refs = [
-                    local_to_global.get(str(ref), str(ref))
-                    for ref in (raw.get("references_prior_beats") or [])
-                    if isinstance(ref, str)
-                ]
+                refs: List[str] = []
+                for ref in (raw.get("references_prior_beats") or []):
+                    if not isinstance(ref, str):
+                        continue
+                    resolved = local_to_global.get(ref) or (ref if ref in known_global_ids else None)
+                    # Keep only *backward* references — a forward ref would be
+                    # dropped (with a WARNING) by the VideoScript validator.
+                    if resolved and resolved < global_id:
+                        refs.append(resolved)
+                    else:
+                        logger.debug(
+                            "Segment %s: dropping unresolvable/forward beat reference %r.",
+                            segment.segment_id, ref,
+                        )
                 visual_hint = raw.get("visual_hint")
                 if not isinstance(visual_hint, str):
                     visual_hint = ""
@@ -986,7 +1036,7 @@ Return JSON in this EXACT shape:
                 try:
                     all_beats.append(Beat(
                         beat_id=global_id,
-                        narration=narration,
+                        narration=raw["narration"],
                         visual_hint=visual_hint,
                         introduces_concepts=concepts,
                         references_prior_beats=refs,

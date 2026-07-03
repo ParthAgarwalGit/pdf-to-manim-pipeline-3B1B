@@ -304,6 +304,12 @@ def convert(
                 success_rate = (manifest.successful_scenes / manifest.total_scenes) * 100
                 click.echo(f"  Success Rate:     {success_rate:.1f}%")
             click.echo(f"  Status:           {manifest.status}")
+            if manifest.warning_count:
+                click.echo(click.style(
+                    f"  Warnings:         {manifest.warning_count} "
+                    f"(see {Path(manifest.output_directory) / 'warnings.log'})",
+                    fg="yellow",
+                ))
             click.echo()
 
             # Display cost information
