@@ -969,6 +969,25 @@ class VideoQualityReviewerAgent(Agent):
                     ),
                 ))
 
+            if report.edge_clipped:
+                findings.append(VideoQualityFinding(
+                    issue="Content appears clipped at the frame edge.",
+                    suspected_stage="animation_generator",
+                    severity="medium",
+                    scene_id=scene_id,
+                    evidence=(
+                        f"Keyframes {report.edge_clipped_indices} concentrate "
+                        f"{max(report.border_ink_fractions):.0%} of their ink in the "
+                        "outer margin band — objects are likely extending past the frame."
+                    ),
+                    suggested_fix="Keep every object inside the safe area (|x| <= 6.5, |y| <= 3.5); scale groups to fit before placing.",
+                    llm_direction=(
+                        "Part of the scene extends beyond the visible frame. Apply the "
+                        "frame guard: scale any VGroup to fit width 12 / height 6.5 and "
+                        "re-position it inside the safe area before animating."
+                    ),
+                ))
+
             if report.is_static and not report.mostly_empty:
                 findings.append(VideoQualityFinding(
                     issue="Scene appears static — all sampled keyframes are nearly identical.",

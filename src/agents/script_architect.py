@@ -135,14 +135,23 @@ _PRIMITIVE_TO_OBJECT_TYPE = {
 }
 
 
+# Manim safe area (frame is x ∈ [-7.1, 7.1], y ∈ [-4.0, 4.0]; margin keeps
+# content off the bezel). Plan bboxes are clamped into this box.
+SAFE_X, SAFE_Y = 6.5, 3.5
+
+
 def _coerce_visual_object(raw: Any) -> Any:
-    """Backfill the required ``object_type`` / ``content`` fields when omitted.
+    """Backfill required fields and clamp the bbox into the safe area.
 
     The visual planner often emits an object with primitive/args/bbox/interval
     but no ``object_type`` and no ``content`` — both required by
     ``MathematicalObject``. Infer object_type from the primitive (or render_hint)
     and pull content from the tex/text args, so the object validates instead of
     dropping the whole scene to the deterministic fallback.
+
+    Screen-space guard: planners occasionally place centres outside the frame
+    or emit frame-sized boxes; clamp centre into ±(SAFE_X, SAFE_Y) and cap
+    w/h to the frame so nothing is planned off-screen.
     """
     if not isinstance(raw, dict):
         return raw
@@ -157,7 +166,62 @@ def _coerce_visual_object(raw: Any) -> Any:
     if o.get("content") in (None, ""):
         args = o.get("args") if isinstance(o.get("args"), dict) else {}
         o["content"] = args.get("tex") or args.get("text") or o.get("notation_key") or ""
+
+    bbox = o.get("bbox")
+    if isinstance(bbox, dict):
+        b = dict(bbox)
+        try:
+            if isinstance(b.get("w"), (int, float)):
+                b["w"] = min(float(b["w"]), 2 * SAFE_X)
+            if isinstance(b.get("h"), (int, float)):
+                b["h"] = min(float(b["h"]), 2 * SAFE_Y)
+            if isinstance(b.get("x"), (int, float)):
+                b["x"] = max(-SAFE_X, min(SAFE_X, float(b["x"])))
+            if isinstance(b.get("y"), (int, float)):
+                b["y"] = max(-SAFE_Y, min(SAFE_Y, float(b["y"])))
+            o["bbox"] = b
+        except (TypeError, ValueError):
+            pass
     return o
+
+
+def _intervals_overlap(a: Optional[Any], b: Optional[Any]) -> bool:
+    """Whether two visibility windows intersect (missing window = always on)."""
+    if a is None or b is None:
+        return True
+    return a.t_in < b.t_out and b.t_in < a.t_out
+
+
+def _resolve_bbox_overlaps(objs: List[Any], iterations: int = 4) -> None:
+    """Deterministically nudge time-overlapping planned bboxes apart.
+
+    The useful core of the retired (x, y, t) validator, without its LLM retry
+    loop: for each pair of objects visible at the same time whose boxes
+    intersect, push the SECOND one along the axis of least penetration and
+    clamp back into the safe area. A few sweeps resolve typical plans; hard
+    cases are left for the LayoutTracker at render time.
+    """
+    timed = [o for o in objs if o.bbox is not None]
+    for _ in range(iterations):
+        moved = False
+        for i in range(len(timed)):
+            for j in range(i + 1, len(timed)):
+                a, b = timed[i], timed[j]
+                if not _intervals_overlap(a.interval, b.interval):
+                    continue
+                dx = (a.bbox.w + b.bbox.w) / 2 - abs(a.bbox.x - b.bbox.x)
+                dy = (a.bbox.h + b.bbox.h) / 2 - abs(a.bbox.y - b.bbox.y)
+                if dx <= 0 or dy <= 0:
+                    continue  # no spatial intersection
+                if dx <= dy:  # push along x (smaller penetration)
+                    direction = 1.0 if b.bbox.x >= a.bbox.x else -1.0
+                    b.bbox.x = max(-SAFE_X, min(SAFE_X, b.bbox.x + direction * (dx + 0.1)))
+                else:
+                    direction = 1.0 if b.bbox.y >= a.bbox.y else -1.0
+                    b.bbox.y = max(-SAFE_Y, min(SAFE_Y, b.bbox.y + direction * (dy + 0.1)))
+                moved = True
+        if not moved:
+            return
 
 
 def _validate_items(items: Any, model: Any) -> list:
@@ -536,6 +600,9 @@ class ScriptArchitectAgent(Agent):
     # forward re-creates the clutter problem in the next scene; the anchor
     # visual plus a label or two is what makes the cut feel continuous.
     MAX_CARRY_OVER_OBJECTS = 3
+    # Hard cap on planned objects per vignette scene — a real run averaged
+    # 16.7 objects/scene, which drove both the overlaps and the text walls.
+    MAX_OBJECTS_PER_SCENE = 7
 
     @classmethod
     def _derive_carry_out_ids(cls, objs: List[MathematicalObject]) -> List[str]:
@@ -731,7 +798,10 @@ class ScriptArchitectAgent(Agent):
             "a slideshow. At least ONE object MUST be a non-text primitive "
             "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
             "that visually DEPICTS the concept. Text/MathTex are for labels and "
-            "the key formula only — never the whole scene.\n\n"
+            "the key formula only — never the whole scene.\n"
+            "AT MOST 7 objects total — a short scene with 16 objects is an "
+            "unreadable collage. One anchor visual + a few labels beats many "
+            "competing shapes.\n\n"
             f"{archetype_block}"
             "LAYOUT (x, y, t):\n"
             "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
@@ -798,6 +868,19 @@ class ScriptArchitectAgent(Agent):
                 "Visual-intent objects all failed validation; using fallback."
             )
             return self._generate_fallback_visual_intent(fallback_narration)
+
+        # Clutter guard: a vignette can't hold 16 objects (the overlap engine
+        # of a real run). Keep the earliest-appearing MAX_OBJECTS_PER_SCENE.
+        if len(objs) > self.MAX_OBJECTS_PER_SCENE:
+            logger.warning(
+                "Visual intent planned %d objects; keeping the first %d by t_in.",
+                len(objs), self.MAX_OBJECTS_PER_SCENE,
+            )
+            objs.sort(key=lambda o: o.interval.t_in if o.interval else 0.0)
+            objs = objs[: self.MAX_OBJECTS_PER_SCENE]
+
+        # Deterministic de-overlap of the planned layout (time-aware).
+        _resolve_bbox_overlaps(objs)
 
         trans = _validate_items(raw_trans, Transformation)
         beats = _validate_items(raw_beats, VisualBeat)

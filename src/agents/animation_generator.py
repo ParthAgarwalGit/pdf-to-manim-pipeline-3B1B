@@ -347,6 +347,12 @@ RULES:
 7. Angle arcs: position the arc at the ACTUAL VERTEX of the shape using
    `.shift(vertex_point)`, then register it, then place_label the θ symbol
    anchored to the arc.  This keeps the angle annotation touching the shape.
+8. FRAME GUARD — after composing any VGroup or calling .arrange(...), clamp it:
+       if group.width > 12: group.scale_to_fit_width(12)
+       if group.height > 6.5: group.scale_to_fit_height(6.5)
+   then re-position it inside the safe area (|x| <= 6.5, |y| <= 3.5). Nothing
+   may extend past the frame edge at any point of the animation, including
+   mid-shift positions.
 
 ═══════════════════════  PI CHARACTERS  ═══════════════════════
 If and only if the storyboard intent includes a `pi_creature` object or a
