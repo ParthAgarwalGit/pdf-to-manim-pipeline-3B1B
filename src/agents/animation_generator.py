@@ -391,6 +391,19 @@ design, not a loose suggestion:
 When an object has no `primitive`, fall back to the type/content and choose the
 most visually intuitive Manim primitive yourself.
 
+═══════════════════════  GEOMETRIC ANCHORING (NO MENTAL MATH)  ═══════════════
+An endpoint that refers to another object may NEVER be a hardcoded coordinate.
+Eyeballed numbers land midway or in the wrong direction. Helpers are imported:
+- Arrow/line BETWEEN two objects  ->  connect(obj_a, obj_b)
+- A point ON axes                 ->  on_axes(axes, x, y)  (never guess pixels)
+- Distance point-to-line/plane    ->  drop_perpendicular(dot, line) — computes
+  the TRUE projected foot and adds the right-angle tick. NEVER draw this with
+  a hand-placed DashedLine.
+- The projection point itself     ->  perpendicular_foot(p, line_start, line_end)
+- Anchoring to a part of an object -> obj.get_center() / get_top() / get_corner(UR)
+Hardcoded coordinates are ONLY acceptable for free-standing placement of a
+single object (its move_to position from the plan).
+
 ═══════════════════════  SCENE ENDING (CONTINUITY)  ═══════════════════════
 `carry_out` in the scene data lists object ids that MUST still be visible when
 this scene ends — the NEXT scene begins from exactly that arrangement:
@@ -960,6 +973,7 @@ Generated: {datetime.now().isoformat()}
             "from src.utils.pi_characters import create_character_for_role, create_character_lineup, create_pi_teacher, create_pi_students, create_speech_bubble",
             "from src.utils.animation_patterns import progressive_write, dim_and_focus, staged_transform, execute_animation_steps",
             "from src.utils.layout_tracker import LayoutTracker",
+            "from src.utils.geometry_helpers import connect, drop_perpendicular, on_axes, perpendicular_foot",
         ]
 
     def _emit_primitive(self, var_name: str, obj_data: dict) -> str:

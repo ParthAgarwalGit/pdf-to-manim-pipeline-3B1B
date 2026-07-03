@@ -235,6 +235,12 @@ class ManimCodeValidatorAgent(Agent):
         if syntax_ok:
             imports_ok = self._check_imports(full_source, errors, warnings)
 
+        # 3b. Geometry-anchoring lint (warnings only): connectors whose BOTH
+        # endpoints are hardcoded literals drift off-target — they should be
+        # anchored via connect()/get_center()/on_axes()/drop_perpendicular().
+        if syntax_ok:
+            self._check_geometry_anchoring(full_source, warnings)
+
         # 4. Dry Run (optional, only if previous checks passed)
         dry_run_ok = None
         if dry_run and syntax_ok and security_ok and imports_ok:
@@ -265,6 +271,52 @@ class ManimCodeValidatorAgent(Agent):
         except SyntaxError as e:
             errors.append(f"SyntaxError at line {e.lineno}: {e.msg}")
             return False
+
+    _CONNECTOR_CLASSES = {"Arrow", "Line", "DashedLine", "DoubleArrow"}
+
+    def _check_geometry_anchoring(self, source: str, warnings: List[str]) -> None:
+        """Warn on connector mobjects whose both endpoints are numeric literals.
+
+        ``Arrow(start=[2.5, -1.7, 0], end=[3.0, -1.58, 0])`` is the signature
+        of the LLM doing endpoint arithmetic in its head — a real run showed
+        such arrows ending midway or in the wrong direction. Anchored forms
+        (``connect(a, b)``, ``obj.get_center()``, ``on_axes(...)``) are exempt
+        because their endpoints are expressions, not literals.
+        """
+        def is_literal_point(node: ast.AST) -> bool:
+            if isinstance(node, (ast.List, ast.Tuple)):
+                return all(
+                    isinstance(el, ast.Constant)
+                    or (isinstance(el, ast.UnaryOp) and isinstance(el.operand, ast.Constant))
+                    for el in node.elts
+                )
+            return False
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return
+
+        flagged: List[str] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id not in self._CONNECTOR_CLASSES:
+                continue
+            endpoints = list(node.args[:2])
+            for kw in node.keywords:
+                if kw.arg in ("start", "end"):
+                    endpoints.append(kw.value)
+            if len(endpoints) >= 2 and all(is_literal_point(e) for e in endpoints[:2]):
+                flagged.append(f"{node.func.id} at line {node.lineno}")
+
+        if flagged:
+            warnings.append(
+                "Hardcoded connector endpoints (drift off-target): "
+                + ", ".join(flagged[:5])
+                + ". Anchor endpoints to objects via connect(a, b), "
+                "obj.get_center(), on_axes(axes, x, y), or drop_perpendicular()."
+            )
 
     def _check_security(self, source: str, errors: List[str]) -> bool:
         """Reject imports and constructs a Manim scene has no business using.
