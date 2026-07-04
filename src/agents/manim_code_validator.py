@@ -12,6 +12,7 @@ can send it back to the Animation Generator for retry.
 import ast
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -219,6 +220,18 @@ class ManimCodeValidatorAgent(Agent):
         errors: List[str] = []
         warnings: List[str] = []
 
+        # 0. Deterministic LaTeX gate — a text-mode Tex() carrying math tokens
+        # dies in the LaTeX subprocess ("Missing $ inserted") and costs the
+        # whole scene at render time (14% of a real run's video). Auto-fix the
+        # fixable class in place; reject the unfixable class into the
+        # regeneration loop. Zero LLM cost.
+        fixed_code, tex_notes, tex_errors = self._fix_tex_math_mode(code_obj.code)
+        if fixed_code != code_obj.code:
+            code_obj.code = fixed_code  # propagates to persistence/render
+        warnings.extend(tex_notes)
+        errors.extend(tex_errors)
+        latex_ok = not tex_errors
+
         # Reconstruct full source
         full_source = "\n".join(code_obj.imports) + "\n\n" + code_obj.code
 
@@ -247,7 +260,7 @@ class ManimCodeValidatorAgent(Agent):
             dry_run_ok = self._check_dry_run(full_source, scene_id, errors)
 
         passed = (
-            syntax_ok and security_ok and imports_ok
+            syntax_ok and security_ok and imports_ok and latex_ok
             and (dry_run_ok is None or dry_run_ok)
         )
         return ValidationResult(
@@ -260,6 +273,130 @@ class ManimCodeValidatorAgent(Agent):
             errors=errors,
             warnings=warnings,
         )
+
+    # ------------------------------------------------------------------
+    # Deterministic LaTeX gate
+    # ------------------------------------------------------------------
+
+    # Math-only macros that make text-mode LaTeX abort with "Missing $
+    # inserted". `_` and `^` are matched separately below.
+    _MATH_MACROS = re.compile(
+        r"\\(frac|sum|int|prod|lim|cdot|times|sqrt|infty|pm|mp|leq?|geq?|neq"
+        r"|approx|equiv|sim|propto|vec|hat|bar|tilde|alpha|beta|gamma|delta"
+        r"|epsilon|varepsilon|theta|lambda|mu|nu|rho|sigma|tau|phi|varphi"
+        r"|omega|Gamma|Delta|Theta|Lambda|Sigma|Phi|Omega|partial|nabla"
+        r"|rightarrow|Rightarrow|mapsto|in|subset|subseteq|cup|cap|forall"
+        r"|exists|langle|rangle|mathbb|mathbf|mathrm|operatorname)\b"
+    )
+
+    @staticmethod
+    def _outside_math_spans(s: str) -> str:
+        """The parts of a Tex string OUTSIDE its $...$ math spans."""
+        return re.sub(r"(?<!\\)\$.*?(?<!\\)\$", " ", s)
+
+    def _fix_tex_math_mode(self, code: str):
+        """Auto-fix / reject Tex() strings that would abort LaTeX at render.
+
+        Returns ``(possibly_fixed_code, notes, errors)``:
+          - Tex("...") with math tokens and NO $ spans → whole string wrapped
+            in $...$ (rewritten in place as a raw literal) — compiles instead
+            of killing the scene.
+          - Any Tex/MathTex string with an unbalanced $ → error (rejected into
+            the regeneration loop; no safe mechanical fix).
+          - Tex mixing $-spans WITH math tokens outside them → error (the safe
+            span boundaries are ambiguous; the regenerator gets told exactly
+            what to do).
+        Only static string literals are checked; f-strings are left alone.
+        """
+        notes: List[str] = []
+        errors: List[str] = []
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return code, notes, errors  # the syntax check will report it
+
+        replacements = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            name = node.func.id
+            if name not in ("Tex", "MathTex"):
+                continue
+            if (
+                not node.args
+                or not isinstance(node.args[0], ast.Constant)
+                or not isinstance(node.args[0].value, str)
+            ):
+                continue
+            snode = node.args[0]
+            value = snode.value
+
+            unescaped_dollars = len(re.findall(r"(?<!\\)\$", value))
+            if unescaped_dollars % 2 == 1:
+                errors.append(
+                    f"LaTeX gate: {name} at line {node.lineno} has an unbalanced "
+                    f"'$' in {value!r} — LaTeX will abort. Balance the $-span or "
+                    "escape the dollar sign as \\$."
+                )
+                continue
+
+            if name != "Tex":
+                continue  # MathTex is already math mode
+
+            outside = self._outside_math_spans(value)
+            has_math = bool(re.search(r"(?<!\\)[_^]", outside)) or bool(
+                self._MATH_MACROS.search(outside)
+            )
+            if not has_math:
+                continue
+
+            if unescaped_dollars > 0:
+                errors.append(
+                    f"LaTeX gate: Tex at line {node.lineno} mixes $-spans with "
+                    f"math tokens OUTSIDE them ({value!r}). Move all math inside "
+                    "$...$ or convert the call to MathTex."
+                )
+                continue
+
+            new_value = f"${value}$"
+            if "\n" in new_value:
+                errors.append(
+                    f"LaTeX gate: Tex at line {node.lineno} contains math tokens "
+                    "in a multi-line string — wrap the math in $...$ or use MathTex."
+                )
+                continue
+            if '"' not in new_value:
+                new_literal = 'r"' + new_value + '"'
+            elif "'" not in new_value:
+                new_literal = "r'" + new_value + "'"
+            else:
+                errors.append(
+                    f"LaTeX gate: Tex at line {node.lineno} needs math mode but "
+                    "mixes both quote characters — rewrite it with MathTex."
+                )
+                continue
+            replacements.append((snode, new_literal))
+
+        if not replacements:
+            return code, notes, errors
+
+        # Splice by absolute offsets, last-to-first so positions stay valid.
+        lines = code.splitlines(keepends=True)
+        line_start = [0]
+        for ln in lines:
+            line_start.append(line_start[-1] + len(ln))
+        text = "".join(lines)
+        for snode, new_literal in sorted(
+            replacements, key=lambda t: (t[0].lineno, t[0].col_offset), reverse=True
+        ):
+            a = line_start[snode.lineno - 1] + snode.col_offset
+            b = line_start[snode.end_lineno - 1] + snode.end_col_offset
+            notes.append(
+                f"LaTeX gate: auto-wrapped math-mode Tex at line {snode.lineno}: "
+                f"{text[a:b]} -> {new_literal}"
+            )
+            text = text[:a] + new_literal + text[b:]
+        return text, notes, errors
 
     # ------------------------------------------------------------------
 

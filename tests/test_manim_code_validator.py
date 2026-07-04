@@ -127,3 +127,67 @@ class TestSecurityGate:
         for line in agent._get_imports():
             root = line.replace("from ", "").replace("import ", "").split(".")[0].split()[0]
             assert root in ALLOWED_IMPORT_ROOTS, f"generated import root {root!r} not allowed"
+
+
+class TestLatexGate:
+    """Deterministic LaTeX gate: text-mode Tex() carrying math tokens dies in
+    the LaTeX subprocess at render time (14% of a real run's video). Fixable
+    cases are rewritten in place; ambiguous ones reject into regeneration."""
+
+    def _validate(self, body: str):
+        agent = ManimCodeValidatorAgent()
+        obj = make_code_obj(
+            "class TestScene(Scene):\n    def construct(self):\n" + body
+        )
+        result = agent.execute(ManimValidatorInput(animation_code_objects=[obj]))
+        return result, obj
+
+    def test_mathy_tex_is_auto_wrapped_and_passes(self):
+        result, obj = self._validate(
+            '        t = Tex("|a_j|^2 = \\sum_i (a_j \\cdot v_i)^2")\n'
+        )
+        assert isinstance(result, ManimValidatorOutput)
+        assert 'r"$' in obj.code and '$"' in obj.code  # wrapped in math mode
+        assert any("LaTeX gate: auto-wrapped" in w for w in result.results[0].warnings)
+
+    def test_plain_prose_tex_untouched(self):
+        body = '        t = Tex("Greedy build-up of best-fit subspaces")\n'
+        result, obj = self._validate(body)
+        assert isinstance(result, ManimValidatorOutput)
+        assert "$" not in obj.code
+
+    def test_balanced_span_tex_untouched(self):
+        body = '        t = Tex(r"the slope $m$ of the line")\n'
+        result, obj = self._validate(body)
+        assert isinstance(result, ManimValidatorOutput)
+        assert obj.code.count("$") == 2
+
+    def test_unbalanced_dollar_rejected(self):
+        result, _ = self._validate('        t = Tex(r"cost is $5 per unit")\n')
+        assert isinstance(result, ManimValidatorFailure)
+        assert any("unbalanced" in e for e in result.results[0].errors)
+
+    def test_mixed_spans_and_outside_math_rejected(self):
+        result, _ = self._validate(
+            '        t = Tex(r"$x$ squared is x^2 always")\n'
+        )
+        assert isinstance(result, ManimValidatorFailure)
+        assert any("OUTSIDE" in e for e in result.results[0].errors)
+
+    def test_mathtex_left_alone(self):
+        body = '        t = MathTex(r"\\sum_i a_i^2")\n'
+        result, obj = self._validate(body)
+        assert isinstance(result, ManimValidatorOutput)
+        assert "$" not in obj.code
+
+    def test_fixed_code_still_syntactically_valid(self):
+        import ast as _ast
+        _, obj = self._validate(
+            '        a = Tex("x_1 + x_2")\n        b = Tex("y^3")\n'
+        )
+        _ast.parse(obj.code)  # must not raise
+
+    def test_subscript_macro_detection(self):
+        result, obj = self._validate('        t = Tex(r"\\frac{a}{b} of the total")\n')
+        assert isinstance(result, ManimValidatorOutput)
+        assert obj.code.count("$") == 2  # wrapped
