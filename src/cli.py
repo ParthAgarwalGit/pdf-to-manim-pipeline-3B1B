@@ -300,9 +300,23 @@ def convert(
             click.echo(f"  Total Scenes:     {manifest.total_scenes}")
             click.echo(f"  Successful:       {manifest.successful_scenes}")
             click.echo(f"  Failed:           {manifest.total_scenes - manifest.successful_scenes}")
+            delivered = getattr(manifest, "delivered_scenes", None)
+            lost = getattr(manifest, "lost_scenes", None)
+            if isinstance(delivered, int):
+                click.echo(f"  Delivered:        {delivered} (in the final video)")
+                if isinstance(lost, list) and lost:
+                    click.echo(click.style(
+                        f"  Lost Scenes:      {len(lost)} "
+                        f"({', '.join(lost[:5])}"
+                        f"{', ...' if len(lost) > 5 else ''})",
+                        fg="yellow",
+                    ))
             if manifest.total_scenes > 0:
-                success_rate = (manifest.successful_scenes / manifest.total_scenes) * 100
-                click.echo(f"  Success Rate:     {success_rate:.1f}%")
+                effective = (
+                    delivered if isinstance(delivered, int)
+                    else manifest.successful_scenes
+                )
+                click.echo(f"  Success Rate:     {effective / manifest.total_scenes * 100:.1f}%")
             click.echo(f"  Status:           {manifest.status}")
             if manifest.warning_count:
                 click.echo(click.style(

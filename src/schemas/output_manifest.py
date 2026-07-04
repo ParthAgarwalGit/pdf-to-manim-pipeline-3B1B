@@ -171,6 +171,17 @@ class OutputManifest(BaseModel):
         description="Number of WARNING+ log records captured during the run "
                     "(persisted to warnings.log in the output directory)"
     )
+    delivered_scenes: Optional[int] = Field(
+        default=None,
+        description="Scenes that made it into the rendered video (None when "
+                    "rendering was skipped). successful_scenes only counts "
+                    "code generation; this is the honest delivery number."
+    )
+    lost_scenes: List[str] = Field(
+        default_factory=list,
+        description="scene_ids that generated code but failed to render and "
+                    "could not be salvaged — missing from the final video"
+    )
     
     @field_validator('status')
     @classmethod
