@@ -1130,13 +1130,13 @@ def test_animation_prompt_carries_planned_primitive_and_position(monkeypatch):
 
 
 # ============================================================================
-# Visual-first timing: _enforce_duration is a floor, not a narration quota
+# Duration sync (P1.4): distribute slack across existing waits, no freeze-tail
 # ============================================================================
 
 
-def test_enforce_duration_leaves_visually_rich_scene_untouched():
-    """A scene whose animation already clears the floor must be returned as-is
-    — no dead-air padding to stretch it toward narration length."""
+def test_slack_leaves_scene_already_at_target_untouched():
+    """A scene whose animation already reaches the audio length is returned
+    as-is — nothing to distribute, no freeze-frame to avoid."""
     agent = _agent_no_init()
     code = (
         "class S(Scene):\n"
@@ -1144,22 +1144,58 @@ def test_enforce_duration_leaves_visually_rich_scene_untouched():
         "        self.play(Create(c), run_time=5.0)\n"
         "        self.wait(2.0)\n"
         "        self.play(Transform(a, b), run_time=3.0)\n"
-    )  # total = 10.0s > floor
-    out = agent._enforce_duration(code, 8.0)
-    assert out == code
-    assert "floor padding" not in out
+    )  # total = 10.0s >= target
+    assert agent._distribute_duration_slack(code, 8.0) == code
 
 
-def test_enforce_duration_pads_only_up_to_floor():
-    """A too-short scene gets ONE small tail wait to reach the floor, and the
-    existing animation timings are left exactly as authored (no scaling)."""
+def test_slack_distributed_across_existing_waits():
+    """Slack is spread across the scene's waits (capped), not dumped as a
+    single tail freeze."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Write(a), run_time=1.0)\n"
+        "        self.wait(1.0)\n"
+        "        self.play(Write(b), run_time=1.0)\n"
+        "        self.wait(1.0)\n"
+    )  # total = 4.0s, two waits with 3s headroom each (cap 4.0)
+    out = agent._distribute_duration_slack(code, 10.0)  # gap = 6.0
+    import re
+    waits = [float(x) for x in re.findall(r"self\.wait\((\d+(?:\.\d+)?)\)", out)]
+    run_times = [float(x) for x in re.findall(r"run_time=(\d+(?:\.\d+)?)", out)]
+    total = sum(waits) + sum(run_times)
+    assert abs(total - 10.0) < 0.3          # reaches the audio length
+    assert all(w <= agent.MAX_SINGLE_WAIT + 0.05 for w in waits)  # capped
+    assert len(waits) >= 2 and max(waits) > 1.0  # spread, not one giant tail
+
+
+def test_slack_caps_then_uses_tail_for_residual():
+    """When existing waits can't absorb all the slack (hit the cap), the
+    remainder goes to a single bounded tail wait."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Write(a), run_time=1.0)\n"
+        "        self.wait(1.0)\n"
+    )  # one wait, 3s headroom; total 2s
+    out = agent._distribute_duration_slack(code, 20.0)  # gap 18 >> capacity 3
+    assert "duration sync tail" in out
+    import re
+    total = sum(float(x) for x in re.findall(r"self\.wait\((\d+(?:\.\d+)?)\)", out))
+    total += 1.0  # run_time
+    assert abs(total - 20.0) < 0.3
+
+
+def test_slack_no_waits_appends_single_tail():
+    """A scene with zero waits gets one tail wait (the only available lever)."""
     agent = _agent_no_init()
     code = (
         "class S(Scene):\n"
         "    def construct(self):\n"
         "        self.play(Write(t), run_time=2.0)\n"
     )
-    out = agent._enforce_duration(code, 8.0)
+    out = agent._distribute_duration_slack(code, 8.0)
     assert "self.wait(6.0)" in out
-    assert "floor padding" in out
-    assert "run_time=2.0" in out  # original animation untouched, not stretched
+    assert "run_time=2.0" in out  # original animation untouched

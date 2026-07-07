@@ -489,11 +489,11 @@ with your manually-computed running total.
 
             raw_code = response.content[0].text
             cleaned = self._clean_llm_code(raw_code, class_name)
-            # Visual-first: only guarantee the minimum floor. We deliberately do
-            # NOT stretch the scene up to narration length — that inflated
-            # visuals with dead-air waits. Narration is fit to the visuals by
-            # the composer, not the other way round.
-            return self._enforce_duration(cleaned, self.MIN_SCENE_SECONDS)
+            # Duration sync (P1.4): grow the video to the narration/audio
+            # length (floored at MIN_SCENE_SECONDS) by distributing the slack
+            # across existing waits, so the composer never has to freeze the
+            # tail. target_duration already = max(min_seconds, narration_seconds).
+            return self._distribute_duration_slack(cleaned, target_duration)
 
         except Exception as e:
             import logging
@@ -642,31 +642,62 @@ with your manually-computed running total.
             "for any equation that mentions one of these variables.\n"
         )
 
-    def _enforce_duration(self, code: str, min_seconds: float) -> str:
-        """Guarantee a scene runs at least ``min_seconds`` — nothing more.
+    MAX_SINGLE_WAIT = 4.0  # cap per pause so no single wait becomes dead air
 
-        Visual-first policy: we sum every numeric ``run_time=X`` and
-        ``self.wait(X)`` in the code and, ONLY if the total falls under the
-        floor, append a single small tail wait to reach it. We never scale a
-        scene UP to match narration length — that was the old behaviour and it
-        inflated visually-rich scenes with dead-air waits, producing long,
-        static videos. A scene whose animation already clears the floor is
-        returned untouched so the visuals set the pace.
+    def _distribute_duration_slack(self, code: str, target_seconds: float) -> str:
+        """Grow a short scene to ``target_seconds`` by DISTRIBUTING the slack
+        across its existing ``self.wait()`` calls — not by freezing the tail.
+
+        Duration sync by construction (P1.4): the composed scene runs
+        ``max(video, narration_audio)`` seconds. When the video is shorter, the
+        composer holds the final frame for the remainder — a "static scene"
+        (58 sync findings + much of the static-frame population in a real run).
+        Here ``target_seconds`` is the narration/audio length; we spread the
+        missing time across the pauses already in the code so those seconds
+        read as breathing room between reveals. Each wait is capped at
+        ``MAX_SINGLE_WAIT`` so no single pause dominates; any residual goes to
+        one bounded tail wait. A scene already at/over target is left untouched.
         """
         import re as _re3
 
-        total = 0.0
-        for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', code):
-            total += float(m.group(1))
-        for m in _re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code):
-            total += float(m.group(1))
+        run_time_total = sum(
+            float(m.group(1)) for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', code)
+        )
+        wait_matches = list(_re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code))
+        total = run_time_total + sum(float(m.group(1)) for m in wait_matches)
 
-        gap = round(min_seconds - total, 1)
+        gap = round(target_seconds - total, 1)
         if gap <= 0.5:
-            return code  # visuals already fill the floor — leave the pacing alone
+            return code  # already fills the audio — no freeze-frame to avoid
 
+        if wait_matches:
+            # Absorb the gap into existing waits up to the per-wait cap,
+            # proportional to each wait's remaining headroom.
+            headrooms = [
+                max(0.0, self.MAX_SINGLE_WAIT - float(m.group(1))) for m in wait_matches
+            ]
+            capacity = sum(headrooms)
+            absorbed = min(gap, capacity)
+            adds = [
+                (absorbed * (hr / capacity)) if capacity > 0 else 0.0
+                for hr in headrooms
+            ]
+            new_code = code
+            for m, add in sorted(
+                zip(wait_matches, adds), key=lambda t: t[0].start(), reverse=True
+            ):
+                new_val = round(float(m.group(1)) + add, 1)
+                new_code = new_code[:m.start()] + f"self.wait({new_val})" + new_code[m.end():]
+            remaining = round(gap - absorbed, 1)
+            if remaining > 0.5:
+                lines = new_code.rstrip().split("\n")
+                lines.append(f"        self.wait({remaining})  # duration sync tail")
+                new_code = "\n".join(lines) + "\n"
+            return new_code
+
+        # No existing waits — a single bounded tail wait is the only lever.
         lines = code.rstrip().split("\n")
-        lines.append(f"        self.wait({gap})  # floor padding to {min_seconds}s")
+        lines.append(f"        self.wait({gap})  # duration sync")
         return "\n".join(lines) + "\n"
 
     def _clean_llm_code(self, raw_code: str, class_name: str) -> str:
