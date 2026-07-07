@@ -1,5 +1,6 @@
 """Storyboard JSON schema for Script/Storyboard Architect."""
 
+import re
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -42,7 +43,16 @@ class Configuration(BaseModel):
         default="balanced",
         description="Source segmentation granularity (coarse|balanced|fine)"
     )
-    
+    target_minutes: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Requested finished-video length in minutes. When set, the scene "
+            "budget is derived from it so length is a chosen input rather than "
+            "an emergent property of document size. None = ungoverned."
+        ),
+    )
+
     @field_validator('verbosity')
     @classmethod
     def validate_verbosity(cls, v: str) -> str:
@@ -528,9 +538,18 @@ class Scene(BaseModel):
     @field_validator('scene_id')
     @classmethod
     def validate_scene_id(cls, v: str) -> str:
-        """Ensure scene_id is not empty."""
+        """Ensure scene_id is non-empty and filename-safe.
+
+        scene_id is LLM-influenced and later embedded in file paths
+        (scene_{scene_id}.py); path separators or dots would allow writes
+        outside the run directory (Windows resolves '..' lexically).
+        """
         if not v or not v.strip():
             raise ValueError("scene_id cannot be empty")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", v):
+            raise ValueError(
+                f"scene_id must contain only [A-Za-z0-9_-], got '{v}'"
+            )
         return v
 
     @field_validator('narration')

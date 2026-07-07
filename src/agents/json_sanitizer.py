@@ -6,6 +6,7 @@ automatic corrections for common violations before passing to Scene Controller.
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -195,6 +196,38 @@ class JSONSanitizerAgent(Agent):
                 description="Added missing optional field 'concept_hierarchy' with default empty list"
             ))
         
+        # Correction 3a: Normalize scene_ids to filename-safe characters.
+        # scene_id is LLM-influenced and ends up in file paths
+        # (scene_{scene_id}.py); the schema rejects anything outside
+        # [A-Za-z0-9_-], so fix it here for free instead of paying for a
+        # regeneration round-trip. Runs before dedup so normalized
+        # collisions still get suffixed.
+        if "scenes" in storyboard_dict and isinstance(storyboard_dict["scenes"], list):
+            for i, scene in enumerate(storyboard_dict["scenes"]):
+                if not (isinstance(scene, dict) and isinstance(scene.get("scene_id"), str)):
+                    continue
+                original_id = scene["scene_id"]
+                safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", original_id)
+                if safe_id != original_id:
+                    scene["scene_id"] = safe_id
+                    # Keep references consistent with the renamed scene.
+                    for other in storyboard_dict["scenes"]:
+                        deps = other.get("dependencies") if isinstance(other, dict) else None
+                        if isinstance(deps, list):
+                            other["dependencies"] = [
+                                safe_id if d == original_id else d for d in deps
+                            ]
+                    corrections.append(SanitizationCorrection(
+                        field_path=f"scenes[{i}].scene_id",
+                        violation_type="unsafe_scene_id",
+                        original_value=original_id,
+                        corrected_value=safe_id,
+                        description=(
+                            f"Replaced non-filename-safe characters in scene_id "
+                            f"'{original_id}' -> '{safe_id}'"
+                        )
+                    ))
+
         # Correction 3: Fix duplicate scene_ids
         if "scenes" in storyboard_dict and isinstance(storyboard_dict["scenes"], list):
             scene_ids = []

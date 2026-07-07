@@ -46,6 +46,15 @@ from src.utils.manim_engine_contract import build_visual_intent_contract_prompt,
 from src.utils.manim_primitives import catalog_for_prompt
 from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 
+# Per-task model tiering (see docs). The unified whole-document script — one call
+# per document that sets breadth coverage — runs on Claude Sonnet 5 (best
+# reasoning + instruction-following per dollar). The high-volume per-segment and
+# visual-intent calls run on the cheap gpt-5.4-mini tier: Pydantic schema
+# enforcement + retry are a safety net, so raw capability matters less there.
+UNIFIED_SCRIPT_MODEL = "claude-sonnet-5"   # Anthropic
+SEGMENT_SCRIPT_MODEL = "gpt-5.4-mini"      # OpenAI
+VISUAL_INTENT_MODEL = "gpt-5.4-mini"       # OpenAI
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +94,199 @@ def _canonicalize_concept(label: str) -> str:
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     return _CONCEPT_ALIASES.get(s, s)
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the JSON-object substring from an LLM text response.
+
+    OpenAI's ``response_format=json_object`` guarantees clean JSON, but Claude
+    returns free text — so strip ``` fences and slice from the first ``{`` to
+    the last ``}``. Returns the input unchanged when no object braces are found.
+    """
+    s = text.strip()
+    if s.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and any trailing fence.
+        s = s.strip("`").strip()
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return s[start:end + 1]
+    return s
+
+
+# Primitive -> canonical object_type, used to backfill the required
+# ``object_type`` field when the visual planner omits it (the #1 cause of
+# visual-intent schema failures — models emit primitive/args/bbox/interval but
+# drop object_type/content).
+_PRIMITIVE_TO_OBJECT_TYPE = {
+    "MathTex": "equation", "Tex": "equation",
+    "Text": "text", "DecimalNumber": "text",
+    "Axes": "axes", "NumberPlane": "axes", "NumberLine": "axes",
+    "Circle": "geometric_shape", "Square": "geometric_shape",
+    "Rectangle": "geometric_shape", "RoundedRectangle": "geometric_shape",
+    "Polygon": "geometric_shape", "Triangle": "geometric_shape",
+    "Line": "geometric_shape", "DashedLine": "geometric_shape",
+    "Arrow": "geometric_shape", "DoubleArrow": "geometric_shape",
+    "Vector": "geometric_shape", "Arc": "geometric_shape",
+    "Dot": "geometric_shape", "Ellipse": "geometric_shape",
+    "create_pi_teacher": "pi_creature", "create_pi_students": "pi_creature",
+    "create_speech_bubble": "pi_creature",
+}
+
+
+# Manim safe area (frame is x ∈ [-7.1, 7.1], y ∈ [-4.0, 4.0]; margin keeps
+# content off the bezel). Plan bboxes are clamped into this box.
+SAFE_X, SAFE_Y = 6.5, 3.5
+
+
+def _coerce_visual_object(raw: Any) -> Any:
+    """Backfill required fields and clamp the bbox into the safe area.
+
+    The visual planner often emits an object with primitive/args/bbox/interval
+    but no ``object_type`` and no ``content`` — both required by
+    ``MathematicalObject``. Infer object_type from the primitive (or render_hint)
+    and pull content from the tex/text args, so the object validates instead of
+    dropping the whole scene to the deterministic fallback.
+
+    Screen-space guard: planners occasionally place centres outside the frame
+    or emit frame-sized boxes; clamp centre into ±(SAFE_X, SAFE_Y) and cap
+    w/h to the frame so nothing is planned off-screen.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    o = dict(raw)
+    if not o.get("object_type"):
+        prim, hint = o.get("primitive"), o.get("render_hint")
+        o["object_type"] = (
+            _PRIMITIVE_TO_OBJECT_TYPE.get(prim)
+            or _PRIMITIVE_TO_OBJECT_TYPE.get(hint)
+            or ("geometric_shape" if prim else "text")
+        )
+    if o.get("content") in (None, ""):
+        args = o.get("args") if isinstance(o.get("args"), dict) else {}
+        o["content"] = args.get("tex") or args.get("text") or o.get("notation_key") or ""
+
+    bbox = o.get("bbox")
+    if isinstance(bbox, dict):
+        b = dict(bbox)
+        try:
+            if isinstance(b.get("w"), (int, float)):
+                b["w"] = min(float(b["w"]), 2 * SAFE_X)
+            if isinstance(b.get("h"), (int, float)):
+                b["h"] = min(float(b["h"]), 2 * SAFE_Y)
+            if isinstance(b.get("x"), (int, float)):
+                b["x"] = max(-SAFE_X, min(SAFE_X, float(b["x"])))
+            if isinstance(b.get("y"), (int, float)):
+                b["y"] = max(-SAFE_Y, min(SAFE_Y, float(b["y"])))
+            o["bbox"] = b
+        except (TypeError, ValueError):
+            pass
+    return o
+
+
+def _intervals_overlap(a: Optional[Any], b: Optional[Any]) -> bool:
+    """Whether two visibility windows intersect (missing window = always on)."""
+    if a is None or b is None:
+        return True
+    return a.t_in < b.t_out and b.t_in < a.t_out
+
+
+def _resolve_bbox_overlaps(objs: List[Any], iterations: int = 4) -> None:
+    """Deterministically nudge time-overlapping planned bboxes apart.
+
+    The useful core of the retired (x, y, t) validator, without its LLM retry
+    loop: for each pair of objects visible at the same time whose boxes
+    intersect, push the SECOND one along the axis of least penetration and
+    clamp back into the safe area. A few sweeps resolve typical plans; hard
+    cases are left for the LayoutTracker at render time.
+    """
+    timed = [o for o in objs if o.bbox is not None]
+    for _ in range(iterations):
+        moved = False
+        for i in range(len(timed)):
+            for j in range(i + 1, len(timed)):
+                a, b = timed[i], timed[j]
+                if not _intervals_overlap(a.interval, b.interval):
+                    continue
+                dx = (a.bbox.w + b.bbox.w) / 2 - abs(a.bbox.x - b.bbox.x)
+                dy = (a.bbox.h + b.bbox.h) / 2 - abs(a.bbox.y - b.bbox.y)
+                if dx <= 0 or dy <= 0:
+                    continue  # no spatial intersection
+                if dx <= dy:  # push along x (smaller penetration)
+                    direction = 1.0 if b.bbox.x >= a.bbox.x else -1.0
+                    b.bbox.x = max(-SAFE_X, min(SAFE_X, b.bbox.x + direction * (dx + 0.1)))
+                else:
+                    direction = 1.0 if b.bbox.y >= a.bbox.y else -1.0
+                    b.bbox.y = max(-SAFE_Y, min(SAFE_Y, b.bbox.y + direction * (dy + 0.1)))
+                moved = True
+        if not moved:
+            return
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _visual_intent_static_prompt() -> str:
+    """The byte-identical prefix of every visual-intent prompt.
+
+    OpenAI prefix caching only fires on identical leading tokens — the old
+    prompt put the (per-scene) narration FIRST, so ~45 planner calls per run
+    paid full price for the same ~2K-token contract every time. All static
+    content lives here, in one stable string; per-scene data is appended
+    after it.
+    """
+    engine_contract = build_visual_intent_contract_prompt()
+    catalog_block = catalog_for_prompt()
+    return (
+        "You are a 3Blue1Brown animation architect. You plan the visuals for "
+        "ONE scene of a longer video; the scene's narration and context follow "
+        "after these standing rules.\n\n"
+        f"{engine_contract}\n"
+        "CLOSED VOCABULARY:\n"
+        f"{catalog_block}\n\n"
+        "For every mathematical_object you emit, ALWAYS include these REQUIRED "
+        "fields: `object_type` (one of: equation, text, axes, graph, "
+        "geometric_shape, pi_creature) and `content` (the LaTeX/text string, "
+        "or \"\" for a pure shape). Then set `primitive` to one of "
+        "the MOBJECT names above and `args` to its kwargs. Free-form "
+        "`content` is ONLY permitted for MathTex / Tex / Text (where it "
+        "goes into the `tex` or `text` arg).\n\n"
+        "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
+        "a slideshow. At least ONE object MUST be a non-text primitive "
+        "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
+        "that visually DEPICTS the concept. Text/MathTex are for labels and "
+        "the key formula only — never the whole scene.\n"
+        "AT MOST 7 objects total — a short scene with 16 objects is an "
+        "unreadable collage. One anchor visual + a few labels beats many "
+        "competing shapes.\n\n"
+        "LAYOUT (x, y, t):\n"
+        "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
+        "    object's intended position in Manim units AND `interval` =\n"
+        "    {t_in, t_out} — when in scene-time the object is visible.\n"
+        "  - SAFE AREA: keep bbox.x in [-6.5, 6.5] and bbox.y in [-3.5, 3.5].\n"
+        "  - Two objects may share the same (x, y) only if their intervals\n"
+        "    are disjoint (one fades out before the other appears).\n\n"
+        "Return JSON with keys: objects (list), transformations (list), "
+        "beats (list), scene_state_in (object), scene_state_out (object), "
+        "emphasis_points (list).\n\n"
+        "───────────────  SCENE-SPECIFIC CONTEXT BELOW  ───────────────\n\n"
+    )
+
+
+def _validate_items(items: Any, model: Any) -> list:
+    """Validate a list against a Pydantic model, dropping (not raising on) the
+    items that fail — one malformed object never voids the whole scene."""
+    out = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        try:
+            out.append(model.model_validate(item))
+        except Exception as exc:
+            logger.debug("Dropping invalid %s item: %s", getattr(model, "__name__", model), exc)
+    return out
 
 
 class ScriptArchitectInput(AgentInput):
@@ -138,6 +340,10 @@ class ScriptArchitectAgent(Agent):
     MIN_SCENE_DURATION = 8.0  # Minimum scene duration in seconds
     MAX_SCENE_DURATION = 45.0  # Maximum scene duration in seconds
     TARGET_SCENE_DURATION = 25.0  # Target scene duration in seconds
+    # Hard ceiling on scenes per video. The chunker escalates its packing
+    # target until the count fits (fewer, slightly longer scenes beat a
+    # choppy 90-cut video for engagement, render time, and cost).
+    MAX_SCENES = 45
 
     # Primitives / object families that put words (not pictures) on screen.
     # A scene whose every object is text-like violates the visualization-first
@@ -181,7 +387,10 @@ class ScriptArchitectAgent(Agent):
         super().__init__()
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
-            self.client = openai.OpenAI(api_key=api_key)
+            # max_retries=4 (default 2): the per-segment / visual-intent loop
+            # fires many calls and saw transient RemoteProtocolError disconnects
+            # that were degrading scenes to the fallback. Retry them first.
+            self.client = openai.OpenAI(api_key=api_key, max_retries=4)
         else:
             if self.strict:
                 raise AgentExecutionError(
@@ -190,6 +399,17 @@ class ScriptArchitectAgent(Agent):
                 )
             self.client = None
             logger.warning("OPENAI_API_KEY not found. ScriptArchitect will use mock fallbacks.")
+
+        # The unified whole-document script runs on Claude Sonnet 5. Best-effort:
+        # only constructed when an Anthropic key is present; the unified path falls
+        # back to the OpenAI client (gpt-5.4) when it is absent.
+        self.anthropic_client = None
+        if os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                import anthropic
+                self.anthropic_client = anthropic.Anthropic()
+            except Exception as exc:  # pragma: no cover — optional dependency / init
+                logger.warning("Anthropic client unavailable for unified script: %s", exc)
     
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute storyboard generation via the unified-script + chunker flow.
@@ -245,7 +465,9 @@ class ScriptArchitectAgent(Agent):
             )
 
             # Phase 2: deterministic chunker (Task 4).
-            scenes = self._chunk_script_into_scenes(video_script)
+            scenes = self._chunk_script_into_scenes(
+                video_script, max_scenes=self._effective_max_scenes(config)
+            )
             logger.info(f"Chunked script into {len(scenes)} scenes")
 
             # Phase 3: per-chunk visual intent.
@@ -255,6 +477,9 @@ class ScriptArchitectAgent(Agent):
             # and never aborts the whole storyboard.
             visual_failures: List[Dict[str, str]] = []
             text_only_scenes: List[str] = []
+            # Visual continuity: intents are generated in scene order so each
+            # scene can be told what the previous one left on screen.
+            carried_objects: List[MathematicalObject] = []
             for scene in scenes:
                 try:
                     scene.visual_intent = self._generate_visual_intent_for_chunk(
@@ -262,6 +487,7 @@ class ScriptArchitectAgent(Agent):
                         video_script=video_script,
                         config=config,
                         review_feedback=review_feedback,
+                        carried_objects=carried_objects,
                     )
                     # Visual-impact invariant: a scene of nothing but text /
                     # equations is a slideshow, not a visualization. Retry the
@@ -278,6 +504,7 @@ class ScriptArchitectAgent(Agent):
                             video_script=video_script,
                             config=config,
                             review_feedback=review_feedback + [self.TEXT_ONLY_RETRY_FEEDBACK],
+                            carried_objects=carried_objects,
                         )
                         if self._is_text_only_intent(scene.visual_intent):
                             text_only_scenes.append(scene.scene_id)
@@ -288,6 +515,7 @@ class ScriptArchitectAgent(Agent):
                     )
                     scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
                     visual_failures.append({"scene_id": scene.scene_id, "error": str(exc)})
+                carried_objects = self._carried_objects_from_intent(scene.visual_intent)
 
             if visual_failures:
                 logger.warning(
@@ -359,7 +587,11 @@ class ScriptArchitectAgent(Agent):
         ocr_output: OCROutput,
         config: Configuration,
     ) -> List[SourceSegment]:
-        target_words = self.GRANULARITY_WORD_TARGETS.get(config.granularity, 150)
+        from src.agents.document_segmenter import target_words_for, total_ocr_words
+
+        target_words = target_words_for(
+            config.granularity, total_ocr_words(ocr_output)
+        )
         result = DocumentSegmenterAgent().execute(
             DocumentSegmenterInput(
                 ocr_output=ocr_output,
@@ -373,6 +605,17 @@ class ScriptArchitectAgent(Agent):
         scenes: List[Scene],
         segments: List[SourceSegment],
     ) -> None:
+        """Check the two real coverage invariants of the vignette design.
+
+        WARN on genuine defects only:
+          - a segment covered by NO scene (content dropped), or
+          - a beat appearing in MORE than one scene (content duplicated).
+
+        A segment spanning multiple scenes is *by design* — the chunker splits
+        a segment's beats into vignette-sized scenes — so it is reported as an
+        INFO statistic, never a warning (the old check flagged it and spammed
+        one false-positive warning per segment on real runs).
+        """
         if not segments:
             return
         expected = {segment.segment_id for segment in segments}
@@ -383,15 +626,71 @@ class ScriptArchitectAgent(Agent):
         ]
         covered = set(scene_segment_ids)
         missing = sorted(expected - covered)
-        redundant = sorted(
-            segment_id
-            for segment_id in expected
-            if scene_segment_ids.count(segment_id) > 1
-        )
         if missing:
             logger.warning("Storyboard missing source segments: %s", ", ".join(missing))
-        if redundant:
-            logger.warning("Storyboard redundantly covers source segments: %s", ", ".join(redundant))
+
+        beat_ids = [
+            beat.beat_id
+            for scene in scenes
+            for beat in getattr(scene, "source_beats", []) or []
+        ]
+        duplicated = sorted({b for b in beat_ids if beat_ids.count(b) > 1})
+        if duplicated:
+            logger.warning(
+                "Beats duplicated across scenes (content repeated): %s",
+                ", ".join(duplicated),
+            )
+
+        if covered:
+            logger.info(
+                "Segment coverage: %d/%d segments across %d scenes "
+                "(avg %.1f scenes/segment).",
+                len(covered), len(expected), len(scenes),
+                len(scene_segment_ids) / max(len(covered), 1),
+            )
+
+    # How many objects a scene may hand to its successor. Carrying everything
+    # forward re-creates the clutter problem in the next scene; the anchor
+    # visual plus a label or two is what makes the cut feel continuous.
+    MAX_CARRY_OVER_OBJECTS = 3
+    # Hard cap on planned objects per vignette scene — a real run averaged
+    # 16.7 objects/scene, which drove both the overlaps and the text walls.
+    MAX_OBJECTS_PER_SCENE = 7
+
+    @classmethod
+    def _derive_carry_out_ids(cls, objs: List[MathematicalObject]) -> List[str]:
+        """Objects still on screen at scene end, by their planned intervals.
+
+        An object whose ``interval.t_out`` reaches (within 0.5s of) the scene's
+        final timestamp is considered carried over. Non-text visuals are
+        preferred — carrying the anchor diagram matters more than carrying a
+        caption — and the list is capped at MAX_CARRY_OVER_OBJECTS.
+        """
+        timed = [o for o in objs if o.interval is not None and o.object_id]
+        if not timed:
+            return []
+        scene_end = max(o.interval.t_out for o in timed)
+        surviving = [o for o in timed if o.interval.t_out >= scene_end - 0.5]
+        # Anchor visuals first, then text, preserving plan order within each.
+        text_like = cls.TEXT_ONLY_PRIMITIVES
+        ordered = (
+            [o for o in surviving if (o.primitive or "") not in text_like]
+            + [o for o in surviving if (o.primitive or "") in text_like]
+        )
+        return [o.object_id for o in ordered[: cls.MAX_CARRY_OVER_OBJECTS]]
+
+    @staticmethod
+    def _carried_objects_from_intent(intent: VisualIntent) -> List[MathematicalObject]:
+        """The objects a finished scene hands to its successor.
+
+        Resolves ``scene_state_out.active_object_ids`` back to the full
+        MathematicalObject records so the next scene's prompt can name their
+        primitive and position, not just an id.
+        """
+        active = set(intent.scene_state_out.active_object_ids or [])
+        if not active:
+            return []
+        return [o for o in intent.mathematical_objects if o.object_id in active]
 
     @classmethod
     def _is_text_only_intent(cls, intent: VisualIntent) -> bool:
@@ -420,6 +719,7 @@ class ScriptArchitectAgent(Agent):
         video_script,
         config: Configuration,
         review_feedback: List[str],
+        carried_objects: Optional[List[MathematicalObject]] = None,
     ) -> VisualIntent:
         """Plan visuals for one chunk via a chunk-scoped LLM call.
 
@@ -486,9 +786,6 @@ class ScriptArchitectAgent(Agent):
                 + "\n"
             )
 
-        engine_contract = build_visual_intent_contract_prompt()
-        catalog_block = catalog_for_prompt()
-
         # Concept → archetype: give the planner a proven visual pattern for
         # this chunk's concept family instead of a blank page. Underscored
         # concept labels are space-joined so "unit_circle" matches "circle".
@@ -502,46 +799,50 @@ class ScriptArchitectAgent(Agent):
             archetype_prompt_block(archetype) + "\n" if archetype else ""
         )
 
-        prompt = (
-            "You are a 3Blue1Brown animation architect.\n\n"
+        # Visual continuity: describe what the previous scene left on screen so
+        # this scene starts from it instead of cutting to black.
+        carry_block = ""
+        if carried_objects:
+            carry_lines = []
+            for o in carried_objects:
+                pos = f"({o.bbox.x:.1f}, {o.bbox.y:.1f})" if o.bbox else "(keep position)"
+                carry_lines.append(
+                    f"  - object_id={o.object_id}  {o.primitive or o.object_type}  at {pos}"
+                )
+            carry_block = (
+                "PREVIOUS SCENE ENDS WITH THESE OBJECTS STILL ON SCREEN:\n"
+                + "\n".join(carry_lines)
+                + "\nVISUAL CONTINUITY (important): start THIS scene from that "
+                "arrangement. Re-emit each carried object FIRST in `objects` — "
+                "SAME object_id, same primitive and args, same bbox position, "
+                "interval.t_in = 0 — then transform it or build around it. Do "
+                "not restart from an empty screen unless the topic changes "
+                "completely. List the carried ids in "
+                "scene_state_in.active_object_ids.\n\n"
+            )
+
+        # Static contract first (byte-identical across all scenes → provider
+        # prefix caching), per-scene context after.
+        prompt = _visual_intent_static_prompt() + (
+            f"{archetype_block}"
             "--- CHUNK NARRATION (audio for THIS scene only) ---\n"
             f"{scene.narration}\n"
             "--- END NARRATION ---\n\n"
             f"NEW CONCEPTS INTRODUCED IN THIS CHUNK: "
             f"{', '.join(chunk_concepts) or '(none)'}\n"
             f"{earlier_block}"
+            f"{carry_block}"
             "VISUAL HINTS FROM THE SCRIPT WRITER:\n"
             f"{visual_hints}\n\n"
             f"TIMING: {word_count} words at ~3 wps => visuals should fill ~{target}s.\n"
             f"{review_block}"
-            f"{engine_contract}\n"
-            "CLOSED VOCABULARY:\n"
-            f"{catalog_block}\n\n"
-            "For every mathematical_object you emit, set `primitive` to one of "
-            "the MOBJECT names above and `args` to its kwargs. Free-form "
-            "`content` is ONLY permitted for MathTex / Tex / Text (where it "
-            "goes into the `tex` or `text` arg).\n\n"
-            "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
-            "a slideshow. At least ONE object MUST be a non-text primitive "
-            "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
-            "that visually DEPICTS the concept. Text/MathTex are for labels and "
-            "the key formula only — never the whole scene.\n\n"
-            f"{archetype_block}"
-            "LAYOUT (x, y, t):\n"
-            "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
-            "    object's intended position in Manim units AND `interval` =\n"
-            "    {t_in, t_out} — when in scene-time the object is visible.\n"
-            "  - SAFE AREA: keep bbox.x in [-6.5, 6.5] and bbox.y in [-3.5, 3.5].\n"
-            "  - Two objects may share the same (x, y) only if their intervals\n"
-            "    are disjoint (one fades out before the other appears).\n\n"
-            "Return JSON with keys: objects (list), transformations (list), "
-            "beats (list), scene_state_in (object), scene_state_out (object), "
-            "emphasis_points (list)."
+            "\nNow plan THIS scene following every standing rule above. "
+            "Return ONLY the JSON object."
         )
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model=VISUAL_INTENT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
             )
@@ -581,19 +882,49 @@ class ScriptArchitectAgent(Agent):
             # something on screen.
             return self._generate_fallback_visual_intent(fallback_narration)
 
-        try:
-            objs = [MathematicalObject.model_validate(o) for o in raw_objects]
-            trans = [Transformation.model_validate(t) for t in raw_trans]
-            beats = [VisualBeat.model_validate(b) for b in raw_beats]
-            emphasis = [EmphasisPoint.model_validate(e) for e in raw_emphasis]
-            state_in = SceneState.model_validate(raw_in if isinstance(raw_in, dict) else {})
-            state_out = SceneState.model_validate(raw_out if isinstance(raw_out, dict) else {})
-        except Exception as exc:
+        # Coerce missing required fields, then validate item-by-item so a single
+        # malformed object doesn't void the entire scene's plan (F6). Only fall
+        # back when NO objects survive.
+        objs = _validate_items(
+            [_coerce_visual_object(o) for o in raw_objects], MathematicalObject
+        )
+        if not objs:
             logger.warning(
-                "Visual-intent JSON failed schema validation (%s); using fallback.",
-                exc,
+                "Visual-intent objects all failed validation; using fallback."
             )
             return self._generate_fallback_visual_intent(fallback_narration)
+
+        # Clutter guard: a vignette can't hold 16 objects (the overlap engine
+        # of a real run). Keep the earliest-appearing MAX_OBJECTS_PER_SCENE.
+        if len(objs) > self.MAX_OBJECTS_PER_SCENE:
+            logger.warning(
+                "Visual intent planned %d objects; keeping the first %d by t_in.",
+                len(objs), self.MAX_OBJECTS_PER_SCENE,
+            )
+            objs.sort(key=lambda o: o.interval.t_in if o.interval else 0.0)
+            objs = objs[: self.MAX_OBJECTS_PER_SCENE]
+
+        # Deterministic de-overlap of the planned layout (time-aware).
+        _resolve_bbox_overlaps(objs)
+
+        trans = _validate_items(raw_trans, Transformation)
+        beats = _validate_items(raw_beats, VisualBeat)
+        emphasis = _validate_items(raw_emphasis, EmphasisPoint)
+        try:
+            state_in = SceneState.model_validate(raw_in if isinstance(raw_in, dict) else {})
+        except Exception:
+            state_in = SceneState()
+        try:
+            state_out = SceneState.model_validate(raw_out if isinstance(raw_out, dict) else {})
+        except Exception:
+            state_out = SceneState()
+
+        # Continuity backbone: planners reliably leave scene_state_out empty
+        # (a real run: 0/90 scenes carried state → every scene restarted from
+        # black). Don't trust the LLM for it — derive it from the plan: the
+        # objects still visible at scene end are the carry-over set.
+        if not state_out.active_object_ids:
+            state_out.active_object_ids = self._derive_carry_out_ids(objs)
 
         return VisualIntent(
             mathematical_objects=objs,
@@ -735,12 +1066,7 @@ Return JSON in this EXACT shape:
 }}
 """
 
-        response = self.client.chat.completions.create(
-            model="gpt-5",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(response.choices[0].message.content)
+        data = self._complete_unified_script_json(prompt)
 
         beats = []
         for b in data.get("beats", []):
@@ -758,6 +1084,37 @@ Return JSON in this EXACT shape:
             ))
 
         return VideoScript(title=data.get("title", ""), beats=beats)
+
+    def _complete_unified_script_json(self, prompt: str) -> Dict[str, Any]:
+        """Run the unified whole-document script call and return parsed JSON.
+
+        Prefers Claude Sonnet 5 (per-task model tiering — this single call sets
+        breadth coverage and benefits most from strong reasoning). Falls back to
+        the OpenAI client (gpt-5.4) when no Anthropic client is configured, so a
+        key-only-OpenAI deployment keeps working.
+        """
+        client = getattr(self, "anthropic_client", None)
+        if client is not None:
+            response = client.messages.create(
+                model=UNIFIED_SCRIPT_MODEL,
+                max_tokens=8000,
+                # Cost-conscious: no adaptive thinking for a structured JSON task.
+                thinking={"type": "disabled"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = "".join(
+                getattr(block, "text", "")
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            )
+            return json.loads(_extract_json_object(text))
+
+        response = self.client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content)
 
     def _generate_segmented_video_script(
         self,
@@ -779,42 +1136,118 @@ Return JSON in this EXACT shape:
                 covered_concepts=covered_concepts,
                 review_feedback=review_feedback,
             )
-            response = self.client.chat.completions.create(
-                model="gpt-5",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-            )
-            data = json.loads(response.choices[0].message.content)
-            if not title:
-                title = data.get("title", "")
+            # Failure isolation: a single bad segment response (API error, invalid
+            # JSON, or a malformed beat) must never abort the whole storyboard —
+            # skip it and keep the rest. LLMs occasionally emit `narration: null`
+            # or drop a required field; that one beat is dropped, not the run.
+            try:
+                response = self.client.chat.completions.create(
+                    model=SEGMENT_SCRIPT_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                )
+                data = json.loads(response.choices[0].message.content)
+            except Exception as exc:
+                logger.warning(
+                    "Segment %s script generation failed (%s); skipping segment.",
+                    segment.segment_id, exc,
+                )
+                continue
 
+            if not isinstance(data, dict):
+                continue
+            if not title:
+                title = data.get("title") or ""
+
+            pending_beats = data.get("beats")
+            if not isinstance(pending_beats, list):
+                continue
+
+            # Pass 1 — keep the usable beats and pre-assign global ids so
+            # forward references WITHIN the segment resolve too (the old
+            # incremental map only saw beats already processed, leaking
+            # "unknown or forward beat" warnings from the schema validator).
+            usable: List[Dict[str, Any]] = []
             local_to_global: Dict[str, str] = {}
-            pending_beats = data.get("beats", [])
+            next_index = len(all_beats) + 1
             for raw in pending_beats:
-                local_id = raw.get("beat_id", "")
-                global_id = f"beat_{len(all_beats) + 1:03d}"
-                local_to_global[local_id] = global_id
+                if not isinstance(raw, dict):
+                    continue
+                narration = raw.get("narration")
+                if not isinstance(narration, str) or not narration.strip():
+                    logger.warning(
+                        "Segment %s returned a beat with missing/invalid narration; dropping it.",
+                        segment.segment_id,
+                    )
+                    continue
+                local_id = str(raw.get("beat_id") or f"__auto_{next_index}")
+                local_to_global[local_id] = f"beat_{next_index:03d}"
+                usable.append(raw)
+                next_index += 1
+
+            # Pass 2 — build beats, resolving refs against this segment's map
+            # plus all previously emitted global ids. Anything else is a
+            # hallucinated / cross-segment-unknowable id: drop it here at
+            # DEBUG so the VideoScript validator's WARNING only fires for
+            # genuine anomalies.
+            known_global_ids = {b.beat_id for b in all_beats}
+            for raw in usable:
+                local_id = str(raw.get("beat_id") or "")
+                global_id = local_to_global.get(local_id) or f"beat_{len(all_beats) + 1:03d}"
 
                 concepts = [
                     canonical
-                    for label in raw.get("introduces_concepts", [])
-                    if (canonical := _canonicalize_concept(label))
+                    for label in (raw.get("introduces_concepts") or [])
+                    if isinstance(label, str) and (canonical := _canonicalize_concept(label))
                 ]
                 for concept in concepts:
                     if concept not in covered_concepts:
                         covered_concepts.append(concept)
 
-                all_beats.append(Beat(
-                    beat_id=global_id,
-                    narration=raw["narration"],
-                    visual_hint=raw.get("visual_hint", ""),
-                    introduces_concepts=concepts,
-                    references_prior_beats=[
-                        local_to_global.get(ref, ref)
-                        for ref in raw.get("references_prior_beats", [])
-                    ],
-                    source_segment_id=segment.segment_id,
-                ))
+                refs: List[str] = []
+                for ref in (raw.get("references_prior_beats") or []):
+                    if not isinstance(ref, str):
+                        continue
+                    resolved = local_to_global.get(ref) or (ref if ref in known_global_ids else None)
+                    # Keep only *backward* references — a forward ref would be
+                    # dropped (with a WARNING) by the VideoScript validator.
+                    if resolved and resolved < global_id:
+                        refs.append(resolved)
+                    else:
+                        logger.debug(
+                            "Segment %s: dropping unresolvable/forward beat reference %r.",
+                            segment.segment_id, ref,
+                        )
+                visual_hint = raw.get("visual_hint")
+                if not isinstance(visual_hint, str):
+                    visual_hint = ""
+
+                try:
+                    all_beats.append(Beat(
+                        beat_id=global_id,
+                        narration=raw["narration"],
+                        visual_hint=visual_hint,
+                        introduces_concepts=concepts,
+                        references_prior_beats=refs,
+                        source_segment_id=segment.segment_id,
+                    ))
+                except Exception as exc:
+                    logger.warning(
+                        "Dropping malformed beat in segment %s: %s", segment.segment_id, exc,
+                    )
+
+        # VideoScript requires >= 1 beat. If every segment failed, ship a minimal
+        # placeholder so the pipeline degrades gracefully instead of aborting.
+        if not all_beats:
+            logger.warning("All segment script calls produced no usable beats; using placeholder.")
+            all_beats = [Beat(
+                beat_id="beat_001",
+                narration="This video introduces the key ideas from the source material.",
+                visual_hint="Title card with the main concept.",
+                introduces_concepts=["overview"],
+                references_prior_beats=[],
+                source_segment_id=segments[0].segment_id if segments else "",
+            )]
 
         return VideoScript(title=title, beats=all_beats)
 
@@ -901,7 +1334,17 @@ Return JSON in this exact shape:
     def _target_beat_count(self, source_text: str) -> int:
         return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))
 
-    def _chunk_script_into_scenes(self, script) -> List[Scene]:
+    def _effective_max_scenes(self, config) -> int:
+        """Scene ceiling for this run: the static MAX_SCENES unless the user
+        requested a target length, in which case the tighter length-derived
+        budget wins (min of the two — never exceed the explosion guard)."""
+        target_minutes = getattr(config, "target_minutes", None)
+        if not target_minutes:
+            return self.MAX_SCENES
+        budget = max(1, round(float(target_minutes) * 60.0 / self.TARGET_SCENE_DURATION))
+        return min(self.MAX_SCENES, budget)
+
+    def _chunk_script_into_scenes(self, script, max_scenes: Optional[int] = None) -> List[Scene]:
         """Group beats into ~8-45 s vignette scenes (Task 4 chunker, ADR-005).
 
         Greedy packer: walk the beats in order, accumulating beats into the
@@ -918,9 +1361,34 @@ Return JSON in this exact shape:
         def beat_duration(b) -> float:
             return len(b.narration.split()) / self.WORDS_PER_SECOND
 
-        chunks: List[List[Beat]] = []
-        current: List[Beat] = []
-        current_dur = 0.0
+        def pack(target_dur: float, max_dur: float) -> List[List[Beat]]:
+            """Greedy pack beats into chunks, never crossing a segment boundary."""
+            packed: List[List[Beat]] = []
+            cur: List[Beat] = []
+            cur_dur = 0.0
+            for beat in script.beats:
+                bd = beat_duration(beat)
+                beat_segment = getattr(beat, "source_segment_id", "")
+                cur_segment_ids = {
+                    getattr(existing, "source_segment_id", "")
+                    for existing in cur
+                    if getattr(existing, "source_segment_id", "")
+                }
+                crosses_segment = bool(
+                    cur and beat_segment and cur_segment_ids
+                    and beat_segment not in cur_segment_ids
+                )
+                if cur and (crosses_segment or cur_dur + bd > max_dur):
+                    packed.append(cur)
+                    cur, cur_dur = [], 0.0
+                cur.append(beat)
+                cur_dur += bd
+                if cur_dur >= target_dur:
+                    packed.append(cur)
+                    cur, cur_dur = [], 0.0
+            if cur:
+                packed.append(cur)
+            return packed
 
         for beat in script.beats:
             bd = beat_duration(beat)
@@ -932,30 +1400,26 @@ Return JSON in this exact shape:
                     "to keep beats under 80 words.",
                     beat.beat_id, bd, self.MAX_SCENE_DURATION,
                 )
-            beat_segment = getattr(beat, "source_segment_id", "")
-            current_segment_ids = {
-                getattr(existing, "source_segment_id", "")
-                for existing in current
-                if getattr(existing, "source_segment_id", "")
-            }
-            crosses_segment = bool(
-                current
-                and beat_segment
-                and current_segment_ids
-                and beat_segment not in current_segment_ids
+
+        # Scene-count governance: segments were capped upstream, but beats per
+        # segment can still explode the scene count (a real 14-page run yielded
+        # 90 scenes — choppy, slow, expensive). Escalate the packing target
+        # until the count fits MAX_SCENES. Floor = number of distinct segments
+        # (chunks never cross segment boundaries), which the segmenter caps.
+        scene_cap = self.MAX_SCENES if max_scenes is None else max(1, int(max_scenes))
+        target = float(self.TARGET_SCENE_DURATION)
+        max_dur = float(self.MAX_SCENE_DURATION)
+        chunks = pack(target, max_dur)
+        while len(chunks) > scene_cap and target < 120.0:
+            target *= 1.4
+            max_dur = max(max_dur, target * 1.8)
+            chunks = pack(target, max_dur)
+        if len(chunks) > scene_cap:
+            logger.warning(
+                "Chunker could not reduce scene count below cap=%d "
+                "(got %d) — segment boundaries dominate.",
+                scene_cap, len(chunks),
             )
-            # If adding this beat overflows the current chunk, flush first.
-            if current and (crosses_segment or current_dur + bd > self.MAX_SCENE_DURATION):
-                chunks.append(current)
-                current, current_dur = [], 0.0
-            current.append(beat)
-            current_dur += bd
-            # Close the chunk once we've crossed TARGET to avoid trailing tinies.
-            if current_dur >= self.TARGET_SCENE_DURATION:
-                chunks.append(current)
-                current, current_dur = [], 0.0
-        if current:
-            chunks.append(current)
 
         # Concept tracking: each scene's concept_id is the first canonical
         # concept introduced in its beats. Reference-only chunks inherit the

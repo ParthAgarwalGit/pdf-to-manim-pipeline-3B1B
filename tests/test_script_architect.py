@@ -913,7 +913,7 @@ class TestNonTextVisualInvariant:
         calls = []
         intent_iter = iter(intents)
 
-        def fake_planner(scene, video_script, config, review_feedback):
+        def fake_planner(scene, video_script, config, review_feedback, carried_objects=None):
             calls.append(list(review_feedback))
             return next(intent_iter)
 

@@ -25,11 +25,13 @@ from typing import Dict, Optional, Tuple
 # ~0.5-1s, transforms at ~1-2s.  Violations are flagged by the reviewer.
 
 TIMING_CONTRACT: Dict[str, Tuple[float, float]] = {
-    # Introductory / creation animations
-    "Write": (1.0, 3.0),
-    "Create": (1.0, 2.5),
-    "ShowCreation": (1.0, 2.5),
-    "DrawBorderThenFill": (1.0, 2.5),
+    # Introductory / creation animations. Minimums were relaxed 1.0 -> 0.6 for
+    # vignette pacing (ADR-005): short scenes legitimately write labels in
+    # ~0.8s, and the old floor produced dozens of noise findings per run.
+    "Write": (0.6, 3.0),
+    "Create": (0.6, 2.5),
+    "ShowCreation": (0.6, 2.5),
+    "DrawBorderThenFill": (0.6, 2.5),
     "GrowFromCenter": (0.5, 1.5),
     "GrowArrow": (0.5, 1.5),
     # Fade family
@@ -369,7 +371,11 @@ RULES:
 - Do not invent new object types.
 - Do not output pi_character; use pi_creature instead.
 - Use render_hint only when it materially clarifies the intended Manim primitive.
-- For abstract narration beats, use pi_creature with a render_hint rather than inventing a fake object family.
+- pi_creature (the narrator mascot) is a SPICE, not a staple: use it ONLY for
+  an intro, recap, or brief aside beat — at most ONE per scene, and NEVER in a
+  scene that is presenting equations, graphs, or geometric constructions.
+  For abstract narration beats without a natural visual, prefer a simple
+  diagrammatic metaphor over the mascot.
 - Every object should use a stable object_id and object_role when continuity matters.
 - Prefer reusing a named coordinate system or notation key instead of redrawing it from scratch.
 

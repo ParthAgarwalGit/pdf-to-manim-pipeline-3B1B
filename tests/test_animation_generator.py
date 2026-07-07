@@ -566,7 +566,8 @@ def test_animation_generator_generates_valid_class_name():
         ("scene-001", "Scene_scene_001"),
         ("intro_scene", "Intro_scene"),
         ("123_scene", "Scene_123_scene"),
-        ("scene.with.dots", "Scene_with_dots"),
+        # NOTE: ids with dots/slashes are now rejected at the schema level
+        # (path-safety fix) and can no longer reach the generator.
     ]
     
     for scene_id, expected_prefix in test_cases:
@@ -801,7 +802,13 @@ def _capture_animation_prompt(agent_factory, monkeypatch, scene_spec, context, s
 
     class _Messages:
         def create(self, *, system, messages, **_kw):
-            captured["system"] = system
+            captured["system_raw"] = system
+            # The real call sends system as a list of blocks (cached static +
+            # dynamic tail); normalize to one string for substring assertions.
+            if isinstance(system, list):
+                captured["system"] = "".join(b.get("text", "") for b in system)
+            else:
+                captured["system"] = system
             captured["user"] = messages[0]["content"]
             return _Resp()
 
@@ -1124,13 +1131,13 @@ def test_animation_prompt_carries_planned_primitive_and_position(monkeypatch):
 
 
 # ============================================================================
-# Visual-first timing: _enforce_duration is a floor, not a narration quota
+# Duration sync (P1.4): distribute slack across existing waits, no freeze-tail
 # ============================================================================
 
 
-def test_enforce_duration_leaves_visually_rich_scene_untouched():
-    """A scene whose animation already clears the floor must be returned as-is
-    — no dead-air padding to stretch it toward narration length."""
+def test_slack_leaves_scene_already_at_target_untouched():
+    """A scene whose animation already reaches the audio length is returned
+    as-is — nothing to distribute, no freeze-frame to avoid."""
     agent = _agent_no_init()
     code = (
         "class S(Scene):\n"
@@ -1138,22 +1145,106 @@ def test_enforce_duration_leaves_visually_rich_scene_untouched():
         "        self.play(Create(c), run_time=5.0)\n"
         "        self.wait(2.0)\n"
         "        self.play(Transform(a, b), run_time=3.0)\n"
-    )  # total = 10.0s > floor
-    out = agent._enforce_duration(code, 8.0)
-    assert out == code
-    assert "floor padding" not in out
+    )  # total = 10.0s >= target
+    assert agent._distribute_duration_slack(code, 8.0) == code
 
 
-def test_enforce_duration_pads_only_up_to_floor():
-    """A too-short scene gets ONE small tail wait to reach the floor, and the
-    existing animation timings are left exactly as authored (no scaling)."""
+def test_slack_distributed_across_existing_waits():
+    """Slack is spread across the scene's waits (capped), not dumped as a
+    single tail freeze."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Write(a), run_time=1.0)\n"
+        "        self.wait(1.0)\n"
+        "        self.play(Write(b), run_time=1.0)\n"
+        "        self.wait(1.0)\n"
+    )  # total = 4.0s, two waits with 3s headroom each (cap 4.0)
+    out = agent._distribute_duration_slack(code, 10.0)  # gap = 6.0
+    import re
+    waits = [float(x) for x in re.findall(r"self\.wait\((\d+(?:\.\d+)?)\)", out)]
+    run_times = [float(x) for x in re.findall(r"run_time=(\d+(?:\.\d+)?)", out)]
+    total = sum(waits) + sum(run_times)
+    assert abs(total - 10.0) < 0.3          # reaches the audio length
+    assert all(w <= agent.MAX_SINGLE_WAIT + 0.05 for w in waits)  # capped
+    assert len(waits) >= 2 and max(waits) > 1.0  # spread, not one giant tail
+
+
+def test_slack_caps_then_uses_tail_for_residual():
+    """When existing waits can't absorb all the slack (hit the cap), the
+    remainder goes to a single bounded tail wait."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Write(a), run_time=1.0)\n"
+        "        self.wait(1.0)\n"
+    )  # one wait, 3s headroom; total 2s
+    out = agent._distribute_duration_slack(code, 20.0)  # gap 18 >> capacity 3
+    assert "duration sync tail" in out
+    import re
+    total = sum(float(x) for x in re.findall(r"self\.wait\((\d+(?:\.\d+)?)\)", out))
+    total += 1.0  # run_time
+    assert abs(total - 20.0) < 0.3
+
+
+def test_slack_no_waits_appends_single_tail():
+    """A scene with zero waits gets one tail wait (the only available lever)."""
     agent = _agent_no_init()
     code = (
         "class S(Scene):\n"
         "    def construct(self):\n"
         "        self.play(Write(t), run_time=2.0)\n"
     )
-    out = agent._enforce_duration(code, 8.0)
+    out = agent._distribute_duration_slack(code, 8.0)
     assert "self.wait(6.0)" in out
-    assert "floor padding" in out
-    assert "run_time=2.0" in out  # original animation untouched, not stretched
+    assert "run_time=2.0" in out  # original animation untouched
+
+def test_slack_counts_no_arg_wait_as_one_second():
+    """self.wait() defaults to 1 s in Manim — it must be counted and grown
+    like any explicit pause."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Create(c), run_time=2.0)\n"
+        "        self.wait()\n"
+    )  # total = 3.0
+    out = agent._distribute_duration_slack(code, 6.0)  # gap 3.0, headroom 3.0
+    assert "self.wait(4.0)" in out
+    assert "self.wait()" not in out
+
+
+def test_slack_ignores_run_time_in_comments():
+    """`# run_time=50` in a comment must not inflate the duration total and
+    shortchange the scene."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        # keep run_time=50 short here\n"
+        "        self.play(Create(c), run_time=2.0)\n"
+    )  # real total = 2.0, comment must not count
+    out = agent._distribute_duration_slack(code, 8.0)
+    assert "duration sync" in out  # gap detected -> tail added
+
+
+def test_tail_wait_lands_inside_construct_not_after_helpers():
+    """The tail wait is anchored to the end of construct() via AST, so a
+    helper method after construct doesn't swallow it."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Create(c), run_time=2.0)\n"
+        "\n"
+        "    def helper(self):\n"
+        "        return 42\n"
+    )
+    out = agent._distribute_duration_slack(code, 10.0)
+    wait_pos = out.index("duration sync")
+    helper_pos = out.index("def helper")
+    assert wait_pos < helper_pos
+    import ast as _ast
+    _ast.parse(out)  # still valid python

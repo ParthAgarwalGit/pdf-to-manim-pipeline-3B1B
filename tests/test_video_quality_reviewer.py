@@ -620,7 +620,28 @@ class TestAntiPatternReview:
         ap_findings = [f for f in result.findings if "FadeOut" in f.issue and "FadeIn" in f.issue]
         assert len(ap_findings) >= 1
 
-    def test_flags_missing_wait_between_plays(self, tmp_path):
+    def test_flags_systematic_missing_waits_once(self, tmp_path):
+        """Vignette pacing: a single back-to-back play pair is fine; a
+        SYSTEMATIC absence of waits (>=3 gaps) yields ONE aggregated low
+        finding — not one per gap (a real run produced 180 of those)."""
+        agent = VideoQualityReviewerAgent()
+        no_wait_run = "\n".join(
+            f"self.play(Write(eq{i}), run_time=2.0)" for i in range(5)
+        ) + "\nself.wait(1.0)\n"
+        code = _make_code_obj("s1", no_wait_run)
+        storyboard = _make_storyboard([_make_scene("s1")])
+        manifest = _make_manifest(tmp_path)
+        result = agent.execute(VideoQualityReviewerInput(
+            storyboard=storyboard,
+            manifest=manifest,
+            animation_code_objects=[code],
+            final_video_expected=False,
+        ))
+        wait_findings = [f for f in result.findings if "breathing room" in f.issue.lower()]
+        assert len(wait_findings) == 1
+        assert wait_findings[0].severity == "low"
+
+    def test_single_back_to_back_play_pair_not_flagged(self, tmp_path):
         agent = VideoQualityReviewerAgent()
         code = _make_code_obj("s1", 'self.play(Write(eq1), run_time=2.0)\nself.play(Write(eq2), run_time=2.0)\nself.wait(1.0)\n')
         storyboard = _make_storyboard([_make_scene("s1")])
@@ -631,8 +652,8 @@ class TestAntiPatternReview:
             animation_code_objects=[code],
             final_video_expected=False,
         ))
-        wait_findings = [f for f in result.findings if "Missing self.wait()" in f.issue]
-        assert len(wait_findings) >= 1
+        wait_findings = [f for f in result.findings if "breathing room" in f.issue.lower()]
+        assert wait_findings == []
 
     def test_flags_text_wall(self, tmp_path):
         agent = VideoQualityReviewerAgent()

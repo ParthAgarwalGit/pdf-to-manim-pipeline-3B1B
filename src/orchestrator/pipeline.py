@@ -93,6 +93,7 @@ class PipelineConfig:
     max_quality_retries: int = 2
     storyboard_quality_threshold: float = 6.0
     granularity: str = "balanced"
+    target_minutes: Optional[float] = None  # requested finished length; None = ungoverned
     enable_manim_dry_run_validation: bool = False
     enable_final_video_review: bool = True
     strict: bool = False
@@ -101,6 +102,10 @@ class PipelineConfig:
     dry_run: bool = False
     tts_voice: str = "alloy"
     render_quality: str = "medium"
+    # Cost ceiling for render salvage: each salvaged scene costs one codegen
+    # LLM call, so a pathological run must not multiply the bill unbounded.
+    # 0 disables salvage entirely.
+    max_salvage_scenes: int = 10
     
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -109,7 +114,30 @@ class PipelineConfig:
             depth=self.depth,
             audience=self.audience,
             granularity=self.granularity,
+            target_minutes=self.target_minutes,
         )
+
+
+class _WarningCaptureHandler(logging.FileHandler):
+    """Persist WARNING+ records from the `src.*` logger tree to a file.
+
+    Console warnings previously vanished when the terminal scrolled away —
+    post-run triage was impossible. This handler writes them to
+    ``<run>/warnings.log`` (created lazily on the first warning) and keeps a
+    count that lands in the manifest.
+    """
+
+    def __init__(self, path: str):
+        super().__init__(path, encoding="utf-8", delay=True)
+        self.setLevel(logging.WARNING)
+        self.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.count += 1
+        super().emit(record)
 
 
 class PipelineAbortError(Exception):
@@ -274,6 +302,13 @@ class Orchestrator:
             self.structured_logger = StructuredJSONLogger(
                 output_directory=self._run_output_dir
             )
+
+            # Capture WARNING+ records from every src.* logger into the run's
+            # warnings.log so post-run triage never depends on console scrollback.
+            self._warning_handler = _WarningCaptureHandler(
+                str(Path(self._run_output_dir) / "warnings.log")
+            )
+            logging.getLogger("src").addHandler(self._warning_handler)
             
             # Step 3: Vision+OCR
             ocr_output = self._run_vision_ocr(validated_ref, self.structured_logger)
@@ -368,6 +403,15 @@ class Orchestrator:
             else:
                 logger.info("Both render and TTS skipped")
 
+            # Render-time salvage: a failed render used to be retried with the
+            # IDENTICAL file (same bug, same crash) and then silently dropped
+            # from the video. Route the manim error into ONE codegen
+            # regeneration attempt per failed scene instead.
+            if video_output is not None:
+                video_output = self._salvage_failed_renders(
+                    video_output, sanitized_storyboard,
+                )
+
             # Step 10: Audio-Video Composition (requires both render and TTS)
             composition_output = None
             if self.config.enable_render and self.config.enable_tts:
@@ -401,10 +445,16 @@ class Orchestrator:
                 video_review_output,
             )
 
-            # Log pipeline completion
+            # Log pipeline completion. The rate means DELIVERED scenes (in the
+            # rendered video) when rendering ran; codegen success otherwise.
             pipeline_duration = time.time() - pipeline_start_time
+            effective_success = (
+                manifest.delivered_scenes
+                if manifest.delivered_scenes is not None
+                else manifest.successful_scenes
+            )
             scene_success_rate = (
-                manifest.successful_scenes / manifest.total_scenes
+                effective_success / manifest.total_scenes
                 if manifest.total_scenes > 0 else 1.0
             )
             
@@ -456,6 +506,11 @@ class Orchestrator:
             )
             raise
         finally:
+            # Detach the warnings capture so handlers don't pile up across runs
+            handler = getattr(self, "_warning_handler", None)
+            if handler is not None:
+                logging.getLogger("src").removeHandler(handler)
+                handler.close()
             # Close structured logger
             if self.structured_logger:
                 self.structured_logger.close()
@@ -583,11 +638,23 @@ class Orchestrator:
         structured_logger: StructuredJSONLogger,
     ):
         """Run deterministic document segmentation after OCR."""
-        target_words = {
-            "coarse": 300,
-            "balanced": 150,
-            "fine": 90,
-        }.get(self.config.granularity, 150)
+        from src.agents.document_segmenter import (
+            MAX_SEGMENTS,
+            scenes_for_minutes,
+            target_words_for,
+            total_ocr_words,
+        )
+
+        # Adaptive: honour the granularity dial, but cap total segments so a long
+        # PDF doesn't explode into 100+ scenes (see DocumentSegmenter.MAX_SEGMENTS).
+        # When the user requests a target length, tighten the cap to that scene
+        # budget so the segment floor never overshoots the requested minutes.
+        seg_cap = MAX_SEGMENTS
+        if self.config.target_minutes:
+            seg_cap = min(MAX_SEGMENTS, scenes_for_minutes(self.config.target_minutes))
+        target_words = target_words_for(
+            self.config.granularity, total_ocr_words(ocr_output), max_segments=seg_cap
+        )
         input_data = DocumentSegmenterInput(
             ocr_output=ocr_output,
             target_words_per_segment=target_words,
@@ -927,7 +994,7 @@ class Orchestrator:
         input_data = VideoRendererInput(
             scene_files=scene_files,
             output_dir=output_dir,
-            quality="m"
+            quality=self.config.render_quality,
         )
         input_data.constraints = StepConstraints(timeout_seconds=1800)
 
@@ -966,6 +1033,134 @@ class Orchestrator:
                 scene_results=[],
                 error=f"Video rendering failed: {e}"
             )
+
+    def _salvage_failed_renders(self, video_output, storyboard):
+        """One codegen-regeneration attempt per failed render.
+
+        The manim stderr tail (already de-noised by _extract_render_error) is
+        routed into the animation generator as revision feedback, the new code
+        is re-validated (which also applies the LaTeX auto-fix), the scene
+        file is rewritten exactly as Persistence writes it, and the single
+        scene is re-rendered. Successes replace the failed entries in place
+        (preserving scene order for composition) and the silent concat is
+        rebuilt. Best-effort: any exception leaves the original result alone.
+        """
+        scene_results = list(getattr(video_output, "scene_results", []) or [])
+        failed = [r for r in scene_results if not r.success]
+        if not failed or not self._run_output_dir:
+            return video_output
+
+        # Cost ceiling: one codegen LLM call per salvage attempt. A run with
+        # mass failures signals a systemic bug — regenerating everything would
+        # multiply the bill without fixing the cause.
+        cap = max(0, int(self.config.max_salvage_scenes))
+        if len(failed) > cap:
+            skipped = failed[cap:]
+            failed = failed[:cap]
+            logger.warning(
+                "Render salvage capped at %d of %d failed scene(s) "
+                "(max_salvage_scenes); skipping: %s",
+                cap, cap + len(skipped), [r.scene_id for r in skipped],
+            )
+        if not failed:
+            return video_output
+
+        import shutil
+        from src.agents.animation_generator import (
+            AnimationCodeGeneratorAgent,
+            AnimationGeneratorInput,
+            AnimationGeneratorOutput,
+        )
+        from src.schemas.scene_processing import SceneProcessingInput
+
+        scenes_by_id = {s.scene_id: s for s in getattr(storyboard, "scenes", [])}
+        generator = AnimationCodeGeneratorAgent(strict=self.config.strict)
+        controller = self.scene_controller_agent
+        renderer = self.video_renderer_agent
+        media_dir = str(Path(self._run_output_dir) / "media")
+        # Salvaged scenes must match the main render's resolution, or the
+        # stream-copy concat produces a broken final video.
+        quality_flag = renderer.quality_flag_for(self.config.render_quality)
+
+        logger.info("Attempting render salvage for %d failed scene(s).", len(failed))
+        salvaged = 0
+        for result in failed:
+            scene = scenes_by_id.get(result.scene_id)
+            if scene is None:
+                continue
+            feedback = [
+                "The previous version of this scene FAILED TO RENDER. Manim error:",
+                (result.error or "unknown error")[-600:],
+                "Fix the exact cause (usually a LaTeX string or an invalid mobject "
+                "argument) while keeping the same visual plan and narration.",
+            ]
+            try:
+                spec = controller._scene_to_spec(scene)
+                context = controller._initialize_context(storyboard)
+                gen_out = generator.execute(AnimationGeneratorInput(
+                    SceneProcessingInput(
+                        scene_spec=spec, context=context,
+                        scene_index=scene.scene_index,
+                    ),
+                    review_feedback=feedback,
+                ))
+                if not isinstance(gen_out, AnimationGeneratorOutput):
+                    continue
+                code_obj = gen_out.animation_code
+
+                # Gate the regenerated code (also applies the LaTeX auto-fix).
+                validation = self.manim_code_validator_agent.execute(
+                    ManimValidatorInput(animation_code_objects=[code_obj])
+                )
+                if not isinstance(validation, ManimValidatorOutput):
+                    logger.warning(
+                        "Salvage for %s produced code that failed validation; dropping.",
+                        result.scene_id,
+                    )
+                    continue
+
+                # Rewrite the scene file exactly as Persistence formats it.
+                file_path = Path(self._run_output_dir) / f"scene_{code_obj.scene_id}.py"
+                content = self.persistence_agent._generate_scene_file_content(code_obj)
+                self.persistence_agent._write_file_atomically(str(file_path), content)
+
+                rerender = renderer._render_scene(str(file_path), quality_flag, media_dir)
+                if rerender.success:
+                    scene_results[scene_results.index(result)] = rerender
+                    salvaged += 1
+                    logger.info("Salvaged scene %s after render failure.", result.scene_id)
+                else:
+                    logger.warning(
+                        "Salvage re-render still failed for %s: %s",
+                        result.scene_id, (rerender.error or "")[:200],
+                    )
+            except Exception as exc:
+                logger.warning("Salvage attempt for %s errored: %s", result.scene_id, exc)
+
+        if not salvaged:
+            return video_output
+
+        video_output.scene_results = scene_results
+        # Rebuild the silent concat so final_output.mp4 includes salvaged scenes.
+        rendered = [r.video_path for r in scene_results if r.success and r.video_path]
+        final_path = (
+            getattr(video_output, "final_video_path", None)
+            or str(Path(self._run_output_dir) / "final_output.mp4")
+        )
+        try:
+            if len(rendered) == 1:
+                shutil.copy2(rendered[0], final_path)
+            elif rendered:
+                renderer._concatenate_videos(rendered, final_path)
+            video_output.final_video_path = final_path
+            if hasattr(video_output, "total_duration"):
+                video_output.total_duration = sum(
+                    r.duration_seconds for r in scene_results if r.success
+                )
+        except Exception as exc:
+            logger.warning("Re-concatenation after salvage failed: %s", exc)
+        logger.info("Render salvage recovered %d/%d failed scene(s).", salvaged, len(failed))
+        return video_output
 
     def _run_tts_generation_logged(
         self,
@@ -1491,7 +1686,27 @@ class Orchestrator:
             "log",
         )
 
-        for scene_result in getattr(video_output, "scene_results", []) or []:
+        # Warnings observability: count + artifact (file exists only if a
+        # warning actually fired — the handler creates it lazily).
+        handler = getattr(self, "_warning_handler", None)
+        if handler is not None:
+            handler.flush()
+            manifest.warning_count = handler.count
+        self._register_runtime_artifact(
+            manifest,
+            Path(manifest.output_directory) / "warnings.log",
+            "log",
+        )
+
+        # Honest delivery metrics: successful_scenes counts code generation;
+        # what students actually receive is the rendered video. A real run
+        # reported 1.0 success while 13/90 scenes were missing from the file.
+        render_results = list(getattr(video_output, "scene_results", []) or [])
+        if render_results:
+            manifest.delivered_scenes = sum(1 for r in render_results if r.success)
+            manifest.lost_scenes = [r.scene_id for r in render_results if not r.success]
+
+        for scene_result in render_results:
             if getattr(scene_result, "success", False) and getattr(scene_result, "video_path", None):
                 self._register_runtime_artifact(
                     manifest,

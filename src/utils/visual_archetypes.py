@@ -76,7 +76,9 @@ ARCHETYPE_REGISTRY: Dict[str, VisualArchetype] = {
             "Slide a Dot along a curve while a tangent Line pivots to match "
             "the local slope; a DecimalNumber tracking the slope value makes "
             "the change legible. Steep vs. flat regions should be FELT by "
-            "the tangent's rotation speed."
+            "the tangent's rotation speed. Anchor all points with "
+            "on_axes(axes, x, y) and connections with connect(a, b) — never "
+            "hand-computed coordinates."
         ),
         fallback_primitive=(
             "Line",
@@ -157,7 +159,9 @@ ARCHETYPE_REGISTRY: Dict[str, VisualArchetype] = {
             "Construct the figure the way a compass-and-straightedge proof "
             "would: base shape first, then auxiliary Lines/Arcs one at a "
             "time. Use Indicate on the parts a relation connects, never all "
-            "labels at once."
+            "labels at once. For any distance or projection, use "
+            "drop_perpendicular(point, line) so the perpendicular lands ON "
+            "the target at a true right angle."
         ),
         fallback_primitive=(
             "Circle",

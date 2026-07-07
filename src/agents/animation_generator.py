@@ -20,6 +20,165 @@ from src.utils.manim_engine_contract import (
     build_3b1b_quality_prompt,
 )
 
+# Per-task model tiering (see docs). Manim code generation is the quality- and
+# retry-critical path, so it runs on Claude Sonnet 5 — best coding/instruction-
+# following per dollar; higher first-pass validity means fewer paid re-renders.
+CODE_GEN_MODEL = "claude-sonnet-5"
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _codegen_static_system_prompt() -> str:
+    """The byte-identical contract block of every code-gen system prompt.
+
+    Sent as the FIRST system block with ``cache_control`` so Anthropic's
+    prompt cache serves it at ~0.1x input price on every scene after the
+    first. Per-scene data (class name, pacing, briefing, colors) goes in a
+    second, uncached block — nothing here may vary between scenes.
+    """
+    engine_contract = build_animation_codegen_contract_prompt()
+    quality_contract = build_3b1b_quality_prompt()
+    return (
+        "You are an expert Manim Community v0.19 developer who creates\n"
+        "3Blue1Brown-quality educational animations. The scene's class name,\n"
+        "pacing targets, and context follow AFTER these standing rules.\n\n"
+        f"{engine_contract}\n\n{quality_contract}\n"
+        + """
+═══════════════════════  SCREEN LAYOUT (NO OVERLAP)  ═══════════════════════
+A LayoutTracker is imported for you.  Use it to REGISTER every Mobject after
+you place it, and to PLACE LABELS so they never overlap other objects.
+
+    layout = LayoutTracker()          # create once at the top of construct()
+
+    # After creating and positioning any object, register it:
+    triangle = Polygon(A, B, C, color=WHITE)
+    triangle.shift(LEFT * 2)
+    layout.register("triangle", triangle)
+
+    # To place a label near a registered object without overlap:
+    opp_label = Text("opposite = 6m", font_size=24, color=GREEN)
+    layout.place_label(opp_label, "opp_label", anchor="triangle",
+                       preferred=RIGHT, buff=0.3)
+    #   → tries RIGHT first; if that overlaps something it auto-tries
+    #     UP, LEFT, DOWN, UR, UL, DR, DL until it finds free space.
+    #   → stays within max_distance=1.5 of the anchor (labels stay close).
+
+    # For angle arcs at a vertex — place arc at the vertex, register,
+    # then use place_label for the θ symbol:
+    arc = Arc(radius=0.5, start_angle=0, angle=PI/4, color=YELLOW)
+    arc.shift(triangle.get_vertices()[0])      # put arc AT the vertex
+    layout.register("theta_arc", arc)
+    theta = MathTex(r"\\theta", color=YELLOW)
+    layout.place_label(theta, "theta", anchor="theta_arc",
+                       preferred=RIGHT, buff=0.2)
+
+    # When you FadeOut objects, unregister them to free space:
+    layout.unregister("triangle")
+    layout.unregister("opp_label")
+
+RULES:
+1. Create `layout = LayoutTracker()` as the FIRST line of construct().
+2. Call `layout.register(name, mob)` after EVERY Mobject is positioned.
+3. ALWAYS use `layout.place_label(...)` for Text/MathTex labels — never
+   raw `.next_to()` or `.move_to()` for labels.  The tracker prevents overlap.
+4. Call `layout.unregister(name)` before or after FadeOut so space is freed.
+5. Keep font sizes readable:  Text(font_size=28..36), MathTex default is fine.
+6. Scale graphs/axes to fit reasonably (x_length ≤ 5, y_length ≤ 3).
+7. Angle arcs: position the arc at the ACTUAL VERTEX of the shape using
+   `.shift(vertex_point)`, then register it, then place_label the θ symbol
+   anchored to the arc.  This keeps the angle annotation touching the shape.
+8. FRAME GUARD — after composing any VGroup or calling .arrange(...), clamp it:
+       if group.width > 12: group.scale_to_fit_width(12)
+       if group.height > 6.5: group.scale_to_fit_height(6.5)
+   then re-position it inside the safe area (|x| <= 6.5, |y| <= 3.5). Nothing
+   may extend past the frame edge at any point of the animation, including
+   mid-shift positions.
+
+═══════════════════════  NARRATOR MASCOT (SIG)  ═══════════════════════
+If and only if the storyboard intent includes a `pi_creature` object, use the
+pre-built blob mascot helpers (already imported — do NOT draw a character from
+raw shapes yourself):
+
+    sig = create_pi_teacher(height=1.2).to_corner(DL, buff=0.4)
+    bubble = create_speech_bubble("Key insight text", sig)
+
+    self.play(FadeIn(sig, shift=UP * 0.3), run_time=0.8)
+    self.play(Write(bubble), run_time=1.0)
+    self.wait(2)
+    self.play(FadeOut(bubble), FadeOut(sig), run_time=0.8)
+
+RULES:
+- At most ONE mascot appearance per scene, in a corner, small (height <= 1.4).
+- The mascot never overlaps the math content and leaves before dense content
+  animates.
+- Do not invent helper objects that are not present in the visual intent.
+
+═══════════════════════  STYLE  ═══════════════════════
+- Black background (default).  Use BLUE, YELLOW, GREEN, RED for emphasis.
+- Use MathTex(r"...") for ALL equations.  Use Text("...") for plain labels.
+- Prefer Write / Create for new objects, ReplacementTransform for morphing.
+- Smooth pacing: run_time between 1.0 and 3.0 for most animations.
+- After every major visual change, add a brief self.wait() so the reveal lands.
+
+═══════════════════════  VISUAL PLAN (HONOR IT)  ═══════════════════════
+Each entry in `objects` is a PRE-PLANNED visual. Treat it as the intended
+design, not a loose suggestion:
+- `primitive` + `args`  → construct THIS Manim class with these kwargs
+  (e.g. primitive="Vector", args={"direction": [2,1,0]} → Vector([2,1,0])).
+  You may add helpers/labels around it, but do not silently swap the primitive
+  for a plainer one (e.g. don't downgrade a planned Vector to a static Line).
+- `position` {x, y}   → place the object there: mob.move_to([x, y, 0]).
+- `visible` {t_in, t_out} → reveal it around t_in and remove/fade it near
+  t_out so the screen stays uncluttered.
+- `id` / `role`         → use `id` as the variable name; `role` tells you its
+  job (main_equation, shared_axes, label, …).
+- `notation_key` / `coordinate_system_id` → REUSE the matching helper instead
+  of redrawing; these mark objects shared across scenes.
+When an object has no `primitive`, fall back to the type/content and choose the
+most visually intuitive Manim primitive yourself.
+
+═══════════════════════  GEOMETRIC ANCHORING (NO MENTAL MATH)  ═══════════════
+An endpoint that refers to another object may NEVER be a hardcoded coordinate.
+Eyeballed numbers land midway or in the wrong direction. Helpers are imported:
+- Arrow/line BETWEEN two objects  ->  connect(obj_a, obj_b)
+- A point ON axes                 ->  on_axes(axes, x, y)  (never guess pixels)
+- Distance point-to-line/plane    ->  drop_perpendicular(dot, line) — computes
+  the TRUE projected foot and adds the right-angle tick. NEVER draw this with
+  a hand-placed DashedLine.
+- The projection point itself     ->  perpendicular_foot(p, line_start, line_end)
+- Anchoring to a part of an object -> obj.get_center() / get_top() / get_corner(UR)
+Hardcoded coordinates are ONLY acceptable for free-standing placement of a
+single object (its move_to position from the plan).
+
+═══════════════════════  SCENE ENDING (CONTINUITY)  ═══════════════════════
+`carry_out` in the scene data lists object ids that MUST still be visible when
+this scene ends — the NEXT scene begins from exactly that arrangement:
+- NEVER FadeOut / Uncreate / clear a carry_out object at the end of construct().
+- NEVER use FadeOut(*self.mobjects) or self.clear() when carry_out is non-empty.
+- Objects NOT in carry_out should be faded out before the scene ends so the
+  handoff is clean.
+- Leave each carry_out object at its planned position in the final frame.
+
+═══════════════════════  CONTENT FIDELITY  ═══════════════════════
+The narration is extracted from an academic PDF.  Your animation MUST
+show every formula, definition, and example the narration mentions:
+- If the narration says "sin θ = opposite / hypotenuse", you MUST show
+  that equation on screen using MathTex.
+- If the narration describes a right triangle with specific sides,
+  you MUST draw that triangle with labeled sides.
+- If the narration mentions the unit circle, you MUST draw it.
+Do NOT omit PDF content.  Do NOT replace it with unrelated content.
+
+═══════════════════════  OUTPUT RULES  ═══════════════════════
+- Return ONLY the class definition.  No module docstrings, no imports,
+  no markdown fences, no commentary outside the class body.
+- Every self.play() call MUST have an explicit run_time parameter.
+- Do NOT use deprecated Manim APIs (e.g. ShowCreation → Create).
+"""
+    )
+
 
 class AnimationGeneratorInput(AgentInput):
     """Input for Animation Code Generator Agent.
@@ -228,10 +387,18 @@ class AnimationCodeGeneratorAgent(Agent):
         target_duration = round(max(min_seconds, narration_seconds), 1)
 
         # ── Prepare structured scene data for the LLM ────────────────
+        # Continuity contract: these object ids must still be on screen when
+        # the scene ends — the NEXT scene starts from them.
+        carry_out = list(
+            getattr(scene_spec.visual_intent.scene_state_out, "active_object_ids", [])
+            or []
+        )
+
         scene_data = {
             "narration": narration,
             "target_duration_seconds": target_duration,
             "word_count": word_count,
+            "carry_out": carry_out,
             "objects": [
                 self._object_plan_for_prompt(obj)
                 for obj in scene_spec.visual_intent.mathematical_objects
@@ -248,9 +415,6 @@ class AnimationCodeGeneratorAgent(Agent):
             ],
         }
 
-        engine_contract = build_animation_codegen_contract_prompt()
-        quality_contract = build_3b1b_quality_prompt()
-
         # ── Narrative briefing (Task 8) + opening-state instructions (Task 9) ──
         # Built from context.narrative so the LLM knows what the viewer has
         # already seen and which objects are still on screen from the prior
@@ -263,15 +427,9 @@ class AnimationCodeGeneratorAgent(Agent):
         # video (the 3B1B "one variable, one color" rule).
         color_block = self._build_color_block(context)
 
-        # ── THE NARRATION-AWARE 3B1B SYSTEM PROMPT ───────────────────
-        system_prompt = f"""You are an expert Manim Community v0.19 developer who creates
-3Blue1Brown-quality educational animations.
-
-CLASS NAME: {class_name}  (must inherit from Scene)
-
-{engine_contract}
-
-{quality_contract}
+        # ── SYSTEM PROMPT: cached static contract + per-scene dynamic tail ──
+        static_system = _codegen_static_system_prompt()
+        dynamic_system = f"""CLASS NAME: {class_name}  (must inherit from Scene)
 {briefing_block}{opening_state_block}
 ═══════════════════════  PACING (VISUAL-FIRST)  ═══════════════════════
 This is a VISUALIZATION, not a narrated lecture. Let the VISUALS decide the
@@ -290,110 +448,7 @@ which is a rough guide only. Aim for a tight, visually dense scene of about
 At the END of construct(), add a comment:
   # Total animation time: Xs
 with your manually-computed running total.
-
-═══════════════════════  SCREEN LAYOUT (NO OVERLAP)  ═══════════════════════
-A LayoutTracker is imported for you.  Use it to REGISTER every Mobject after
-you place it, and to PLACE LABELS so they never overlap other objects.
-
-    layout = LayoutTracker()          # create once at the top of construct()
-
-    # After creating and positioning any object, register it:
-    triangle = Polygon(A, B, C, color=WHITE)
-    triangle.shift(LEFT * 2)
-    layout.register("triangle", triangle)
-
-    # To place a label near a registered object without overlap:
-    opp_label = Text("opposite = 6m", font_size=24, color=GREEN)
-    layout.place_label(opp_label, "opp_label", anchor="triangle",
-                       preferred=RIGHT, buff=0.3)
-    #   → tries RIGHT first; if that overlaps something it auto-tries
-    #     UP, LEFT, DOWN, UR, UL, DR, DL until it finds free space.
-    #   → stays within max_distance=1.5 of the anchor (labels stay close).
-
-    # For angle arcs at a vertex — place arc at the vertex, register,
-    # then use place_label for the θ symbol:
-    arc = Arc(radius=0.5, start_angle=0, angle=PI/4, color=YELLOW)
-    arc.shift(triangle.get_vertices()[0])      # put arc AT the vertex
-    layout.register("theta_arc", arc)
-    theta = MathTex(r"\\theta", color=YELLOW)
-    layout.place_label(theta, "theta", anchor="theta_arc",
-                       preferred=RIGHT, buff=0.2)
-
-    # When you FadeOut objects, unregister them to free space:
-    layout.unregister("triangle")
-    layout.unregister("opp_label")
-
-RULES:
-1. Create `layout = LayoutTracker()` as the FIRST line of construct().
-2. Call `layout.register(name, mob)` after EVERY Mobject is positioned.
-3. ALWAYS use `layout.place_label(...)` for Text/MathTex labels — never
-   raw `.next_to()` or `.move_to()` for labels.  The tracker prevents overlap.
-4. Call `layout.unregister(name)` before or after FadeOut so space is freed.
-5. Keep font sizes readable:  Text(font_size=28..36), MathTex default is fine.
-6. Scale graphs/axes to fit reasonably (x_length ≤ 5, y_length ≤ 3).
-7. Angle arcs: position the arc at the ACTUAL VERTEX of the shape using
-   `.shift(vertex_point)`, then register it, then place_label the θ symbol
-   anchored to the arc.  This keeps the angle annotation touching the shape.
-
-═══════════════════════  PI CHARACTERS  ═══════════════════════
-If and only if the storyboard intent includes a `pi_creature` object or a
-PiCreature* render_hint, use the pre-built Pi character helpers (already
-imported for you):
-
-    teacher = create_pi_teacher().shift(LEFT * 3)
-    students = create_pi_students().shift(RIGHT * 3)
-    bubble = create_speech_bubble("Key insight text", teacher)
-
-    self.play(FadeIn(teacher), FadeIn(students), run_time=1.0)
-    self.play(Write(bubble), run_time=1.0)
-    self.wait(3)
-    self.play(FadeOut(bubble), FadeOut(teacher), FadeOut(students), run_time=1.0)
-
-Use this pattern only when the storyboard explicitly asks for that helper beat.
-Do not invent helper objects that are not present in the visual intent.
-
-═══════════════════════  STYLE  ═══════════════════════
-- Black background (default).  Use BLUE, YELLOW, GREEN, RED for emphasis.
-- Use MathTex(r"...") for ALL equations.  Use Text("...") for plain labels.
-- Prefer Write / Create for new objects, ReplacementTransform for morphing.
-- Smooth pacing: run_time between 1.0 and 3.0 for most animations.
-- After every major visual change, add self.wait(2) to self.wait(5)
-  so the narrator can explain.
-{color_block}
-
-═══════════════════════  VISUAL PLAN (HONOR IT)  ═══════════════════════
-Each entry in `objects` is a PRE-PLANNED visual. Treat it as the intended
-design, not a loose suggestion:
-- `primitive` + `args`  → construct THIS Manim class with these kwargs
-  (e.g. primitive="Vector", args={{"direction": [2,1,0]}} → Vector([2,1,0])).
-  You may add helpers/labels around it, but do not silently swap the primitive
-  for a plainer one (e.g. don't downgrade a planned Vector to a static Line).
-- `position` {{x, y}}   → place the object there: mob.move_to([x, y, 0]).
-- `visible` {{t_in, t_out}} → reveal it around t_in and remove/fade it near
-  t_out so the screen stays uncluttered.
-- `id` / `role`         → use `id` as the variable name; `role` tells you its
-  job (main_equation, shared_axes, label, …).
-- `notation_key` / `coordinate_system_id` → REUSE the matching helper instead
-  of redrawing; these mark objects shared across scenes.
-When an object has no `primitive`, fall back to the type/content and choose the
-most visually intuitive Manim primitive yourself.
-
-═══════════════════════  CONTENT FIDELITY  ═══════════════════════
-The narration is extracted from an academic PDF.  Your animation MUST
-show every formula, definition, and example the narration mentions:
-- If the narration says "sin θ = opposite / hypotenuse", you MUST show
-  that equation on screen using MathTex.
-- If the narration describes a right triangle with specific sides,
-  you MUST draw that triangle with labeled sides.
-- If the narration mentions the unit circle, you MUST draw it.
-Do NOT omit PDF content.  Do NOT replace it with unrelated content.
-
-═══════════════════════  OUTPUT RULES  ═══════════════════════
-- Return ONLY the class definition.  No module docstrings, no imports,
-  no markdown fences, no commentary outside the class body.
-- Every self.play() call MUST have an explicit run_time parameter.
-- Do NOT use deprecated Manim APIs (e.g. ShowCreation → Create).
-"""
+{color_block}"""
         user_prompt = f"""Generate the full class for this scene:
 
 {json.dumps(scene_data, indent=2)}
@@ -408,22 +463,37 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
 
         try:
             response = self.client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=8192,
-                system=system_prompt,
+                model=CODE_GEN_MODEL,
+                max_tokens=12000,
+                # The static contract is byte-identical for every scene of a
+                # run — cache_control serves it from Anthropic's prompt cache
+                # (~0.1x input price) on scenes 2..N.
+                system=[
+                    {
+                        "type": "text",
+                        "text": static_system,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": dynamic_system},
+                ],
                 messages=[
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
+                # Sonnet 5 rejects non-default sampling params (temperature/top_p/
+                # top_k → 400) and runs adaptive thinking by default. Disable
+                # thinking to keep the prior deterministic no-thinking behaviour
+                # and leave the full max_tokens budget for code (the new tokenizer
+                # emits ~30% more tokens, so the budget is raised from 8192).
+                thinking={"type": "disabled"},
             )
 
             raw_code = response.content[0].text
             cleaned = self._clean_llm_code(raw_code, class_name)
-            # Visual-first: only guarantee the minimum floor. We deliberately do
-            # NOT stretch the scene up to narration length — that inflated
-            # visuals with dead-air waits. Narration is fit to the visuals by
-            # the composer, not the other way round.
-            return self._enforce_duration(cleaned, self.MIN_SCENE_SECONDS)
+            # Duration sync (P1.4): grow the video to the narration/audio
+            # length (floored at MIN_SCENE_SECONDS) by distributing the slack
+            # across existing waits, so the composer never has to freeze the
+            # tail. target_duration already = max(min_seconds, narration_seconds).
+            return self._distribute_duration_slack(cleaned, target_duration)
 
         except Exception as e:
             import logging
@@ -572,32 +642,124 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
             "for any equation that mentions one of these variables.\n"
         )
 
-    def _enforce_duration(self, code: str, min_seconds: float) -> str:
-        """Guarantee a scene runs at least ``min_seconds`` — nothing more.
+    MAX_SINGLE_WAIT = 4.0  # cap per pause so no single wait becomes dead air
 
-        Visual-first policy: we sum every numeric ``run_time=X`` and
-        ``self.wait(X)`` in the code and, ONLY if the total falls under the
-        floor, append a single small tail wait to reach it. We never scale a
-        scene UP to match narration length — that was the old behaviour and it
-        inflated visually-rich scenes with dead-air waits, producing long,
-        static videos. A scene whose animation already clears the floor is
-        returned untouched so the visuals set the pace.
+    def _distribute_duration_slack(self, code: str, target_seconds: float) -> str:
+        """Grow a short scene to ``target_seconds`` by DISTRIBUTING the slack
+        across its existing ``self.wait()`` calls — not by freezing the tail.
+
+        Duration sync by construction (P1.4): the composed scene runs
+        ``max(video, narration_audio)`` seconds. When the video is shorter, the
+        composer holds the final frame for the remainder — a "static scene"
+        (58 sync findings + much of the static-frame population in a real run).
+        Here ``target_seconds`` is the narration/audio length; we spread the
+        missing time across the pauses already in the code so those seconds
+        read as breathing room between reveals. Each wait is capped at
+        ``MAX_SINGLE_WAIT`` so no single pause dominates; any residual goes to
+        one bounded tail wait. A scene already at/over target is left untouched.
         """
         import re as _re3
 
-        total = 0.0
-        for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', code):
-            total += float(m.group(1))
-        for m in _re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code):
-            total += float(m.group(1))
+        # Count durations only in real code — `# run_time=5` in a comment
+        # must not inflate the total and shortchange the scene.
+        counting_text = self._strip_comments(code)
+        run_time_total = sum(
+            float(m.group(1))
+            for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', counting_text)
+        )
+        # `self.wait()` (no arg) defaults to 1 s in Manim — count and grow it
+        # like any other pause. Matches are located on the ORIGINAL code (the
+        # comment strip preserves offsets by replacing comments with spaces).
+        wait_re = _re3.compile(r'self\.wait\s*\(\s*([0-9.]*)\s*\)')
+        wait_matches = [m for m in wait_re.finditer(code)
+                        if wait_re.match(counting_text, m.start())]
 
-        gap = round(min_seconds - total, 1)
+        def wait_value(m) -> float:
+            return float(m.group(1)) if m.group(1) else 1.0
+
+        total = run_time_total + sum(wait_value(m) for m in wait_matches)
+
+        gap = round(target_seconds - total, 1)
         if gap <= 0.5:
-            return code  # visuals already fill the floor — leave the pacing alone
+            return code  # already fills the audio — no freeze-frame to avoid
 
-        lines = code.rstrip().split("\n")
-        lines.append(f"        self.wait({gap})  # floor padding to {min_seconds}s")
-        return "\n".join(lines) + "\n"
+        if wait_matches:
+            # Absorb the gap into existing waits up to the per-wait cap,
+            # proportional to each wait's remaining headroom.
+            headrooms = [
+                max(0.0, self.MAX_SINGLE_WAIT - wait_value(m)) for m in wait_matches
+            ]
+            capacity = sum(headrooms)
+            absorbed = min(gap, capacity)
+            adds = [
+                (absorbed * (hr / capacity)) if capacity > 0 else 0.0
+                for hr in headrooms
+            ]
+            new_code = code
+            for m, add in sorted(
+                zip(wait_matches, adds), key=lambda t: t[0].start(), reverse=True
+            ):
+                new_val = round(wait_value(m) + add, 1)
+                new_code = new_code[:m.start()] + f"self.wait({new_val})" + new_code[m.end():]
+            remaining = round(gap - absorbed, 1)
+            if remaining > 0.5:
+                new_code = self._append_tail_wait(
+                    new_code, remaining, "duration sync tail"
+                )
+            return new_code
+
+        # No existing waits — a single bounded tail wait is the only lever.
+        return self._append_tail_wait(code, gap, "duration sync")
+
+    @staticmethod
+    def _strip_comments(code: str) -> str:
+        """Blank out ``#`` comments, preserving every character offset."""
+        import io
+        import tokenize
+
+        try:
+            out = list(code)
+            lines = code.splitlines(keepends=True)
+            starts = [0]
+            for ln in lines:
+                starts.append(starts[-1] + len(ln))
+            for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+                if tok.type == tokenize.COMMENT:
+                    a = starts[tok.start[0] - 1] + tok.start[1]
+                    b = starts[tok.end[0] - 1] + tok.end[1]
+                    for i in range(a, b):
+                        out[i] = " "
+            return "".join(out)
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return code  # unparseable — fall back to counting everything
+
+    @staticmethod
+    def _append_tail_wait(code: str, seconds: float, label: str) -> str:
+        """Append ``self.wait(seconds)`` at the end of ``construct``.
+
+        Anchored via AST so the wait cannot land in a helper method that
+        happens to close the file. Falls back to plain end-of-file append
+        (the old behaviour) when construct can't be located.
+        """
+        import ast as _ast
+
+        wait_line = f"self.wait({seconds})  # {label}"
+        try:
+            tree = _ast.parse(code)
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef) and node.name == "construct" and node.body:
+                    indent = " " * node.body[0].col_offset
+                    insert_after = max(
+                        getattr(stmt, "end_lineno", stmt.lineno) for stmt in node.body
+                    )
+                    lines = code.splitlines(keepends=True)
+                    if lines and not lines[-1].endswith("\n"):
+                        lines[-1] += "\n"
+                    lines.insert(insert_after, indent + wait_line + "\n")
+                    return "".join(lines)
+        except SyntaxError:
+            pass
+        return code.rstrip() + "\n        " + wait_line + "\n"
 
     def _clean_llm_code(self, raw_code: str, class_name: str) -> str:
         """Strip markdown, duplicate headers, and ensure class structure.
@@ -933,6 +1095,7 @@ Generated: {datetime.now().isoformat()}
             "from src.utils.pi_characters import create_character_for_role, create_character_lineup, create_pi_teacher, create_pi_students, create_speech_bubble",
             "from src.utils.animation_patterns import progressive_write, dim_and_focus, staged_transform, execute_animation_steps",
             "from src.utils.layout_tracker import LayoutTracker",
+            "from src.utils.geometry_helpers import connect, drop_perpendicular, on_axes, perpendicular_foot",
         ]
 
     def _emit_primitive(self, var_name: str, obj_data: dict) -> str:
