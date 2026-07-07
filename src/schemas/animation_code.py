@@ -1,5 +1,6 @@
 """Animation code object schema for Animation Code Generator."""
 
+import re
 from datetime import datetime
 from typing import List
 
@@ -40,9 +41,17 @@ class AnimationCodeObject(BaseModel):
     @field_validator('scene_id')
     @classmethod
     def validate_scene_id(cls, v: str) -> str:
-        """Ensure scene_id is not empty."""
+        """Ensure scene_id is non-empty and filename-safe.
+
+        Persistence writes scene_{scene_id}.py — path separators or dots in
+        an LLM-influenced id would allow writes outside the run directory.
+        """
         if not v or not v.strip():
             raise ValueError("scene_id cannot be empty")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", v):
+            raise ValueError(
+                f"scene_id must contain only [A-Za-z0-9_-], got '{v}'"
+            )
         return v
     
     @field_validator('class_name')

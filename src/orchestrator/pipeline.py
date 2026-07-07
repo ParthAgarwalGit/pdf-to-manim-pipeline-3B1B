@@ -102,6 +102,10 @@ class PipelineConfig:
     dry_run: bool = False
     tts_voice: str = "alloy"
     render_quality: str = "medium"
+    # Cost ceiling for render salvage: each salvaged scene costs one codegen
+    # LLM call, so a pathological run must not multiply the bill unbounded.
+    # 0 disables salvage entirely.
+    max_salvage_scenes: int = 10
     
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -990,7 +994,7 @@ class Orchestrator:
         input_data = VideoRendererInput(
             scene_files=scene_files,
             output_dir=output_dir,
-            quality="m"
+            quality=self.config.render_quality,
         )
         input_data.constraints = StepConstraints(timeout_seconds=1800)
 
@@ -1046,6 +1050,21 @@ class Orchestrator:
         if not failed or not self._run_output_dir:
             return video_output
 
+        # Cost ceiling: one codegen LLM call per salvage attempt. A run with
+        # mass failures signals a systemic bug — regenerating everything would
+        # multiply the bill without fixing the cause.
+        cap = max(0, int(self.config.max_salvage_scenes))
+        if len(failed) > cap:
+            skipped = failed[cap:]
+            failed = failed[:cap]
+            logger.warning(
+                "Render salvage capped at %d of %d failed scene(s) "
+                "(max_salvage_scenes); skipping: %s",
+                cap, cap + len(skipped), [r.scene_id for r in skipped],
+            )
+        if not failed:
+            return video_output
+
         import shutil
         from src.agents.animation_generator import (
             AnimationCodeGeneratorAgent,
@@ -1059,7 +1078,9 @@ class Orchestrator:
         controller = self.scene_controller_agent
         renderer = self.video_renderer_agent
         media_dir = str(Path(self._run_output_dir) / "media")
-        quality_flag = renderer.QUALITY_FLAGS.get("m", "-qm")
+        # Salvaged scenes must match the main render's resolution, or the
+        # stream-copy concat produces a broken final video.
+        quality_flag = renderer.quality_flag_for(self.config.render_quality)
 
         logger.info("Attempting render salvage for %d failed scene(s).", len(failed))
         salvaged = 0

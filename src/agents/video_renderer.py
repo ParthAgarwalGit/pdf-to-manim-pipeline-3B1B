@@ -103,6 +103,16 @@ class VideoRendererAgent(Agent):
         "k": "-qk",   # 4K60
     }
 
+    # CLI/config spell quality as words; accept both forms everywhere so a
+    # requested "-q high" can't silently fall through to the medium default.
+    QUALITY_ALIASES = {"low": "l", "medium": "m", "high": "h", "4k": "k"}
+
+    @classmethod
+    def quality_flag_for(cls, quality: str) -> str:
+        """Manim quality flag for a short key ('m') or word ('medium')."""
+        key = cls.QUALITY_ALIASES.get(str(quality).lower(), str(quality).lower())
+        return cls.QUALITY_FLAGS.get(key, "-qm")
+
     # Manim quality flag → subdirectory name in media/videos/
     QUALITY_SUBDIRS = {
         "-ql": "480p15",
@@ -132,7 +142,7 @@ class VideoRendererAgent(Agent):
                 error="No scene files provided for rendering.",
             )
 
-        quality_flag = self.QUALITY_FLAGS.get(input_data.quality, "-qm")
+        quality_flag = self.quality_flag_for(input_data.quality)
 
         # Use a media directory inside the pipeline output so we always
         # know where Manim puts the rendered videos.

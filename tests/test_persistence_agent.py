@@ -775,15 +775,16 @@ class TestPersistenceAgentErrorHandling:
         sample_storyboard,
         sample_scene_processing_report
     ):
-        """Test error handling with invalid filename characters."""
-        from src.agents.base import AgentExecutionError
-        
-        agent = PersistenceAgent(base_output_dir=temp_output_dir)
-        
-        # Create animation code with invalid scene_id containing filesystem-invalid characters
-        invalid_animation_codes = [
+        """Filesystem-hostile scene_ids are rejected at the SCHEMA level.
+
+        scene_id is embedded in file paths (scene_{id}.py); path separators
+        would allow writes outside the run directory (Windows resolves '..'
+        lexically), so the guard moved from a persistence write failure to
+        AnimationCodeObject construction itself.
+        """
+        with pytest.raises(Exception):
             AnimationCodeObject(
-                scene_id="scene/with\\invalid:chars*",  # Invalid characters for most filesystems
+                scene_id="scene/with\\invalid:chars*",
                 code="class Scene_001(Scene):\n    def construct(self):\n        pass",
                 imports=["from manim import *"],
                 class_name="Scene_001",
@@ -791,19 +792,6 @@ class TestPersistenceAgentErrorHandling:
                 duration_estimate=45.0,
                 generation_timestamp=datetime(2024, 1, 15, 10, 30, 0)
             )
-        ]
-        
-        input_data = PersistenceInput(
-            scene_processing_report=sample_scene_processing_report,
-            animation_code_objects=invalid_animation_codes,
-            storyboard=sample_storyboard,
-            pdf_filename="test_document"
-        )
-        
-        with pytest.raises(AgentExecutionError) as exc_info:
-            agent.execute(input_data)
-        
-        assert exc_info.value.error_code == "FILE_WRITE_FAILED"
     
     def test_narration_script_write_failure(
         self,

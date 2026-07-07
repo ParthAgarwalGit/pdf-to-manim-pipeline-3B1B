@@ -140,3 +140,56 @@ class TestRenderSalvage:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestSalvageCostCap:
+    def test_zero_cap_disables_salvage(self, tmp_path, monkeypatch):
+        orch = _orchestrator(tmp_path)
+        orch.config.max_salvage_scenes = 0
+        called = []
+        monkeypatch.setattr(
+            orch.video_renderer_agent, "_render_scene",
+            lambda *a, **k: called.append(1),
+        )
+        failed = SceneRenderResult("scene_001", False, None, "boom")
+        out = orch._salvage_failed_renders(
+            _video_output(tmp_path, [failed]), _full_storyboard(),
+        )
+        assert called == []
+        assert out.scene_results[0].success is False
+
+    def test_cap_limits_attempts(self, tmp_path, monkeypatch):
+        orch = _orchestrator(tmp_path)
+        orch.config.max_salvage_scenes = 1
+        attempts = []
+
+        def fake_render(scene_file, quality_flag, media_dir):
+            attempts.append(scene_file)
+            return SceneRenderResult("scene_001", False, None, "still broken")
+
+        monkeypatch.setattr(orch.video_renderer_agent, "_render_scene", fake_render)
+        storyboard = _full_storyboard()
+        known_ids = [s.scene_id for s in storyboard.scenes]
+        failures = [
+            SceneRenderResult(sid, False, None, "boom") for sid in known_ids
+        ] + [SceneRenderResult("scene_001", False, None, "boom again")]
+        orch._salvage_failed_renders(
+            _video_output(tmp_path, failures), storyboard,
+        )
+        assert len(attempts) <= 1
+
+    def test_salvage_uses_configured_quality(self, tmp_path, monkeypatch):
+        orch = _orchestrator(tmp_path)
+        orch.config.render_quality = "high"
+        flags = []
+
+        def fake_render(scene_file, quality_flag, media_dir):
+            flags.append(quality_flag)
+            return SceneRenderResult("scene_001", False, None, "x")
+
+        monkeypatch.setattr(orch.video_renderer_agent, "_render_scene", fake_render)
+        failed = SceneRenderResult("scene_001", False, None, "boom")
+        orch._salvage_failed_renders(
+            _video_output(tmp_path, [failed]), _full_storyboard(),
+        )
+        assert flags == ["-qh"]

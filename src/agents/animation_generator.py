@@ -660,11 +660,24 @@ with your manually-computed running total.
         """
         import re as _re3
 
+        # Count durations only in real code — `# run_time=5` in a comment
+        # must not inflate the total and shortchange the scene.
+        counting_text = self._strip_comments(code)
         run_time_total = sum(
-            float(m.group(1)) for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', code)
+            float(m.group(1))
+            for m in _re3.finditer(r'run_time\s*=\s*([0-9.]+)', counting_text)
         )
-        wait_matches = list(_re3.finditer(r'self\.wait\s*\(\s*([0-9.]+)\s*\)', code))
-        total = run_time_total + sum(float(m.group(1)) for m in wait_matches)
+        # `self.wait()` (no arg) defaults to 1 s in Manim — count and grow it
+        # like any other pause. Matches are located on the ORIGINAL code (the
+        # comment strip preserves offsets by replacing comments with spaces).
+        wait_re = _re3.compile(r'self\.wait\s*\(\s*([0-9.]*)\s*\)')
+        wait_matches = [m for m in wait_re.finditer(code)
+                        if wait_re.match(counting_text, m.start())]
+
+        def wait_value(m) -> float:
+            return float(m.group(1)) if m.group(1) else 1.0
+
+        total = run_time_total + sum(wait_value(m) for m in wait_matches)
 
         gap = round(target_seconds - total, 1)
         if gap <= 0.5:
@@ -674,7 +687,7 @@ with your manually-computed running total.
             # Absorb the gap into existing waits up to the per-wait cap,
             # proportional to each wait's remaining headroom.
             headrooms = [
-                max(0.0, self.MAX_SINGLE_WAIT - float(m.group(1))) for m in wait_matches
+                max(0.0, self.MAX_SINGLE_WAIT - wait_value(m)) for m in wait_matches
             ]
             capacity = sum(headrooms)
             absorbed = min(gap, capacity)
@@ -686,19 +699,67 @@ with your manually-computed running total.
             for m, add in sorted(
                 zip(wait_matches, adds), key=lambda t: t[0].start(), reverse=True
             ):
-                new_val = round(float(m.group(1)) + add, 1)
+                new_val = round(wait_value(m) + add, 1)
                 new_code = new_code[:m.start()] + f"self.wait({new_val})" + new_code[m.end():]
             remaining = round(gap - absorbed, 1)
             if remaining > 0.5:
-                lines = new_code.rstrip().split("\n")
-                lines.append(f"        self.wait({remaining})  # duration sync tail")
-                new_code = "\n".join(lines) + "\n"
+                new_code = self._append_tail_wait(
+                    new_code, remaining, "duration sync tail"
+                )
             return new_code
 
         # No existing waits — a single bounded tail wait is the only lever.
-        lines = code.rstrip().split("\n")
-        lines.append(f"        self.wait({gap})  # duration sync")
-        return "\n".join(lines) + "\n"
+        return self._append_tail_wait(code, gap, "duration sync")
+
+    @staticmethod
+    def _strip_comments(code: str) -> str:
+        """Blank out ``#`` comments, preserving every character offset."""
+        import io
+        import tokenize
+
+        try:
+            out = list(code)
+            lines = code.splitlines(keepends=True)
+            starts = [0]
+            for ln in lines:
+                starts.append(starts[-1] + len(ln))
+            for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+                if tok.type == tokenize.COMMENT:
+                    a = starts[tok.start[0] - 1] + tok.start[1]
+                    b = starts[tok.end[0] - 1] + tok.end[1]
+                    for i in range(a, b):
+                        out[i] = " "
+            return "".join(out)
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return code  # unparseable — fall back to counting everything
+
+    @staticmethod
+    def _append_tail_wait(code: str, seconds: float, label: str) -> str:
+        """Append ``self.wait(seconds)`` at the end of ``construct``.
+
+        Anchored via AST so the wait cannot land in a helper method that
+        happens to close the file. Falls back to plain end-of-file append
+        (the old behaviour) when construct can't be located.
+        """
+        import ast as _ast
+
+        wait_line = f"self.wait({seconds})  # {label}"
+        try:
+            tree = _ast.parse(code)
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef) and node.name == "construct" and node.body:
+                    indent = " " * node.body[0].col_offset
+                    insert_after = max(
+                        getattr(stmt, "end_lineno", stmt.lineno) for stmt in node.body
+                    )
+                    lines = code.splitlines(keepends=True)
+                    if lines and not lines[-1].endswith("\n"):
+                        lines[-1] += "\n"
+                    lines.insert(insert_after, indent + wait_line + "\n")
+                    return "".join(lines)
+        except SyntaxError:
+            pass
+        return code.rstrip() + "\n        " + wait_line + "\n"
 
     def _clean_llm_code(self, raw_code: str, class_name: str) -> str:
         """Strip markdown, duplicate headers, and ensure class structure.

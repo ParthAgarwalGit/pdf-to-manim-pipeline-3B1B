@@ -242,3 +242,46 @@ class TestPlacementNormalize:
         import ast as _ast
         _, obj = self._fix('        a.move_to([10, 10, 0])\n        b.shift(UP * 12)\n')
         _ast.parse(obj.code)
+
+    def test_non_literal_z_left_untouched(self):
+        # A clamp must never silently replace an expression element with 0.
+        _, obj = self._fix('        a.move_to([9.0, 0, z_var])\n')
+        assert "z_var" in obj.code
+        assert "9.0" in obj.code  # x not clamped either — whole point skipped
+
+    def test_multiline_balanced_spans_untouched(self):
+        # $-spans that cross a newline are still spans (re.S), not "math
+        # outside spans" — must not be rejected.
+        body = '        t = Tex(r"""the sum $a_1 +\n a_2$ of terms""")\n'
+        result, obj = self._fix(body)
+        assert isinstance(result, ManimValidatorOutput)
+
+
+class TestLatexMacroBlocklist:
+    """File/expansion LaTeX macros reach a local latex subprocess; \input can
+    read arbitrary files INTO the rendered video. Reject, never auto-fix."""
+
+    def _validate(self, body: str):
+        agent = ManimCodeValidatorAgent()
+        obj = make_code_obj(
+            "class TestScene(Scene):\n    def construct(self):\n" + body
+        )
+        return agent.execute(ManimValidatorInput(animation_code_objects=[obj]))
+
+    def test_input_macro_rejected(self):
+        result = self._validate('        t = Tex(r"\input{secrets.txt}")\n')
+        assert isinstance(result, ManimValidatorFailure)
+        assert any("Security" in e and "input" in e for e in result.results[0].errors)
+
+    def test_write18_rejected(self):
+        result = self._validate('        t = MathTex(r"\write18{whoami}")\n')
+        assert isinstance(result, ManimValidatorFailure)
+
+    def test_openout_rejected(self):
+        result = self._validate('        t = Tex(r"\openout1=x.txt")\n')
+        assert isinstance(result, ManimValidatorFailure)
+
+    def test_plain_math_macros_still_fine(self):
+        # \int (integral) must not trip the \input blocklist prefix.
+        result = self._validate('        t = MathTex(r"\int_0^1 x\,dx")\n')
+        assert isinstance(result, ManimValidatorOutput)

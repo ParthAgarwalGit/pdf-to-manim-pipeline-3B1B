@@ -566,7 +566,8 @@ def test_animation_generator_generates_valid_class_name():
         ("scene-001", "Scene_scene_001"),
         ("intro_scene", "Intro_scene"),
         ("123_scene", "Scene_123_scene"),
-        ("scene.with.dots", "Scene_with_dots"),
+        # NOTE: ids with dots/slashes are now rejected at the schema level
+        # (path-safety fix) and can no longer reach the generator.
     ]
     
     for scene_id, expected_prefix in test_cases:
@@ -1199,3 +1200,51 @@ def test_slack_no_waits_appends_single_tail():
     out = agent._distribute_duration_slack(code, 8.0)
     assert "self.wait(6.0)" in out
     assert "run_time=2.0" in out  # original animation untouched
+
+def test_slack_counts_no_arg_wait_as_one_second():
+    """self.wait() defaults to 1 s in Manim — it must be counted and grown
+    like any explicit pause."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Create(c), run_time=2.0)\n"
+        "        self.wait()\n"
+    )  # total = 3.0
+    out = agent._distribute_duration_slack(code, 6.0)  # gap 3.0, headroom 3.0
+    assert "self.wait(4.0)" in out
+    assert "self.wait()" not in out
+
+
+def test_slack_ignores_run_time_in_comments():
+    """`# run_time=50` in a comment must not inflate the duration total and
+    shortchange the scene."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        # keep run_time=50 short here\n"
+        "        self.play(Create(c), run_time=2.0)\n"
+    )  # real total = 2.0, comment must not count
+    out = agent._distribute_duration_slack(code, 8.0)
+    assert "duration sync" in out  # gap detected -> tail added
+
+
+def test_tail_wait_lands_inside_construct_not_after_helpers():
+    """The tail wait is anchored to the end of construct() via AST, so a
+    helper method after construct doesn't swallow it."""
+    agent = _agent_no_init()
+    code = (
+        "class S(Scene):\n"
+        "    def construct(self):\n"
+        "        self.play(Create(c), run_time=2.0)\n"
+        "\n"
+        "    def helper(self):\n"
+        "        return 42\n"
+    )
+    out = agent._distribute_duration_slack(code, 10.0)
+    wait_pos = out.index("duration sync")
+    helper_pos = out.index("def helper")
+    assert wait_pos < helper_pos
+    import ast as _ast
+    _ast.parse(out)  # still valid python

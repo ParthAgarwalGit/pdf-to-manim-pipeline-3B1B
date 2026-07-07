@@ -299,10 +299,24 @@ class ManimCodeValidatorAgent(Agent):
         r"|exists|langle|rangle|mathbb|mathbf|mathrm|operatorname)\b"
     )
 
+    # LaTeX macros that reach the local latex subprocess with side effects
+    # beyond typesetting: \input/\include read arbitrary files INTO the
+    # rendered video (exfiltration channel from a hostile PDF), \openout/
+    # \write touch the filesystem, \csname/\catcode/\expandafter enable
+    # obfuscated macro construction. Never legitimate in a scene label —
+    # reject, don't fix.
+    # TeX macro names end at the first non-letter, so the boundary is
+    # (?![A-Za-z]) — \openout1 must still match.
+    _TEX_FORBIDDEN = re.compile(
+        r"\\(input|include|InputIfFileExists|openout|openin|read|write"
+        r"|immediate|special|catcode|csname|expandafter|usepackage"
+        r"|RequirePackage|def|gdef|edef|xdef)(?![A-Za-z])"
+    )
+
     @staticmethod
     def _outside_math_spans(s: str) -> str:
         """The parts of a Tex string OUTSIDE its $...$ math spans."""
-        return re.sub(r"(?<!\\)\$.*?(?<!\\)\$", " ", s)
+        return re.sub(r"(?<!\\)\$.*?(?<!\\)\$", " ", s, flags=re.S)
 
     def _fix_tex_math_mode(self, code: str):
         """Auto-fix / reject Tex() strings that would abort LaTeX at render.
@@ -340,6 +354,16 @@ class ManimCodeValidatorAgent(Agent):
                 continue
             snode = node.args[0]
             value = snode.value
+
+            forbidden = self._TEX_FORBIDDEN.search(value)
+            if forbidden:
+                errors.append(
+                    f"Security: {name} at line {node.lineno} contains the LaTeX "
+                    f"macro '\\{forbidden.group(1)}' ({value!r}) — file/expansion "
+                    "macros are not allowed in scene text. Use plain typesetting "
+                    "macros only."
+                )
+                continue
 
             unescaped_dollars = len(re.findall(r"(?<!\\)\$", value))
             if unescaped_dollars % 2 == 1:
@@ -457,10 +481,12 @@ class ManimCodeValidatorAgent(Agent):
                 arg = node.args[0]
                 if isinstance(arg, (ast.List, ast.Tuple)) and 2 <= len(arg.elts) <= 3:
                     coords = [self._const_value(e) for e in arg.elts]
-                    if coords[0] is None or coords[1] is None:
+                    # Only rewrite fully-literal points: a non-literal element
+                    # (e.g. [9, 0, z_var]) must not be silently replaced.
+                    if any(c is None for c in coords):
                         continue
                     x, y = coords[0], coords[1]
-                    z = coords[2] if len(coords) == 3 and coords[2] is not None else 0.0
+                    z = coords[2] if len(coords) == 3 else 0.0
                     cx = max(-self._SAFE_X, min(self._SAFE_X, x))
                     cy = max(-self._SAFE_Y, min(self._SAFE_Y, y))
                     if (cx, cy) != (x, y):
