@@ -191,3 +191,54 @@ class TestLatexGate:
         result, obj = self._validate('        t = Tex(r"\\frac{a}{b} of the total")\n')
         assert isinstance(result, ManimValidatorOutput)
         assert obj.code.count("$") == 2  # wrapped
+
+
+class TestPlacementNormalize:
+    """Deterministic off-screen placement clamp (P1.5): move_to literals and
+    oversized shifts are pulled back into the safe area — fixes the empty-frame
+    class without touching the LLM. Auto-fix only, never rejects."""
+
+    def _fix(self, body: str):
+        agent = ManimCodeValidatorAgent()
+        obj = make_code_obj(
+            "class TestScene(Scene):\n    def construct(self):\n" + body
+        )
+        result = agent.execute(ManimValidatorInput(animation_code_objects=[obj]))
+        return result, obj
+
+    def test_offscreen_move_to_clamped(self):
+        result, obj = self._fix('        c.move_to([9.0, -6.0, 0])\n')
+        assert isinstance(result, ManimValidatorOutput)
+        assert "[6.5, -3.5, 0" in obj.code
+        assert any("clamped move_to" in w for w in result.results[0].warnings)
+
+    def test_in_bounds_move_to_untouched(self):
+        result, obj = self._fix('        c.move_to([2.0, -1.5, 0])\n')
+        assert "[2.0, -1.5, 0]" in obj.code
+
+    def test_expression_move_to_untouched(self):
+        # get_center() must not be clamped (it's a computed anchor).
+        result, obj = self._fix('        arrow.move_to(dot.get_center())\n')
+        assert "dot.get_center()" in obj.code
+
+    def test_oversized_vertical_shift_capped(self):
+        result, obj = self._fix('        g.shift(UP * 8)\n')
+        assert isinstance(result, ManimValidatorOutput)
+        assert "UP * 3.0" in obj.code
+
+    def test_oversized_horizontal_shift_capped(self):
+        result, obj = self._fix('        g.shift(RIGHT * 9.5)\n')
+        assert "RIGHT * 6.0" in obj.code
+
+    def test_reasonable_shift_untouched(self):
+        result, obj = self._fix('        g.shift(LEFT * 2)\n')
+        assert "LEFT * 2" in obj.code
+
+    def test_scalar_first_shift_form_capped(self):
+        result, obj = self._fix('        g.shift(7 * DOWN)\n')
+        assert "3.0 * DOWN" in obj.code or "DOWN" in obj.code and "7" not in obj.code
+
+    def test_fixed_code_stays_valid_python(self):
+        import ast as _ast
+        _, obj = self._fix('        a.move_to([10, 10, 0])\n        b.shift(UP * 12)\n')
+        _ast.parse(obj.code)

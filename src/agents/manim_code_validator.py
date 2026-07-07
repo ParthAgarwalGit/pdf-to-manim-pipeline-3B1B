@@ -232,6 +232,16 @@ class ManimCodeValidatorAgent(Agent):
         errors.extend(tex_errors)
         latex_ok = not tex_errors
 
+        # 0b. Deterministic placement normalize (P1.5) — clamp absolute
+        # move_to() literals and cap oversized .shift() multipliers back into
+        # the safe area. Fixes the empty-frame class (content placed off-screen)
+        # without touching the LLM. First installment of ADR-005's deferred
+        # "deterministic layer owns layout." Auto-fix only (never rejects).
+        placed_code, place_notes = self._normalize_placement(code_obj.code)
+        if placed_code != code_obj.code:
+            code_obj.code = placed_code
+        warnings.extend(place_notes)
+
         # Reconstruct full source
         full_source = "\n".join(code_obj.imports) + "\n\n" + code_obj.code
 
@@ -397,6 +407,111 @@ class ManimCodeValidatorAgent(Agent):
             )
             text = text[:a] + new_literal + text[b:]
         return text, notes, errors
+
+    # ------------------------------------------------------------------
+    # Deterministic placement normalize (P1.5)
+    # ------------------------------------------------------------------
+
+    # Manim safe area (frame is x∈[-7.1,7.1], y∈[-4.0,4.0]; margin off the bezel).
+    _SAFE_X, _SAFE_Y = 6.5, 3.5
+    # Per-axis .shift() magnitude caps: a shift with a vertical component is
+    # capped tighter than a purely horizontal one.
+    _DIRECTIONS = {
+        "UP": (0, 1), "DOWN": (0, 1), "LEFT": (1, 0), "RIGHT": (1, 0),
+        "UR": (1, 1), "UL": (1, 1), "DR": (1, 1), "DL": (1, 1),
+    }
+    _SHIFT_CAP_X, _SHIFT_CAP_Y = 6.0, 3.0
+
+    @staticmethod
+    def _const_value(node: ast.AST):
+        """Return a numeric literal, handling unary minus; else None."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            inner = ManimCodeValidatorAgent._const_value(node.operand)
+            return -inner if inner is not None else None
+        return None
+
+    def _normalize_placement(self, code: str):
+        """Clamp off-screen ``move_to`` literals and cap oversized ``shift``.
+
+        Returns ``(possibly_fixed_code, notes)``. Only static numeric literals
+        are touched; expressions (``obj.get_center()``, ``axes.c2p(...)``,
+        computed points) are left alone.
+        """
+        notes: List[str] = []
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return code, notes
+
+        replacements = []  # (node_to_replace, new_source_text)
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            attr = node.func.attr
+
+            # move_to([x, y, z]) with literal, off-safe-area coordinates.
+            if attr == "move_to" and len(node.args) == 1:
+                arg = node.args[0]
+                if isinstance(arg, (ast.List, ast.Tuple)) and 2 <= len(arg.elts) <= 3:
+                    coords = [self._const_value(e) for e in arg.elts]
+                    if coords[0] is None or coords[1] is None:
+                        continue
+                    x, y = coords[0], coords[1]
+                    z = coords[2] if len(coords) == 3 and coords[2] is not None else 0.0
+                    cx = max(-self._SAFE_X, min(self._SAFE_X, x))
+                    cy = max(-self._SAFE_Y, min(self._SAFE_Y, y))
+                    if (cx, cy) != (x, y):
+                        new_txt = f"[{round(cx, 2)}, {round(cy, 2)}, {round(z, 2)}]"
+                        replacements.append((arg, new_txt))
+                        notes.append(
+                            f"Placement: clamped move_to({round(x,2)}, {round(y,2)}) "
+                            f"into the safe area at line {node.lineno}."
+                        )
+
+            # shift(DIR * n) or shift(n * DIR) with an over-cap magnitude.
+            elif attr == "shift" and len(node.args) == 1 and isinstance(node.args[0], ast.BinOp) \
+                    and isinstance(node.args[0].op, ast.Mult):
+                bin_op = node.args[0]
+                name_node = num_node = None
+                for side in (bin_op.left, bin_op.right):
+                    if isinstance(side, ast.Name) and side.id in self._DIRECTIONS:
+                        name_node = side
+                    elif self._const_value(side) is not None:
+                        num_node = side
+                if name_node is None or num_node is None:
+                    continue
+                mag = self._const_value(num_node)
+                has_x, has_y = self._DIRECTIONS[name_node.id]
+                cap = min(
+                    self._SHIFT_CAP_X if has_x else 99.0,
+                    self._SHIFT_CAP_Y if has_y else 99.0,
+                )
+                if abs(mag) > cap:
+                    capped = round(cap if mag > 0 else -cap, 2)
+                    replacements.append((num_node, repr(capped)))
+                    notes.append(
+                        f"Placement: capped shift({name_node.id} * {mag}) to "
+                        f"{capped} at line {node.lineno} (off-screen)."
+                    )
+
+        if not replacements:
+            return code, notes
+
+        lines = code.splitlines(keepends=True)
+        line_start = [0]
+        for ln in lines:
+            line_start.append(line_start[-1] + len(ln))
+        text = "".join(lines)
+        for node, new_txt in sorted(
+            replacements, key=lambda t: (t[0].lineno, t[0].col_offset), reverse=True
+        ):
+            a = line_start[node.lineno - 1] + node.col_offset
+            b = line_start[node.end_lineno - 1] + node.end_col_offset
+            text = text[:a] + new_txt + text[b:]
+        return text, notes
 
     # ------------------------------------------------------------------
 
