@@ -42,7 +42,16 @@ class Configuration(BaseModel):
         default="balanced",
         description="Source segmentation granularity (coarse|balanced|fine)"
     )
-    
+    target_minutes: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Requested finished-video length in minutes. When set, the scene "
+            "budget is derived from it so length is a chosen input rather than "
+            "an emergent property of document size. None = ungoverned."
+        ),
+    )
+
     @field_validator('verbosity')
     @classmethod
     def validate_verbosity(cls, v: str) -> str:

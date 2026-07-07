@@ -465,7 +465,9 @@ class ScriptArchitectAgent(Agent):
             )
 
             # Phase 2: deterministic chunker (Task 4).
-            scenes = self._chunk_script_into_scenes(video_script)
+            scenes = self._chunk_script_into_scenes(
+                video_script, max_scenes=self._effective_max_scenes(config)
+            )
             logger.info(f"Chunked script into {len(scenes)} scenes")
 
             # Phase 3: per-chunk visual intent.
@@ -1332,7 +1334,17 @@ Return JSON in this exact shape:
     def _target_beat_count(self, source_text: str) -> int:
         return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))
 
-    def _chunk_script_into_scenes(self, script) -> List[Scene]:
+    def _effective_max_scenes(self, config) -> int:
+        """Scene ceiling for this run: the static MAX_SCENES unless the user
+        requested a target length, in which case the tighter length-derived
+        budget wins (min of the two — never exceed the explosion guard)."""
+        target_minutes = getattr(config, "target_minutes", None)
+        if not target_minutes:
+            return self.MAX_SCENES
+        budget = max(1, round(float(target_minutes) * 60.0 / self.TARGET_SCENE_DURATION))
+        return min(self.MAX_SCENES, budget)
+
+    def _chunk_script_into_scenes(self, script, max_scenes: Optional[int] = None) -> List[Scene]:
         """Group beats into ~8-45 s vignette scenes (Task 4 chunker, ADR-005).
 
         Greedy packer: walk the beats in order, accumulating beats into the
@@ -1394,18 +1406,19 @@ Return JSON in this exact shape:
         # 90 scenes — choppy, slow, expensive). Escalate the packing target
         # until the count fits MAX_SCENES. Floor = number of distinct segments
         # (chunks never cross segment boundaries), which the segmenter caps.
+        scene_cap = self.MAX_SCENES if max_scenes is None else max(1, int(max_scenes))
         target = float(self.TARGET_SCENE_DURATION)
         max_dur = float(self.MAX_SCENE_DURATION)
         chunks = pack(target, max_dur)
-        while len(chunks) > self.MAX_SCENES and target < 120.0:
+        while len(chunks) > scene_cap and target < 120.0:
             target *= 1.4
             max_dur = max(max_dur, target * 1.8)
             chunks = pack(target, max_dur)
-        if len(chunks) > self.MAX_SCENES:
+        if len(chunks) > scene_cap:
             logger.warning(
-                "Chunker could not reduce scene count below MAX_SCENES=%d "
+                "Chunker could not reduce scene count below cap=%d "
                 "(got %d) — segment boundaries dominate.",
-                self.MAX_SCENES, len(chunks),
+                scene_cap, len(chunks),
             )
 
         # Concept tracking: each scene's concept_id is the first canonical

@@ -16,19 +16,34 @@ GRANULARITY_WORD_TARGETS = {"coarse": 300, "balanced": 150, "fine": 90}
 # scenes -> hours of render for an unwatchably fragmented video.
 MAX_SEGMENTS = 40
 
+# Estimated finished duration of one scene, used to convert a requested video
+# length (--target-minutes) into a scene budget. Matches ScriptArchitect's
+# TARGET_SCENE_DURATION so the segment floor and the chunker ceiling agree.
+SECONDS_PER_SCENE_ESTIMATE = 25.0
 
-def target_words_for(granularity: str, total_words: int) -> int:
+
+def scenes_for_minutes(target_minutes: float) -> int:
+    """Scene budget implied by a requested finished-video length (>=1)."""
+    seconds = max(0.0, float(target_minutes)) * 60.0
+    return max(1, round(seconds / SECONDS_PER_SCENE_ESTIMATE))
+
+
+def target_words_for(
+    granularity: str, total_words: int, max_segments: int = MAX_SEGMENTS
+) -> int:
     """Words-per-segment target, adaptive to document length.
 
     Honours the granularity dial for short documents, but for long ones raises
-    the target so the segment count stays under ``MAX_SEGMENTS``. Short PDFs are
-    unaffected (the base target already keeps them under the cap); long PDFs get
-    proportionally larger segments instead of an unbounded scene explosion.
+    the target so the segment count stays under ``max_segments`` (default
+    ``MAX_SEGMENTS``; a length-governed run passes a tighter cap). Short PDFs
+    are unaffected; long PDFs get proportionally larger segments instead of an
+    unbounded scene explosion.
     """
     base = GRANULARITY_WORD_TARGETS.get(granularity, 150)
+    cap = max(1, int(max_segments))
     if total_words <= 0:
         return base
-    cap_target = -(-total_words // MAX_SEGMENTS)  # ceil(total_words / MAX_SEGMENTS)
+    cap_target = -(-total_words // cap)  # ceil(total_words / cap)
     return max(base, cap_target)
 
 

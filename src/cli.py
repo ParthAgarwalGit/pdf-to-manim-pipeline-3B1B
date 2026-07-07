@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 import click
 
@@ -141,6 +142,13 @@ def pdf2manim():
     help='Source coverage granularity (default: balanced)'
 )
 @click.option(
+    '--target-minutes',
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    help='Requested finished-video length in minutes; caps the scene budget '
+         'so length is a chosen input (default: ungoverned by length)'
+)
+@click.option(
     '-q', '--quality',
     type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
     default='medium',
@@ -183,6 +191,7 @@ def convert(
     depth: str,
     audience: str,
     granularity: str,
+    target_minutes: Optional[float],
     quality: str,
     voice: str,
     skip_tts: bool,
@@ -233,6 +242,7 @@ def convert(
         click.echo(f"  Depth:        {depth}")
         click.echo(f"  Audience:     {audience}")
         click.echo(f"  Granularity:  {granularity}")
+        click.echo(f"  Target Length:{' ' + str(target_minutes) + ' min' if target_minutes else ' auto'}")
         click.echo()
 
         click.echo(click.style("Rendering Configuration:", bold=True))
@@ -250,6 +260,7 @@ def convert(
             depth=depth,
             audience=audience,
             granularity=granularity,
+            target_minutes=target_minutes,
             base_output_dir=output_dir,
             enable_ocr_debug=False,
             strict=strict,

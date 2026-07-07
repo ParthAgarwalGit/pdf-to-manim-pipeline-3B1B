@@ -93,6 +93,7 @@ class PipelineConfig:
     max_quality_retries: int = 2
     storyboard_quality_threshold: float = 6.0
     granularity: str = "balanced"
+    target_minutes: Optional[float] = None  # requested finished length; None = ungoverned
     enable_manim_dry_run_validation: bool = False
     enable_final_video_review: bool = True
     strict: bool = False
@@ -109,6 +110,7 @@ class PipelineConfig:
             depth=self.depth,
             audience=self.audience,
             granularity=self.granularity,
+            target_minutes=self.target_minutes,
         )
 
 
@@ -632,12 +634,22 @@ class Orchestrator:
         structured_logger: StructuredJSONLogger,
     ):
         """Run deterministic document segmentation after OCR."""
-        from src.agents.document_segmenter import target_words_for, total_ocr_words
+        from src.agents.document_segmenter import (
+            MAX_SEGMENTS,
+            scenes_for_minutes,
+            target_words_for,
+            total_ocr_words,
+        )
 
         # Adaptive: honour the granularity dial, but cap total segments so a long
         # PDF doesn't explode into 100+ scenes (see DocumentSegmenter.MAX_SEGMENTS).
+        # When the user requests a target length, tighten the cap to that scene
+        # budget so the segment floor never overshoots the requested minutes.
+        seg_cap = MAX_SEGMENTS
+        if self.config.target_minutes:
+            seg_cap = min(MAX_SEGMENTS, scenes_for_minutes(self.config.target_minutes))
         target_words = target_words_for(
-            self.config.granularity, total_ocr_words(ocr_output)
+            self.config.granularity, total_ocr_words(ocr_output), max_segments=seg_cap
         )
         input_data = DocumentSegmenterInput(
             ocr_output=ocr_output,
