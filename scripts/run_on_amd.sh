@@ -54,7 +54,10 @@ demo() {
   [ -f keys.env ] || { echo "keys.env not found (cp keys.example.env keys.env)"; exit 1; }
   mkdir -p output
   echo ">> Web demo on http://0.0.0.0:7860"
+  echo ">> GRADIO_SHARE=1 -> a public https://<id>.gradio.live URL is printed"
+  echo "   below (this is your submission's Application URL; compute stays here)."
   docker run --rm -p 7860:7860 --env-file keys.env \
+    -e GRADIO_SHARE=1 \
     -v "$ROOT/output:/app/output" \
     --entrypoint python "$IMAGE" app.py
 }

@@ -27,6 +27,10 @@ services:
     command: ["app.py"]
     env_file:
       - keys.env
+    environment:
+      # Print a public https://<id>.gradio.live URL (the Application URL).
+      # Set to 0 for a local-only demo. Compute stays in this container.
+      - GRADIO_SHARE=1
     ports:
       - "7860:7860"
     volumes:

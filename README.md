@@ -183,7 +183,15 @@ vignettes in the browser — this is the hosted "Application URL":
 ```bash
 pip install -e ".[demo]"
 python app.py                     # http://localhost:7860
+
+# Public URL for a submission/judging (compute stays on the host):
+GRADIO_SHARE=1 python app.py      # prints https://<id>.gradio.live (~72h)
 ```
+
+Note: the demo must run on a host with LaTeX/FFmpeg/Manim and minute-long
+render budgets (i.e. the container on AMD Developer Cloud) — it is **not**
+deployable to serverless platforms like Vercel. To use a serverless frontend,
+put only a static page there and point it at this app running on AMD.
 
 ## Configuration
 

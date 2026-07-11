@@ -119,7 +119,13 @@ def build_demo() -> "gr.Blocks":
 
 
 if __name__ == "__main__":
+    # Set GRADIO_SHARE=1 on the AMD Developer Cloud instance to get a public
+    # *.gradio.live URL (a ~72h tunnel) for the submission's Application URL.
+    # The pipeline still runs on AMD; only the inbound link is tunneled.
+    # Needs outbound network to fetch the tunnel binary on first launch.
+    share = os.getenv("GRADIO_SHARE", "").strip().lower() in ("1", "true", "yes")
     build_demo().launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860")),
+        share=share,
     )

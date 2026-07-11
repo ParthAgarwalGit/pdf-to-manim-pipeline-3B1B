@@ -31,8 +31,20 @@ scripts/run_on_amd.sh smoke        # builds + keyless --help and --dry-run
 scripts/run_on_amd.sh convert /path/to/paper.pdf -q high
 
 # 5. Or launch the web demo (the submission's Application URL):
-scripts/run_on_amd.sh demo         # http://<instance-ip>:7860
+scripts/run_on_amd.sh demo         # prints a public https://<id>.gradio.live URL
 ```
+
+### Getting a public "Application URL"
+
+The demo runs `app.py` with `GRADIO_SHARE=1`, which opens a public
+`https://<id>.gradio.live` tunnel (~72h) straight to the app on this AMD
+instance. Compute never leaves AMD — only the inbound link is tunneled. Use
+that URL as the submission's Application URL.
+
+Serverless platforms (Vercel, Netlify functions, etc.) **cannot** host the
+pipeline: it needs LaTeX/FFmpeg/Manim system binaries, a persistent server, and
+minute-long render budgets that exceed function timeouts. If you want a branded
+frontend, deploy only a static page to Vercel and have it call this app on AMD.
 
 `docker compose` works too:
 
