@@ -145,6 +145,46 @@ pdf2manim convert document.pdf --strict
 pdf2manim cost document.pdf
 ```
 
+## Docker & AMD Developer Cloud
+
+The pipeline is containerized so the full workload runs on an AMD Developer
+Cloud instance. The base image ships LaTeX, Cairo, and FFmpeg, so the build is
+self-contained.
+
+```bash
+# 1. Provide keys (git-ignored, never baked into the image)
+cp keys.example.env keys.env      # then edit in your OPENAI_API_KEY / ANTHROPIC_API_KEY
+
+# 2. Build + prove the container works WITHOUT spending credits
+scripts/run_on_amd.sh smoke       # keyless --help and --dry-run
+
+# 3. Convert a PDF
+scripts/run_on_amd.sh convert path/to/paper.pdf -q high
+```
+
+Or with Compose:
+
+```bash
+docker compose run --rm convert   # ./input/document.pdf -> ./output
+docker compose up demo            # web demo on http://<host>:7860
+```
+
+**What runs on AMD:** rendering and encoding — the bulk of the compute — run on
+AMD Developer Cloud (EPYC CPUs, optional AMD GPU). Frontier models (gpt-5,
+claude) are used only for reasoning/codegen over the API, so output quality is
+unchanged. Full guide, evidence-capture tips, and the optional ROCm GPU
+render/encode path: [docs/amd-deployment.md](docs/amd-deployment.md).
+
+## Web Demo
+
+A minimal Gradio app (`app.py`) lets you upload a PDF and watch the generated
+vignettes in the browser — this is the hosted "Application URL":
+
+```bash
+pip install -e ".[demo]"
+python app.py                     # http://localhost:7860
+```
+
 ## Configuration
 
 | Option | Values | Controls |

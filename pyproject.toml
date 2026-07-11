@@ -51,6 +51,9 @@ dev = [
 engine_reference = [
     "manimgl>=1.7.2",
 ]
+demo = [
+    "gradio>=4.0.0",
+]
 
 [project.scripts]
 pdf2manim = "src.cli:main"

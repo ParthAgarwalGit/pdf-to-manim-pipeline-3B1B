@@ -1,0 +1,33 @@
+# Convenience runners for AMD Developer Cloud.
+#
+#   1. Put your keys in keys.env  (cp keys.example.env keys.env, then edit)
+#   2. Drop a PDF at ./input/document.pdf
+#   3a. CLI:  docker compose run --rm convert
+#   3b. Web:  docker compose up demo     # then open http://<host>:7860
+#
+# Both services share one image; the demo just overrides the entrypoint.
+
+services:
+  convert:
+    build: .
+    image: pdf2manim:latest
+    env_file:
+      - keys.env
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+    # Override the PDF path/flags on the command line as needed, e.g.:
+    #   docker compose run --rm convert convert /app/input/mypaper.pdf -q high
+    command: ["convert", "/app/input/document.pdf", "--output-dir", "/app/output"]
+
+  demo:
+    build: .
+    image: pdf2manim:latest
+    entrypoint: ["python"]
+    command: ["app.py"]
+    env_file:
+      - keys.env
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./output:/app/output
