@@ -1,0 +1,43 @@
+# Keep the Docker build context small and secret-free.
+# Without this, the context includes .venv, generated output, and ~21k files.
+
+# Secrets — MUST never enter the image
+keys.env
+.env
+*.env
+!keys.example.env
+
+# Virtualenvs / local interpreters
+.venv/
+venv/
+env/
+
+# Generated pipeline artifacts
+output/
+*.mp4
+*.mp3
+
+# Python caches / build
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Tests are not needed at runtime
+tests/
+
+# Dev tooling / worktrees / editor state
+.git/
+.github/
+.worktrees/
+.claude/
+.kiro/
+.vscode/
+docs/superpowers/
