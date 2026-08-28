@@ -25,12 +25,12 @@ the documented architecture and what actually runs:
    (x, y) and an `interval` (t_in, t_out). But `AnimationCodeGenerator.
    _generate_code` built its prompt from only `type/content/render_hint/style`
    — the primitive, args, position and interval were **dropped**. The code LLM
-   (Claude) re-invented each visual from scratch. We paid for structured
+   (the code-generation model) re-invented each visual from scratch. We paid for structured
    planning and then ignored it.
 2. **The deterministic emitter is mock-only.** ADR-003 describes the animation
    generator as "a thin emitter" using `_emit_primitive`. In reality that path
    (`_generate_mathematical_objects`) is reached **only** by
-   `_mock_generate_code` (no API key). On real runs, Claude generates the code.
+   `_mock_generate_code` (no API key). On real runs, Gemini 3.7 Flash generates the code.
 3. **Narration-first timing.** Duration was `word_count / 3.0` with a 15s floor,
    and `_enforce_duration` scaled `self.wait()` calls up to match that number —
    inflating visually rich scenes with dead-air waits. This produced long,

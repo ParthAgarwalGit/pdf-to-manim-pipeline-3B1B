@@ -63,7 +63,7 @@ The Vision+OCR agent requires the `openai` package and a valid API key. Set:
 export OPENAI_API_KEY="sk-..."
 ```
 
-Or use `ANTHROPIC_API_KEY` if configured for Claude.
+Use `GEMINI_API_KEY` for Manim code generation. `ANTHROPIC_API_KEY` is used by the optional unified-script provider path.
 
 ### Validation: "File is not a valid PDF"
 

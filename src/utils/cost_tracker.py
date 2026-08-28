@@ -35,6 +35,7 @@ class Provider(Enum):
     """Supported LLM providers."""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GOOGLE = "google"
 
 
 class Model(Enum):
@@ -46,6 +47,9 @@ class Model(Enum):
 
     # Anthropic models
     CLAUDE_SONNET = "claude-sonnet"
+
+    # Google models
+    GEMINI_3_7_FLASH = "gemini-3.7-flash"
 
 
 # Pricing table: (input_price_per_1m_tokens, output_price_per_1m_tokens)
@@ -71,6 +75,8 @@ PRICING_TABLE: Dict[Tuple[str, str], Tuple[float, float]] = {
     ("anthropic", "claude-opus-4-7"): (5.00, 25.00),    # Corrected: Opus 4.7/4.8 = $5/$25
     ("anthropic", "claude-opus-4-8"): (5.00, 25.00),
     ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),    # Corrected: Haiku 4.5 = $1/$5
+    # Introductory Gemini 3.7 Flash pricing through 2026-12-31.
+    ("google", "gemini-3.7-flash"): (0.75, 3.75),
 }
 
 # Per-provider fallback rate when an exact (provider, model) pair is missing.
@@ -79,6 +85,7 @@ PRICING_TABLE: Dict[Tuple[str, str], Tuple[float, float]] = {
 PROVIDER_FALLBACK_RATES: Dict[str, Tuple[float, float]] = {
     "openai":    (2.50, 10.00),
     "anthropic": (3.00, 15.00),
+    "google":    (1.50, 7.50),
 }
 
 

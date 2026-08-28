@@ -1,11 +1,11 @@
 """Tests for --strict mode across all agents.
 
-When strict=True, agents that depend on external API keys (OpenAI, Anthropic)
+When strict=True, agents that depend on external API keys
 must raise AgentExecutionError at initialization instead of silently falling
 back to mock/heuristic outputs.
 
 Agents under test:
-- AnimationCodeGeneratorAgent (Anthropic)
+- AnimationCodeGeneratorAgent (Gemini)
 - ScriptArchitectAgent (OpenAI)
 - VisionOCRAgent (OpenAI)
 - TTSAgent (OpenAI)
@@ -27,15 +27,15 @@ from src.agents.base import AgentExecutionError
 def _clear_api_keys():
     """Return a dict suitable for patch.dict that removes all API keys."""
     return {k: v for k, v in os.environ.items()
-            if k not in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")}
+            if k not in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")}
 
 
 # ---------------------------------------------------------------------------
-# AnimationCodeGeneratorAgent (Anthropic)
+# AnimationCodeGeneratorAgent (Gemini)
 # ---------------------------------------------------------------------------
 
 class TestAnimationGeneratorStrict:
-    def test_strict_raises_without_anthropic_key(self):
+    def test_strict_raises_without_gemini_key(self):
         with patch.dict(os.environ, {}, clear=True):
             from src.agents.animation_generator import AnimationCodeGeneratorAgent
             with pytest.raises(AgentExecutionError, match="MISSING_API_KEY"):

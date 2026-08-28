@@ -25,14 +25,14 @@ def _default_to_mock_path(monkeypatch):
     """Pin every test in this module to the deterministic mock generator.
 
     ``src/cli.py`` calls ``load_dotenv(keys.env)`` at IMPORT time, so as soon
-    as ``test_cli`` is collected the real ANTHROPIC_API_KEY leaks into the whole
+    as ``test_cli`` is collected a real provider key could leak into the whole
     pytest process. Tests here assert on the mock emitter's exact output
     (``create_notation``, ``FadeIn``, ``scale(2.0)`` …), which is meaningless
     against live, non-deterministic LLM code. Defaulting to the mock path makes
     the suite order-independent. The prompt-capture tests re-set the key
     themselves via their own monkeypatch, which runs after this fixture.
     """
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
 
 # ============================================================================
@@ -343,7 +343,7 @@ def test_animation_generator_generates_axes():
 
 def test_animation_generator_supports_pi_creature_helpers(monkeypatch):
     """Pi-creature storyboard hints should map to the repo helper functions."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec(
@@ -677,7 +677,7 @@ def test_animation_generator_includes_wait_for_duration():
 
 def test_animation_generator_uses_coordinate_helper_for_axes_objects(monkeypatch):
     """Mock path must emit create_coordinate_system for axes-type objects."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec(
         math_objects=[
@@ -702,7 +702,7 @@ def test_animation_generator_uses_coordinate_helper_for_axes_objects(monkeypatch
 
 def test_animation_generator_uses_notation_helper_when_notation_key_exists(monkeypatch):
     """Mock path must emit create_notation when notation_key is provided."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec(
         math_objects=[
@@ -727,7 +727,7 @@ def test_animation_generator_uses_notation_helper_when_notation_key_exists(monke
 
 def test_animation_generator_uses_character_role_helper_for_pi_creature(monkeypatch):
     """Mock path must emit create_character_for_role for pi_creature objects."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec(
         math_objects=[
@@ -752,7 +752,7 @@ def test_animation_generator_uses_character_role_helper_for_pi_creature(monkeypa
 
 def test_animation_generator_uses_object_id_as_variable_name(monkeypatch):
     """Stable object_id should become the Python variable name."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec(
         math_objects=[
@@ -792,28 +792,24 @@ def test_animation_generator_system_prompt_includes_quality_contract():
 # ============================================================================
 
 def _capture_animation_prompt(agent_factory, monkeypatch, scene_spec, context, scene_index=0):
-    """Helper: install a fake Anthropic client that captures (system, user)
+    """Helper: install a fake Gemini client that captures (system, user)
     and returns a trivial valid Manim class."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
     captured: dict = {}
 
     class _Resp:
-        content = [type("B", (), {"text": "class S(Scene):\n    def construct(self):\n        self.wait(1)"})]
+        text = "class S(Scene):\n    def construct(self):\n        self.wait(1)"
 
-    class _Messages:
-        def create(self, *, system, messages, **_kw):
-            captured["system_raw"] = system
-            # The real call sends system as a list of blocks (cached static +
-            # dynamic tail); normalize to one string for substring assertions.
-            if isinstance(system, list):
-                captured["system"] = "".join(b.get("text", "") for b in system)
-            else:
-                captured["system"] = system
-            captured["user"] = messages[0]["content"]
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            captured["model"] = model
+            captured["system_raw"] = config.system_instruction
+            captured["system"] = config.system_instruction
+            captured["user"] = contents
             return _Resp()
 
     class _Client:
-        messages = _Messages()
+        models = _Models()
 
     agent = agent_factory()
     agent.client = _Client()
@@ -825,6 +821,19 @@ def _capture_animation_prompt(agent_factory, monkeypatch, scene_spec, context, s
     )
     agent.execute(AnimationGeneratorInput(processing_input))
     return captured
+
+
+def test_animation_generator_routes_to_gemini_3_7_flash(monkeypatch):
+    spec = build_test_scene_spec(scene_id="scene_001", narration="Intro.", duration=15.0)
+    captured = _capture_animation_prompt(
+        AnimationCodeGeneratorAgent,
+        monkeypatch,
+        spec,
+        build_test_context(),
+    )
+
+    assert captured["model"] == "gemini-3.7-flash"
+    assert "Generate the full class for this scene" in captured["user"]
 
 
 def test_animation_prompt_includes_concepts_already_taught(monkeypatch):
@@ -1026,7 +1035,7 @@ class TestPrimitiveEmitter:
         """If primitive is set, the generator emits the catalog form and the
         legacy heuristic chain is bypassed — no `create_notation`/`Polygon` rescue.
         """
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         agent = AnimationCodeGeneratorAgent()
         context = build_test_context()
         objects = [

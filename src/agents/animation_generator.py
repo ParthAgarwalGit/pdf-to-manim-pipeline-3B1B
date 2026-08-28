@@ -5,12 +5,15 @@ including mathematical objects, transformations, and timing synchronization.
 """
 
 import ast
-import re
-import anthropic 
 import json
 import os
+import re
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
+
+from google import genai
+from google.genai import types
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.animation_code import AnimationCodeObject
@@ -21,22 +24,18 @@ from src.utils.manim_engine_contract import (
 )
 
 # Per-task model tiering (see docs). Manim code generation is the quality- and
-# retry-critical path, so it runs on Claude Sonnet 5 — best coding/instruction-
-# following per dollar; higher first-pass validity means fewer paid re-renders.
-CODE_GEN_MODEL = "claude-sonnet-5"
-
-
-from functools import lru_cache
+# retry-critical path, so it runs on Gemini 3.7 Flash, Google's production
+# coding/agent model. Keep the API model id separate from the display name.
+CODE_GEN_MODEL = "gemini-3.7-flash"
 
 
 @lru_cache(maxsize=1)
 def _codegen_static_system_prompt() -> str:
     """The byte-identical contract block of every code-gen system prompt.
 
-    Sent as the FIRST system block with ``cache_control`` so Anthropic's
-    prompt cache serves it at ~0.1x input price on every scene after the
-    first. Per-scene data (class name, pacing, briefing, colors) goes in a
-    second, uncached block — nothing here may vary between scenes.
+    Cached locally so constructing every scene prompt does not rebuild the
+    engine and quality contracts. Per-scene data (class name, pacing,
+    briefing, colors) is appended separately.
     """
     engine_contract = build_animation_codegen_contract_prompt()
     quality_contract = build_3b1b_quality_prompt()
@@ -228,8 +227,7 @@ class AnimationCodeGeneratorAgent(Agent):
     - Generates Scene.construct() code with explicit Mobject lifecycle
     - Validates generated code syntax before persistence
     
-    Note: This is a mock implementation. In production, this would use
-    an LLM (GPT-4, Claude 3.5 Sonnet) with temperature=0 for code generation.
+    Without a Gemini API key this uses a deterministic mock implementation.
     """
     
     # Visual-first pacing floor. This is a VISUALIZATION tool, not a narrated
@@ -244,15 +242,16 @@ class AnimationCodeGeneratorAgent(Agent):
         self.max_retries = max_retries
         self.strict = strict
 
-        # Initialize Anthropic Client
-        # This looks for os.environ["ANTHROPIC_API_KEY"]
-        if os.getenv("ANTHROPIC_API_KEY"):
-            self.client = anthropic.Anthropic()
+        # The Gemini SDK also recognizes GEMINI_API_KEY automatically, but
+        # passing it explicitly keeps this agent's provider contract obvious.
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            self.client = genai.Client(api_key=api_key)
         else:
             if self.strict:
                 raise AgentExecutionError(
                     "MISSING_API_KEY",
-                    "ANTHROPIC_API_KEY is required in --strict mode for AnimationCodeGenerator"
+                    "GEMINI_API_KEY is required in --strict mode for AnimationCodeGenerator"
                 )
             self.client = None
     
@@ -356,7 +355,7 @@ class AnimationCodeGeneratorAgent(Agent):
         context: SharedContext,
         review_feedback: Optional[List[str]] = None,
     ) -> str:
-        """Generate Manim code using Anthropic Claude, visual-first (ADR-005).
+        """Generate Manim code using Gemini 3.7 Flash, visual-first (ADR-005).
 
         The structured visual plan (primitive/args, (x,y) position, visibility
         window, continuity keys) is forwarded verbatim to the LLM, which owns
@@ -366,11 +365,11 @@ class AnimationCodeGeneratorAgent(Agent):
         """
 
         # Safety: Fallback if no key (in strict mode, constructor already raised)
-        if not os.getenv("ANTHROPIC_API_KEY"):
+        if not os.getenv("GEMINI_API_KEY"):
             if self.strict:
                 raise AgentExecutionError(
                     "MISSING_API_KEY",
-                    "ANTHROPIC_API_KEY is required in --strict mode"
+                    "GEMINI_API_KEY is required in --strict mode"
                 )
             return self._mock_generate_code(scene_spec, context)
 
@@ -462,32 +461,18 @@ with your manually-computed running total.
             )
 
         try:
-            response = self.client.messages.create(
+            response = self.client.models.generate_content(
                 model=CODE_GEN_MODEL,
-                max_tokens=12000,
-                # The static contract is byte-identical for every scene of a
-                # run — cache_control serves it from Anthropic's prompt cache
-                # (~0.1x input price) on scenes 2..N.
-                system=[
-                    {
-                        "type": "text",
-                        "text": static_system,
-                        "cache_control": {"type": "ephemeral"},
-                    },
-                    {"type": "text", "text": dynamic_system},
-                ],
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ],
-                # Sonnet 5 rejects non-default sampling params (temperature/top_p/
-                # top_k → 400) and runs adaptive thinking by default. Disable
-                # thinking to keep the prior deterministic no-thinking behaviour
-                # and leave the full max_tokens budget for code (the new tokenizer
-                # emits ~30% more tokens, so the budget is raised from 8192).
-                thinking={"type": "disabled"},
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=f"{static_system}\n\n{dynamic_system}",
+                    max_output_tokens=12000,
+                ),
             )
 
-            raw_code = response.content[0].text
+            raw_code = response.text
+            if not raw_code or not raw_code.strip():
+                raise ValueError("Gemini returned no text for the Manim scene")
             cleaned = self._clean_llm_code(raw_code, class_name)
             # Duration sync (P1.4): grow the video to the narration/audio
             # length (floored at MIN_SCENE_SECONDS) by distributing the slack

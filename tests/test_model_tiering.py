@@ -26,7 +26,7 @@ from src.utils.cost_tracker import PRICING_TABLE
 # ---------------------------------------------------------------------------
 
 def test_task_model_assignments():
-    assert CODE_GEN_MODEL == "claude-sonnet-5"          # Manim code gen
+    assert CODE_GEN_MODEL == "gemini-3.7-flash"         # Manim code gen
     assert OCR_MODEL == "gpt-5.4"                        # Vision/OCR
     assert UNIFIED_SCRIPT_MODEL == "claude-sonnet-5"     # Unified script
     assert SEGMENT_SCRIPT_MODEL == "gpt-5.4-mini"        # Per-segment beats
@@ -37,6 +37,7 @@ def test_task_model_assignments():
 
 def test_every_used_model_has_authoritative_pricing():
     expected = {
+        ("google", "gemini-3.7-flash"): (0.75, 3.75),
         ("anthropic", "claude-sonnet-5"): (3.00, 15.00),
         ("openai", "gpt-5.4"): (2.50, 15.00),
         ("openai", "gpt-5.4-mini"): (0.75, 4.50),

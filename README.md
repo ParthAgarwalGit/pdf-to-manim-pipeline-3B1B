@@ -99,7 +99,7 @@ If you only want runtime dependencies, `pip install -r requirements.txt` still w
 
 ### API Keys
 
-Copy `keys.example.env` to `keys.env` (or use `.env`) and set `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`. Without keys the pipeline degrades to deterministic mock output — useful for development, not for real videos.
+Copy `keys.example.env` to `keys.env` (or use `.env`) and set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY`. Gemini 3.7 Flash generates the final Manim Python; without its key that stage degrades to deterministic mock output.
 
 ## Usage
 
@@ -153,7 +153,7 @@ self-contained.
 
 ```bash
 # 1. Provide keys (git-ignored, never baked into the image)
-cp keys.example.env keys.env      # then edit in your OPENAI_API_KEY / ANTHROPIC_API_KEY
+cp keys.example.env keys.env      # then add your OpenAI, Anthropic, and Gemini keys
 
 # 2. Build + prove the container works WITHOUT spending credits
 scripts/run_on_amd.sh smoke       # keyless --help and --dry-run
