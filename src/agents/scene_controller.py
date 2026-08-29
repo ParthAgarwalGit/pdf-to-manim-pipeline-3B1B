@@ -239,7 +239,8 @@ class SceneControllerAgent(Agent):
             scene_id=scene.scene_id,
             narration=scene.narration,
             visual_intent=scene.visual_intent.model_dump(),
-            duration_estimate=scene.duration_estimate
+            duration_estimate=scene.duration_estimate,
+            audio_duration_seconds=scene.audio_duration_seconds,
         )
     
     def _process_scene_with_generator(

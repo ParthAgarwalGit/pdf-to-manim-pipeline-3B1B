@@ -103,7 +103,7 @@ class TestOverlapNudge:
 # ---------------------------------------------------------------------------
 
 class TestObjectCap:
-    def test_crowded_plan_trimmed_keeping_earliest(self):
+    def test_plan_under_new_limit_is_not_silently_trimmed(self):
         agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
         objects = [
             {
@@ -115,9 +115,9 @@ class TestObjectCap:
             for i in range(12)
         ]
         intent = agent._visual_intent_from_json({"objects": objects}, "n")
-        assert len(intent.mathematical_objects) == ScriptArchitectAgent.MAX_OBJECTS_PER_SCENE
+        assert len(intent.mathematical_objects) == 12
         kept = [o.object_id for o in intent.mathematical_objects]
-        assert kept == [f"o{i:02d}" for i in range(ScriptArchitectAgent.MAX_OBJECTS_PER_SCENE)]
+        assert kept == [f"o{i:02d}" for i in range(12)]
 
     def test_small_plan_not_trimmed(self):
         agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)

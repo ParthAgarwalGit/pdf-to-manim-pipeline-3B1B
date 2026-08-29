@@ -1,6 +1,6 @@
 """Scene processing schemas for Scene Controller."""
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -131,6 +131,11 @@ class SceneSpec(BaseModel):
         ...,
         gt=0.0,
         description="Estimated scene duration in seconds"
+    )
+    audio_duration_seconds: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Measured narration duration used as the animation target",
     )
     
     @field_validator('scene_id')

@@ -58,6 +58,7 @@ demo = [
 
 [project.scripts]
 pdf2manim = "src.cli:main"
+manim-verifier = "src.manim_verifier.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

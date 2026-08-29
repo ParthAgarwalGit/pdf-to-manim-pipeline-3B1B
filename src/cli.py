@@ -184,6 +184,26 @@ def pdf2manim():
     default=False,
     help='Fail immediately when API keys are missing instead of falling back to mocks'
 )
+@click.option(
+    '--tts-first',
+    is_flag=True,
+    default=False,
+    help='Generate narration before Manim code and use measured audio durations'
+)
+@click.option(
+    '--verifier-mode',
+    type=click.Choice(['off', 'shadow', 'repair'], case_sensitive=False),
+    default='off',
+    envvar='VERIFIER_MODE',
+    help='Raw-Manim preview verifier mode'
+)
+@click.option(
+    '--verifier-max-repairs',
+    type=click.IntRange(0, 2),
+    default=1,
+    envvar='VERIFIER_MAX_REPAIRS',
+    help='Maximum visual repair attempts per scene (default: 1)'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -197,7 +217,10 @@ def convert(
     skip_tts: bool,
     skip_render: bool,
     dry_run: bool,
-    strict: bool
+    strict: bool,
+    tts_first: bool,
+    verifier_mode: str,
+    verifier_max_repairs: int,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -252,6 +275,8 @@ def convert(
         click.echo(f"  Render Video: {not skip_render}")
         click.echo(f"  Dry Run:      {dry_run}")
         click.echo(f"  Strict Mode:  {strict}")
+        click.echo(f"  TTS First:    {tts_first}")
+        click.echo(f"  Verifier:     {verifier_mode}")
         click.echo()
 
         # Create pipeline configuration
@@ -269,6 +294,9 @@ def convert(
             dry_run=dry_run,
             tts_voice=voice,
             render_quality=quality,
+            tts_first=tts_first,
+            verifier_mode=verifier_mode.lower(),
+            verifier_max_repairs=verifier_max_repairs,
         )
 
         # Initialize cost tracker
@@ -302,7 +330,14 @@ def convert(
                 bar.update(7)
 
             click.echo()
-            click.echo(click.style("Pipeline completed successfully!", fg="green", bold=True))
+            if manifest.status == "SUCCESS":
+                click.echo(click.style("Pipeline completed successfully!", fg="green", bold=True))
+            else:
+                click.echo(click.style(
+                    f"Pipeline completed with status {manifest.status}.",
+                    fg="yellow" if manifest.status == "PARTIAL_SUCCESS" else "red",
+                    bold=True,
+                ))
             click.echo()
 
             # Display results summary
@@ -420,7 +455,11 @@ def convert(
                 click.echo()
 
             click.echo(click.style("=" * 60, fg="cyan"))
-            if manifest.final_video_path:
+            if manifest.status in {"FAILURE", "CRITICAL_FAILURE"}:
+                click.echo(click.style("Conversion failed quality gates.", fg="red", bold=True))
+                if manifest.final_video_path:
+                    click.echo(f"  Diagnostic video: {output_path / manifest.final_video_path}")
+            elif manifest.final_video_path:
                 click.echo(click.style("Conversion completed successfully!", fg="green", bold=True))
                 click.echo(f"  Final video: {output_path / manifest.final_video_path}")
             elif video_entries:
@@ -428,6 +467,10 @@ def convert(
             else:
                 click.echo(click.style("Pipeline finished but no video was produced.", fg="yellow", bold=True))
             click.echo(click.style("=" * 60, fg="cyan"))
+            if manifest.status in {"FAILURE", "CRITICAL_FAILURE"}:
+                raise click.ClickException(
+                    f"Pipeline finished with status {manifest.status}; inspect the saved reports."
+                )
 
         except PipelineAbortError as e:
             click.echo()

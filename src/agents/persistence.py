@@ -88,6 +88,16 @@ class PersistenceAgent(Agent):
     - Ensure atomic file writes (no partial writes on failure)
     - Implement idempotency (cleanup on retry)
     """
+
+    # These artifacts can be produced before Persistence in narration-first
+    # and preview-verifier modes. They belong to the active run and must not
+    # be mistaken for stale persistence output.
+    _PRESERVED_RUNTIME_ARTIFACTS = {
+        "audio",
+        "pipeline.log",
+        "verifier_runs",
+        "warnings.log",
+    }
     
     def __init__(self, base_output_dir: str = "output"):
         """
@@ -317,11 +327,11 @@ class PersistenceAgent(Agent):
     
     def _cleanup_incomplete_files(self, output_dir: str) -> None:
         """
-        Clean up incomplete files from previous failed run.
+        Clean up incomplete persistence files from a previous failed run.
 
-        This method ensures idempotency by removing all files except
-        pipeline.log from the output directory. It handles both files
-        and subdirectories that might have been created.
+        Runtime artifacts produced by earlier active stages are preserved.
+        This matters for TTS-first and preview-verifier modes, which write
+        audio and verifier evidence before Persistence executes.
 
         Args:
             output_dir: Path to output directory
@@ -333,9 +343,10 @@ class PersistenceAgent(Agent):
         if not output_path.exists():
             return
 
-        # Remove all files and directories except pipeline.log (keep logs for debugging)
+        # Remove stale persistence output while retaining artifacts created by
+        # earlier stages in this same active run.
         for item_path in output_path.iterdir():
-            if item_path.name == "pipeline.log":
+            if item_path.name in self._PRESERVED_RUNTIME_ARTIFACTS:
                 continue
 
             # Guard against symlink escape: resolved path must stay inside output_path.

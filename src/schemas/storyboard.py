@@ -171,6 +171,14 @@ class MathematicalObject(BaseModel):
         None,
         description="Semantic role such as main_equation, shared_axes, teacher, or label"
     )
+    purpose: str = Field(
+        default="",
+        description="Concise explanation of why this visible object is needed",
+    )
+    supports_beat_ids: List[str] = Field(
+        default_factory=list,
+        description="Narration/visual beat ids this object directly supports",
+    )
     object_type: str = Field(
         ...,
         description=(
@@ -515,6 +523,11 @@ class Scene(BaseModel):
         ...,
         gt=0.0,
         description="Estimated scene duration in seconds"
+    )
+    audio_duration_seconds: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Measured TTS duration when narration-first timing is enabled",
     )
     dependencies: List[str] = Field(
         default_factory=list,

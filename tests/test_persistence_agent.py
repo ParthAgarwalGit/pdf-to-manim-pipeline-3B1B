@@ -1610,6 +1610,26 @@ class TestPersistenceAgentValidation:
         assert not os.path.exists(os.path.join(output_dir, "file2.py"))
         assert os.path.exists(os.path.join(output_dir, "pipeline.log"))  # Should be preserved
         assert not os.path.exists(subdir)  # Subdirectory should be removed
+
+    def test_cleanup_preserves_tts_first_and_verifier_artifacts(self, temp_output_dir):
+        """Persistence must not erase artifacts produced by earlier stages."""
+        agent = PersistenceAgent(base_output_dir=temp_output_dir)
+        output_dir = os.path.join(temp_output_dir, "active_run")
+        audio_dir = os.path.join(output_dir, "audio", "scene_001")
+        verifier_dir = os.path.join(output_dir, "verifier_runs", "run-001")
+        os.makedirs(audio_dir, exist_ok=True)
+        os.makedirs(verifier_dir, exist_ok=True)
+        audio_path = os.path.join(audio_dir, "scene_001.mp3")
+        report_path = os.path.join(verifier_dir, "report.json")
+        with open(audio_path, "wb") as handle:
+            handle.write(b"audio")
+        with open(report_path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+
+        agent._cleanup_incomplete_files(output_dir)
+
+        assert os.path.exists(audio_path)
+        assert os.path.exists(report_path)
     
     def test_atomic_write_handles_failure_cleanup(self, temp_output_dir):
         """Test that atomic write cleans up temp files on failure."""

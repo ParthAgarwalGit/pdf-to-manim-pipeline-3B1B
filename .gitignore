@@ -70,6 +70,7 @@ Thumbs.db
 .worktrees/
 output/
 media/
+verifier_runs/
 test_output/
 manimations/
 *.log
@@ -90,6 +91,9 @@ keys.env
 *.mp3
 *.wav
 *.jsonl
+*.db
+*.sqlite
+*.sqlite3
 
 # Large binaries
 ffmpeg-*.tar.xz

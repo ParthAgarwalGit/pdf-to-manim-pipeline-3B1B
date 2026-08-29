@@ -133,6 +133,10 @@ design, not a loose suggestion:
   t_out so the screen stays uncluttered.
 - `id` / `role`         → use `id` as the variable name; `role` tells you its
   job (main_equation, shared_axes, label, …).
+- `purpose` / `supports_beat_ids` → before creating the object, write exactly
+  one short comment: `# Purpose [beat_ids]: purpose text`. Every visible helper
+  object you add must receive the same kind of purpose comment. Never create
+  unexplained decoration or filler.
 - `notation_key` / `coordinate_system_id` → REUSE the matching helper instead
   of redrawing; these mark objects shared across scenes.
 When an object has no `primitive`, fall back to the type/content and choose the
@@ -359,9 +363,8 @@ class AnimationCodeGeneratorAgent(Agent):
 
         The structured visual plan (primitive/args, (x,y) position, visibility
         window, continuity keys) is forwarded verbatim to the LLM, which owns
-        the motion design. Narration length is a pacing *hint* only; the scene
-        runs as long as its visual work needs, floored at MIN_SCENE_SECONDS —
-        never padded up to narration length.
+        the motion design. Measured audio owns timing in TTS-first mode;
+        otherwise the visual-first pacing floor remains in effect.
         """
 
         # Safety: Fallback if no key (in strict mode, constructor already raised)
@@ -378,12 +381,30 @@ class AnimationCodeGeneratorAgent(Agent):
         # ── Compute narration-driven duration ────────────────────────
         narration = scene_spec.narration or ""
         word_count = len(narration.split())
-        # Reference pacing only — a rough guide for the LLM, NOT a quota we pad
-        # up to. The visuals drive the real length; narration is fit to them
-        # downstream by the composer.
-        narration_seconds = round(word_count / 3.0, 1)  # ~3 words/sec TTS
+        narration_seconds = round(word_count / 3.0, 1)
         min_seconds = self.MIN_SCENE_SECONDS
-        target_duration = round(max(min_seconds, narration_seconds), 1)
+        # Measured narration is authoritative in TTS-first mode. Otherwise the
+        # existing visual pacing floor remains the fallback estimate.
+        if scene_spec.audio_duration_seconds is not None:
+            target_duration = round(max(1.0, scene_spec.audio_duration_seconds), 1)
+            pacing_summary = (
+                f"The narration is ~{word_count} words and its measured audio is "
+                f"{target_duration}s."
+            )
+            timing_guidance = (
+                f"The measured narration audio is {target_duration}s. Treat that as "
+                "the timing authority and keep meaningful visual change under it."
+            )
+        else:
+            target_duration = round(max(min_seconds, narration_seconds), 1)
+            pacing_summary = (
+                f"The narration is ~{word_count} words (~{narration_seconds}s of "
+                "estimated audio), which is a rough guide only."
+            )
+            timing_guidance = (
+                f"Minimum scene length: {min_seconds}s. Every second on screen must "
+                "be doing visual work."
+            )
 
         # ── Prepare structured scene data for the LLM ────────────────
         # Continuity contract: these object ids must still be on screen when
@@ -396,6 +417,7 @@ class AnimationCodeGeneratorAgent(Agent):
         scene_data = {
             "narration": narration,
             "target_duration_seconds": target_duration,
+            "audio_duration_seconds": scene_spec.audio_duration_seconds,
             "word_count": word_count,
             "carry_out": carry_out,
             "objects": [
@@ -432,15 +454,13 @@ class AnimationCodeGeneratorAgent(Agent):
 {briefing_block}{opening_state_block}
 ═══════════════════════  PACING (VISUAL-FIRST)  ═══════════════════════
 This is a VISUALIZATION, not a narrated lecture. Let the VISUALS decide the
-length. The narration is ~{word_count} words (~{narration_seconds}s of audio),
-which is a rough guide only. Aim for a tight, visually dense scene of about
-{target_duration}s.
+content and motion. {pacing_summary} Aim for a tight, visually dense scene of
+about {target_duration}s.
 - Fill time with MOTION, TRANSFORMATION and progressive reveal — never with
   empty waits.
 - Do NOT pad to hit a number. A shorter scene full of animation is better than
   a long scene sitting on a static frame.
-- Minimum scene length: {min_seconds}s. Every second on screen must be doing
-  visual work.
+- {timing_guidance}
 - Use self.wait() only to let a specific reveal land (typically 0.5-2s), not to
   burn time.
 
@@ -474,10 +494,8 @@ with your manually-computed running total.
             if not raw_code or not raw_code.strip():
                 raise ValueError("Gemini returned no text for the Manim scene")
             cleaned = self._clean_llm_code(raw_code, class_name)
-            # Duration sync (P1.4): grow the video to the narration/audio
-            # length (floored at MIN_SCENE_SECONDS) by distributing the slack
-            # across existing waits, so the composer never has to freeze the
-            # tail. target_duration already = max(min_seconds, narration_seconds).
+            # Duration sync (P1.4): distribute any missing time across existing
+            # waits so the composer does not need to freeze the tail.
             return self._distribute_duration_slack(cleaned, target_duration)
 
         except Exception as e:
@@ -506,6 +524,10 @@ with your manually-computed running total.
             plan["id"] = obj.object_id
         if getattr(obj, "object_role", None):
             plan["role"] = obj.object_role
+        if getattr(obj, "purpose", None):
+            plan["purpose"] = obj.purpose
+        if getattr(obj, "supports_beat_ids", None):
+            plan["supports_beat_ids"] = list(obj.supports_beat_ids)
         # Concrete primitive + kwargs chosen by the planner.
         if getattr(obj, "primitive", None):
             plan["primitive"] = obj.primitive

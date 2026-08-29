@@ -823,6 +823,9 @@ class TestNonTextVisualInvariant:
     def _text_obj(self):
         from src.schemas.storyboard import MathematicalObject
         return MathematicalObject(
+            object_id="test_text",
+            purpose="State the narrated idea",
+            supports_beat_ids=["beat_001"],
             object_type="text", content="hello",
             primitive="Text", args={"text": "hello"},
         )
@@ -830,6 +833,9 @@ class TestNonTextVisualInvariant:
     def _equation_obj(self):
         from src.schemas.storyboard import MathematicalObject
         return MathematicalObject(
+            object_id="test_equation",
+            purpose="Show the narrated equation",
+            supports_beat_ids=["beat_001"],
             object_type="equation", content=r"e^{i\pi}",
             primitive="MathTex", args={"tex": r"e^{i\pi}"},
         )
@@ -837,6 +843,9 @@ class TestNonTextVisualInvariant:
     def _circle_obj(self):
         from src.schemas.storyboard import MathematicalObject
         return MathematicalObject(
+            object_id="test_circle",
+            purpose="Depict the narrated geometry",
+            supports_beat_ids=["beat_001"],
             object_type="geometric_shape", content="unit circle",
             primitive="Circle", args={"radius": 2.0},
         )

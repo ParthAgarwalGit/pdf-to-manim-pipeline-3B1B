@@ -253,14 +253,18 @@ def _visual_intent_static_prompt() -> str:
         "the MOBJECT names above and `args` to its kwargs. Free-form "
         "`content` is ONLY permitted for MathTex / Tex / Text (where it "
         "goes into the `tex` or `text` arg).\n\n"
+        "PURPOSE (required): every object must include a concise `purpose` "
+        "explaining what the viewer learns from it and `supports_beat_ids` "
+        "listing the narration/visual beat ids it serves. Never emit generic "
+        "decoration, filler, or an object with no beat-level job.\n\n"
         "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
         "a slideshow. At least ONE object MUST be a non-text primitive "
         "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
         "that visually DEPICTS the concept. Text/MathTex are for labels and "
         "the key formula only — never the whole scene.\n"
-        "AT MOST 7 objects total — a short scene with 16 objects is an "
-        "unreadable collage. One anchor visual + a few labels beats many "
-        "competing shapes.\n\n"
+        "AT MOST 15 objects across the whole scene and AT MOST 7 visible at "
+        "the same time. Sequence reveals and reuse existing objects rather "
+        "than creating an unreadable collage.\n\n"
         "LAYOUT (x, y, t):\n"
         "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
         "    object's intended position in Manim units AND `interval` =\n"
@@ -480,15 +484,45 @@ class ScriptArchitectAgent(Agent):
             # Visual continuity: intents are generated in scene order so each
             # scene can be told what the previous one left on screen.
             carried_objects: List[MathematicalObject] = []
-            for scene in scenes:
+            scene_index = 0
+            while scene_index < len(scenes):
+                scene = scenes[scene_index]
                 try:
-                    scene.visual_intent = self._generate_visual_intent_for_chunk(
-                        scene=scene,
-                        video_script=video_script,
-                        config=config,
-                        review_feedback=review_feedback,
-                        carried_objects=carried_objects,
-                    )
+                    constraint_errors: List[str] = []
+                    for purpose_attempt in range(self.MAX_PURPOSE_RETRIES + 1):
+                        purpose_feedback = list(review_feedback)
+                        if constraint_errors:
+                            purpose_feedback.append(
+                                "The prior visual plan failed object-purpose validation:\n"
+                                + "\n".join(f"- {item}" for item in constraint_errors)
+                                + "\nReturn a corrected plan; do not drop narrated content."
+                            )
+                        scene.visual_intent = self._generate_visual_intent_for_chunk(
+                            scene=scene,
+                            video_script=video_script,
+                            config=config,
+                            review_feedback=purpose_feedback,
+                            carried_objects=carried_objects,
+                        )
+                        constraint_errors = self._visual_intent_constraint_errors(
+                            scene,
+                            scene.visual_intent,
+                        )
+                        if not constraint_errors:
+                            break
+                    if constraint_errors:
+                        if (
+                            self._has_object_budget_error(constraint_errors)
+                            and len(scene.source_beats) > 1
+                        ):
+                            replacements = self._split_scene_at_beat_boundary(scene)
+                            scenes[scene_index:scene_index + 1] = replacements
+                            logger.info(
+                                "Split overloaded %s into two beat-aligned scenes.",
+                                scene.scene_id,
+                            )
+                            continue
+                        raise ValueError("; ".join(constraint_errors))
                     # Visual-impact invariant: a scene of nothing but text /
                     # equations is a slideshow, not a visualization. Retry the
                     # planner ONCE with explicit feedback. Only meaningful on
@@ -506,9 +540,17 @@ class ScriptArchitectAgent(Agent):
                             review_feedback=review_feedback + [self.TEXT_ONLY_RETRY_FEEDBACK],
                             carried_objects=carried_objects,
                         )
+                        retry_errors = self._visual_intent_constraint_errors(
+                            scene,
+                            scene.visual_intent,
+                        )
+                        if retry_errors:
+                            raise ValueError("; ".join(retry_errors))
                         if self._is_text_only_intent(scene.visual_intent):
                             text_only_scenes.append(scene.scene_id)
                 except Exception as exc:
+                    if self.strict:
+                        raise
                     logger.warning(
                         "Visual intent failed for %s: %s — falling back to narration-derived intent",
                         scene.scene_id, exc,
@@ -516,6 +558,9 @@ class ScriptArchitectAgent(Agent):
                     scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
                     visual_failures.append({"scene_id": scene.scene_id, "error": str(exc)})
                 carried_objects = self._carried_objects_from_intent(scene.visual_intent)
+                scene_index += 1
+
+            self._renumber_scenes(scenes)
 
             if visual_failures:
                 logger.warning(
@@ -655,7 +700,9 @@ class ScriptArchitectAgent(Agent):
     MAX_CARRY_OVER_OBJECTS = 3
     # Hard cap on planned objects per vignette scene — a real run averaged
     # 16.7 objects/scene, which drove both the overlaps and the text walls.
-    MAX_OBJECTS_PER_SCENE = 7
+    MAX_OBJECTS_PER_SCENE = 15
+    MAX_CONCURRENT_OBJECTS = 7
+    MAX_PURPOSE_RETRIES = 2
 
     @classmethod
     def _derive_carry_out_ids(cls, objs: List[MathematicalObject]) -> List[str]:
@@ -762,9 +809,10 @@ class ScriptArchitectAgent(Agent):
                     earlier_concepts.append(c)
 
         visual_hints = (
-            "\n".join(f"- {b.visual_hint}" for b in chunk_beats)
+            "\n".join(f"- {b.beat_id}: {b.visual_hint}" for b in chunk_beats)
             or "- (no specific hints)"
         )
+        valid_beat_ids = [beat.beat_id for beat in chunk_beats]
 
         word_count = len(scene.narration.split())
         target = round(word_count / self.WORDS_PER_SECOND, 1)
@@ -830,6 +878,8 @@ class ScriptArchitectAgent(Agent):
             "--- END NARRATION ---\n\n"
             f"NEW CONCEPTS INTRODUCED IN THIS CHUNK: "
             f"{', '.join(chunk_concepts) or '(none)'}\n"
+            f"VALID BEAT IDS FOR supports_beat_ids: "
+            f"{', '.join(valid_beat_ids) or 'beat_001'}\n"
             f"{earlier_block}"
             f"{carry_block}"
             "VISUAL HINTS FROM THE SCRIPT WRITER:\n"
@@ -894,16 +944,6 @@ class ScriptArchitectAgent(Agent):
             )
             return self._generate_fallback_visual_intent(fallback_narration)
 
-        # Clutter guard: a vignette can't hold 16 objects (the overlap engine
-        # of a real run). Keep the earliest-appearing MAX_OBJECTS_PER_SCENE.
-        if len(objs) > self.MAX_OBJECTS_PER_SCENE:
-            logger.warning(
-                "Visual intent planned %d objects; keeping the first %d by t_in.",
-                len(objs), self.MAX_OBJECTS_PER_SCENE,
-            )
-            objs.sort(key=lambda o: o.interval.t_in if o.interval else 0.0)
-            objs = objs[: self.MAX_OBJECTS_PER_SCENE]
-
         # Deterministic de-overlap of the planned layout (time-aware).
         _resolve_bbox_overlaps(objs)
 
@@ -934,6 +974,130 @@ class ScriptArchitectAgent(Agent):
             scene_state_out=state_out,
             emphasis_points=emphasis,
         )
+
+    def _visual_intent_constraint_errors(
+        self,
+        scene: Scene,
+        intent: VisualIntent,
+    ) -> List[str]:
+        """Return precise feedback for unjustified or overloaded visual plans."""
+        errors: List[str] = []
+        source_beat_ids = {
+            beat.beat_id for beat in (getattr(scene, "source_beats", None) or [])
+        }
+        visual_beat_ids = {beat.beat_id for beat in intent.beats}
+        valid_beat_ids = source_beat_ids | visual_beat_ids
+        object_ids = {obj.object_id for obj in intent.mathematical_objects if obj.object_id}
+        vague_purposes = {"decoration", "decorative", "filler", "visual", "shape"}
+
+        for obj in intent.mathematical_objects:
+            label = obj.object_id or "<missing object_id>"
+            if not obj.object_id:
+                errors.append("Every object needs a stable object_id.")
+            purpose = obj.purpose.strip()
+            if not purpose or purpose.lower() in vague_purposes:
+                errors.append(f"Object {label} needs a specific instructional purpose.")
+            if not obj.supports_beat_ids:
+                errors.append(f"Object {label} must support at least one beat id.")
+            unknown = sorted(set(obj.supports_beat_ids) - valid_beat_ids)
+            if unknown:
+                errors.append(f"Object {label} references unknown beat ids: {unknown}.")
+
+        if len(intent.mathematical_objects) > self.MAX_OBJECTS_PER_SCENE:
+            errors.append(
+                f"Scene has {len(intent.mathematical_objects)} objects; maximum is "
+                f"{self.MAX_OBJECTS_PER_SCENE}. Sequence or reuse them."
+            )
+
+        concurrent = self._max_concurrent_objects(intent.mathematical_objects)
+        if concurrent > self.MAX_CONCURRENT_OBJECTS:
+            errors.append(
+                f"Scene has {concurrent} concurrently visible objects; maximum is "
+                f"{self.MAX_CONCURRENT_OBJECTS}. Stagger their intervals."
+            )
+
+        for trans in intent.transformations:
+            if trans.source_object_id not in object_ids:
+                errors.append(
+                    f"Transformation references missing source object {trans.source_object_id}."
+                )
+            if trans.target_object_id and trans.target_object_id not in object_ids:
+                errors.append(
+                    f"Transformation references missing target object {trans.target_object_id}."
+                )
+        return errors
+
+    @staticmethod
+    def _max_concurrent_objects(objects: List[MathematicalObject]) -> int:
+        if not objects:
+            return 0
+        boundaries = {0.0}
+        for obj in objects:
+            if obj.interval:
+                boundaries.add(obj.interval.t_in)
+                boundaries.add(max(obj.interval.t_in, obj.interval.t_out - 1e-6))
+        maximum = 0
+        for timestamp in boundaries:
+            visible = sum(
+                1
+                for obj in objects
+                if obj.interval is None
+                or obj.interval.t_in <= timestamp < obj.interval.t_out
+            )
+            maximum = max(maximum, visible)
+        return maximum
+
+    @staticmethod
+    def _has_object_budget_error(errors: List[str]) -> bool:
+        return any(
+            "objects; maximum" in error or "concurrently visible objects" in error
+            for error in errors
+        )
+
+    def _split_scene_at_beat_boundary(self, scene: Scene) -> List[Scene]:
+        """Split an overloaded multi-beat scene without rewriting narration."""
+        midpoint = max(1, len(scene.source_beats) // 2)
+        groups = [scene.source_beats[:midpoint], scene.source_beats[midpoint:]]
+        replacements: List[Scene] = []
+        for suffix, beats in zip(("a", "b"), groups):
+            narration = "\n\n".join(beat.narration for beat in beats)
+            word_count = sum(len(beat.narration.split()) for beat in beats)
+            concept_id = next(
+                (
+                    concept
+                    for beat in beats
+                    for concept in beat.introduces_concepts
+                ),
+                scene.concept_id,
+            )
+            segment_ids: List[str] = []
+            for beat in beats:
+                segment_id = getattr(beat, "source_segment_id", "")
+                if segment_id and segment_id not in segment_ids:
+                    segment_ids.append(segment_id)
+            replacements.append(Scene(
+                scene_id=f"{scene.scene_id}_{suffix}",
+                scene_index=scene.scene_index,
+                concept_id=concept_id,
+                narration=narration,
+                visual_intent=self._empty_visual_intent_placeholder(),
+                duration_estimate=round(
+                    max(self.MIN_SCENE_DURATION, word_count / self.WORDS_PER_SECOND),
+                    1,
+                ),
+                dependencies=list(scene.dependencies),
+                difficulty_level=scene.difficulty_level,
+                source_beats=list(beats),
+                source_segment_ids=segment_ids,
+            ))
+        return replacements
+
+    @staticmethod
+    def _renumber_scenes(scenes: List[Scene]) -> None:
+        for index, scene in enumerate(scenes):
+            scene.scene_index = index
+            scene.scene_id = f"scene_{index + 1:03d}"
+            scene.dependencies = [f"scene_{index:03d}"] if index > 0 else []
     
     def _generate_video_script(
         self,
@@ -1587,6 +1751,8 @@ Return JSON in this exact shape:
             MathematicalObject(
                 object_id="intro_text",
                 object_role="title",
+                purpose="Introduce the scene's narrated idea in the first beat",
+                supports_beat_ids=["beat_001"],
                 object_type="text",
                 content=title_text,
                 primitive="Text",
@@ -1607,6 +1773,8 @@ Return JSON in this exact shape:
             objs.append(MathematicalObject(
                 object_id="main_equation",
                 object_role="main_equation",
+                purpose="Show the equation explicitly referenced by the narration",
+                supports_beat_ids=["beat_001"],
                 object_type="equation",
                 notation_key="main_equation",
                 content=tex,
@@ -1625,6 +1793,8 @@ Return JSON in this exact shape:
             objs.append(MathematicalObject(
                 object_id="archetype_visual",
                 object_role="concept_visual",
+                purpose="Depict the narrated concept with a non-text visual",
+                supports_beat_ids=["beat_001"],
                 object_type=object_type,
                 content=archetype.description,
                 primitive=primitive_name,

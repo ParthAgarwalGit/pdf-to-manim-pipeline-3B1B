@@ -102,6 +102,9 @@ class PipelineConfig:
     dry_run: bool = False
     tts_voice: str = "alloy"
     render_quality: str = "medium"
+    tts_first: bool = False
+    verifier_mode: str = "off"
+    verifier_max_repairs: int = 1
     # Cost ceiling for render salvage: each salvaged scene costs one codegen
     # LLM call, so a pathological run must not multiply the bill unbounded.
     # 0 disables salvage entirely.
@@ -355,10 +358,29 @@ class Orchestrator:
                 return manifest
 
             # Step 6: Scene Processing
+            tts_output = None
+            if self.config.tts_first:
+                if not self.config.enable_tts:
+                    raise PipelineAbortError(
+                        "TTSFirst",
+                        "TTS_FIRST_REQUIRES_TTS",
+                        "Narration-first timing cannot be used with TTS disabled.",
+                    )
+                tts_output = self._run_tts_first(
+                    sanitized_storyboard,
+                    self.structured_logger,
+                )
+                self._apply_tts_timing(sanitized_storyboard, tts_output)
+
             scene_output = self._run_scene_controller(
                 sanitized_storyboard,
                 validated_ref,
                 self.structured_logger
+            )
+
+            scene_output = self._run_raw_manim_verifier(
+                scene_output,
+                sanitized_storyboard,
             )
 
             # Step 7: Persistence — write .py scene files, storyboard, narration to disk
@@ -375,7 +397,6 @@ class Orchestrator:
             # Both only need outputs from Persistence (step 7) so they are
             # fully independent.  The logger is thread-safe (uses a Lock).
             video_output = None
-            tts_output = None
 
             if self.config.enable_render or self.config.enable_tts:
                 with ThreadPoolExecutor(max_workers=2) as executor:
@@ -388,7 +409,7 @@ class Orchestrator:
                         )
                     else:
                         logger.info("Render skipped (enable_render=False)")
-                    if self.config.enable_tts:
+                    if self.config.enable_tts and not self.config.tts_first:
                         futures["tts"] = executor.submit(
                             self._run_tts_generation_logged,
                             sanitized_storyboard,
@@ -396,10 +417,14 @@ class Orchestrator:
                             self.structured_logger,
                         )
                     else:
-                        logger.info("TTS skipped (enable_tts=False)")
+                        logger.info(
+                            "TTS generation skipped in parallel stage "
+                            "(disabled or already completed by --tts-first)"
+                        )
                     # executor.__exit__ waits for both futures before we proceed
                     video_output = futures["render"].result() if "render" in futures else None
-                    tts_output = futures["tts"].result() if "tts" in futures else None
+                    if "tts" in futures:
+                        tts_output = futures["tts"].result()
             else:
                 logger.info("Both render and TTS skipped")
 
@@ -1235,7 +1260,183 @@ class Orchestrator:
                 "status": "STAGE_ERROR",
                 "errors": [{"scene_id": "*", "error": str(e)}],
             }
-            return []
+        return []
+
+    def _run_tts_first(self, storyboard, structured_logger: StructuredJSONLogger):
+        """Generate narration before codegen so measured audio owns scene timing."""
+        from types import SimpleNamespace
+
+        if not self._run_output_dir:
+            raise PipelineAbortError(
+                "TTSFirst",
+                "OUTPUT_DIRECTORY_MISSING",
+                "The run output directory must exist before narration-first TTS.",
+            )
+        placeholder_manifest = SimpleNamespace(output_directory=self._run_output_dir)
+        results = self._run_tts_generation_logged(
+            storyboard,
+            placeholder_manifest,
+            structured_logger,
+        )
+        if self.config.strict and any(isinstance(result, TTSError) for result in results):
+            raise PipelineAbortError(
+                "TTSFirst",
+                "TTS_FIRST_FAILED",
+                "At least one scene narration failed before code generation.",
+            )
+        return results
+
+    def _apply_tts_timing(self, storyboard, tts_results) -> None:
+        """Rescale every visual timestamp to measured per-scene narration length."""
+        durations = {
+            result.scene_id: result.duration_seconds
+            for result in (tts_results or [])
+            if isinstance(result, TTSOutput) and result.duration_seconds > 0
+        }
+        timing_report: List[Dict[str, Any]] = []
+        for scene in getattr(storyboard, "scenes", []) or []:
+            measured = durations.get(scene.scene_id)
+            if measured is None:
+                if self.config.strict:
+                    raise PipelineAbortError(
+                        "TTSFirst",
+                        "SCENE_AUDIO_MISSING",
+                        f"No measured narration duration for {scene.scene_id}.",
+                    )
+                continue
+            old_duration = max(float(scene.duration_estimate), 0.001)
+            new_duration = round(float(measured), 3)
+            scale = new_duration / old_duration
+            intent = scene.visual_intent
+
+            for obj in intent.mathematical_objects:
+                if obj.interval is not None:
+                    latest_start = max(0.0, new_duration - 0.05)
+                    obj.interval.t_in = min(
+                        latest_start,
+                        round(obj.interval.t_in * scale, 3),
+                    )
+                    obj.interval.t_out = min(
+                        new_duration,
+                        round(obj.interval.t_out * scale, 3),
+                    )
+                    if obj.interval.t_out <= obj.interval.t_in:
+                        obj.interval.t_out = min(new_duration, obj.interval.t_in + 0.05)
+            for beat in intent.beats:
+                beat.start_time = min(new_duration, round(beat.start_time * scale, 3))
+                beat.end_time = min(new_duration, round(beat.end_time * scale, 3))
+            for transformation in intent.transformations:
+                transformation.timing = min(
+                    new_duration,
+                    round(transformation.timing * scale, 3),
+                )
+            for emphasis in intent.emphasis_points:
+                emphasis.timestamp = min(
+                    new_duration,
+                    round(emphasis.timestamp * scale, 3),
+                )
+
+            scene.audio_duration_seconds = new_duration
+            scene.duration_estimate = new_duration
+            timing_report.append({
+                "scene_id": scene.scene_id,
+                "estimated_seconds": old_duration,
+                "measured_seconds": new_duration,
+                "scale": round(scale, 4),
+            })
+        self._quality_reports["narration_timing"] = {
+            "enabled": True,
+            "scenes": timing_report,
+        }
+
+    def _run_raw_manim_verifier(self, scene_output, storyboard):
+        """Preview generated raw Manim and optionally replace it with a repair."""
+        mode = str(self.config.verifier_mode or "off").lower()
+        if mode == "off" or scene_output is None:
+            self._quality_reports["manim_verifier"] = {"mode": "off", "scenes": []}
+            return scene_output
+
+        from src.manim_verifier.pipeline import RawManimVerifierPipeline, VerifierConfig
+        from src.manim_verifier.preview_renderer import RawManimPreviewRenderer
+        from src.manim_verifier.static_verifier import StaticManimVerifier
+        from src.manim_verifier.vision_reviewer import GeminiVisionReviewer
+
+        reviewer = None
+        if mode == "repair":
+            env_path = Path(__file__).resolve().parents[2] / ".env"
+            try:
+                reviewer = GeminiVisionReviewer.from_env(env_path)
+            except Exception as exc:
+                raise PipelineAbortError(
+                    "ManimVerifier",
+                    "VERIFIER_REVIEWER_UNAVAILABLE",
+                    str(exc),
+                ) from exc
+
+        static_verifier = StaticManimVerifier(
+            trusted_import_roots={
+                "src.utils.animation_patterns",
+                "src.utils.coordinate_system_helpers",
+                "src.utils.geometry_helpers",
+                "src.utils.layout_tracker",
+                "src.utils.notation_helpers",
+                "src.utils.pi_characters",
+            },
+            require_purpose_comments=True,
+        )
+        renderer = RawManimPreviewRenderer(verifier=static_verifier)
+        verifier = RawManimVerifierPipeline(
+            reviewer=reviewer,
+            renderer=renderer,
+            config=VerifierConfig(
+                mode=mode,
+                run_root=Path(self._run_output_dir) / "verifier_runs",
+                preview_quality="low",
+                max_repair_attempts=self.config.verifier_max_repairs,
+            ),
+        )
+        scenes_by_id = {
+            scene.scene_id: scene for scene in getattr(storyboard, "scenes", []) or []
+        }
+        reports: List[Dict[str, Any]] = []
+        for code_obj in getattr(scene_output, "animation_code_objects", []) or []:
+            scene = scenes_by_id.get(code_obj.scene_id)
+            existing_lines = {line.strip() for line in code_obj.code.splitlines()}
+            missing_imports = [
+                line for line in code_obj.imports if line.strip() not in existing_lines
+            ]
+            full_source = "\n".join(missing_imports + [code_obj.code])
+            result = verifier.run(
+                brief=code_obj.narration,
+                storyboard=(
+                    json.dumps(scene.model_dump(mode="json"), indent=2)
+                    if scene is not None else "{}"
+                ),
+                initial_code=full_source,
+            )
+            reports.append({
+                "scene_id": code_obj.scene_id,
+                "success": result.success,
+                "repaired": result.repaired,
+                "fallback_used": result.fallback_used,
+                "run_directory": result.run_directory,
+                "attempts": len(result.attempts),
+            })
+            if mode == "repair" and result.repaired and result.success:
+                code_obj.imports = []
+                code_obj.code = result.final_code
+                final_report = static_verifier.verify(result.final_code)
+                if final_report.scene_class:
+                    code_obj.class_name = final_report.scene_class
+            if self.config.strict and not result.success:
+                raise PipelineAbortError(
+                    "ManimVerifier",
+                    "STRICT_PREFLIGHT_FAILED",
+                    f"Raw-Manim preflight failed for {code_obj.scene_id}.",
+                    {"run_directory": result.run_directory},
+                )
+        self._quality_reports["manim_verifier"] = {"mode": mode, "scenes": reports}
+        return scene_output
 
     def _run_tts_generation(
         self,
@@ -1282,7 +1483,7 @@ class Orchestrator:
                 scenes=scenes_to_tts,
                 output_dir=audio_output_dir,
                 quality="standard",
-                voice="alloy"
+                voice=self.config.tts_voice,
             )
 
             success_count = sum(1 for r in tts_results if isinstance(r, TTSOutput))
@@ -1752,6 +1953,25 @@ class Orchestrator:
                 rel = str(Path(final_video_path).name)
             manifest.final_video_path = rel
 
+        review_findings = list(getattr(video_review_output, "findings", []) or [])
+        blocking_review = any(
+            getattr(finding, "severity", "") in {"high", "critical"}
+            for finding in review_findings
+        )
+        delivery_incomplete = bool(manifest.lost_scenes)
+        if (
+            self.config.strict
+            and self.config.enable_render
+            and (delivery_incomplete or blocking_review)
+        ):
+            lost_count = len(manifest.lost_scenes)
+            if not final_video_path or (
+                manifest.total_scenes > 0 and lost_count * 2 > manifest.total_scenes
+            ):
+                manifest.status = "CRITICAL_FAILURE"
+            else:
+                manifest.status = "FAILURE"
+
         self._populate_cost_summary(manifest)
         self._persist_quality_reports(manifest)
         self._write_manifest_to_disk(manifest)
@@ -1789,6 +2009,8 @@ class Orchestrator:
             "scene_code_review": "scene_code_review.json",
             "video_review": "video_review.json",
             "tts": "tts.json",
+            "narration_timing": "narration_timing.json",
+            "manim_verifier": "manim_verifier.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:

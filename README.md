@@ -21,16 +21,17 @@ A 10-stage sequential pipeline with embedded quality loops:
    - **Document Segmenter** partitions the source into ordered, non-overlapping segments (~half a page each, tunable via `--granularity`) with guaranteed full coverage
    - one narration beat script is generated **per segment**, with a concept ledger enforcing "introduce once, reference later"
    - a deterministic chunker groups beats into vignette-sized scenes that never cross segment boundaries
-   - a per-scene visual planner emits a structured **visual plan**: closed-catalog Manim primitives with kwargs, an `(x, y)` position, and a `(t_in, t_out)` visibility window
+   - a per-scene visual planner emits a structured **visual plan**: closed-catalog Manim primitives with kwargs, an `(x, y)` position, a `(t_in, t_out)` visibility window, and a beat-linked instructional purpose
+   - scenes may use up to 15 objects over time, but no more than seven concurrently; overloaded multi-beat scenes are split instead of silently truncated
    - the **visual-archetype library** classifies each scene's concept family (derivative, vector, limit, probability, …) and injects a proven visual pattern into the planner prompt
    - a **non-text-visual invariant** retries any plan that came back as a text wall
    - *quality loop:* the **Storyboard Grader** scores coverage and pedagogy; failing storyboards regenerate with critique
 5. **JSON Sanitizer** — enforces schema compliance on the storyboard (abort on failure)
 6. **Scene Controller** — iterates scenes deterministically, carrying narrative/color/notation continuity into code generation; the **Animation Code Generator** turns each visual plan into Manim code that honors the plan
-   - *quality loop:* the **Manim Code Validator** checks syntax, imports, and a **security gate** (import allowlist, no eval/exec/open, no reflection escapes) before anything is rendered; failures regenerate with feedback
+   - *quality loop:* the **Manim Code Validator** checks syntax and imports, while the optional **Raw-Manim Vision Verifier** performs a stricter AST safety gate, low-quality preview render, four-frame visual review, and controlled full-script repair
 7. **Persistence Agent** — writes scene `.py` files, storyboard, and narration to disk
 8. **Video Renderer Agent** — renders each scene file with Manim → `.mp4`
-9. **TTS Agent** — generates narration audio (runs in parallel with rendering)
+9. **TTS Agent** — generates narration audio; `--tts-first` moves this before code generation and makes measured audio duration authoritative
 10. **Audio-Video Composer Agent** — merges per-scene video + audio and concatenates the final video
     - *quality loop:* the **Video Quality Reviewer** inspects results — including **frame-level visual QA** that samples rendered keyframes via FFmpeg and flags empty frames and static "still-slide" scenes — and routes findings back as regeneration guidance
 
@@ -41,8 +42,10 @@ Each agent has a single responsibility, explicit input/output contracts, and iso
 - **Full-coverage segmentation** — the storyboard provably covers every source segment exactly once; gaps and redundant coverage are detected and reported
 - **Visual-archetype library** — 11 curated concept→visual patterns (tangent-sweep for derivatives, tip-to-tail for vectors, grid-morph for matrices, …) steer every scene toward a proven design
 - **Closed primitive catalog** — the LLM can only emit schema-validated Manim primitives; hallucinated classes are rejected at the boundary, not at render time
-- **Visual-first pacing** — scene length is driven by visual work (floor 8s), never padded out to narration length
+- **Narration-timed pilot** — `--tts-first` generates speech before code and rescales visual beats to measured audio duration
+- **Purpose-aware visuals** — every planned and generated display object must state which narration beat it serves
 - **Security gate** — generated scene code is AST-screened (import allowlist, forbidden calls, reflection escapes) before local execution, defending against prompt injection from malicious PDFs
+- **Raw-Manim vision verification** — low-quality previews, representative screenshots, deterministic frame diagnostics, and at most two controlled full-script repairs
 - **Frame-level visual QA** — rendered pixels are judged directly: blank or static scenes are flagged with concrete rewrite directions
 - **Failure isolation & determinism** — per-scene error recovery, stable IDs, reproducible structure for the same input
 - **Cost tracking** — per-run LLM/TTS spend is recorded in the manifest
@@ -137,7 +140,37 @@ pdf2manim convert document.pdf --quality high
 
 # Fail fast when API keys are missing instead of using mock fallbacks
 pdf2manim convert document.pdf --strict
+
+# Pilot: generate narration first and animate against measured audio duration
+pdf2manim convert document.pdf --tts-first
+
+# Observe preview-verifier findings without changing generated scripts
+pdf2manim convert document.pdf --verifier-mode shadow
+
+# Allow one screenshot-guided Gemini repair per failing scene
+# The verifier reads GEMINI_API_KEY from .env and never writes it to artifacts.
+pdf2manim convert document.pdf --verifier-mode repair --verifier-max-repairs 1
 ```
+
+`VERIFIER_MODE=off|shadow|repair` can also configure the mode. When the verifier
+is enabled, strict runs fail if a preview cannot render. Strict delivery also
+fails when a scene is lost or the final review contains a high/critical finding.
+Preview artifacts are retained under the run's ignored `verifier_runs/`
+directory.
+
+### Verify a Raw Manim Script
+
+```bash
+# Offline safety check, preview render, four screenshots, and report
+manim-verifier scene.py --mode shadow
+
+# Optional paid multimodal repair; reads only the specified .env file
+manim-verifier scene.py --mode repair --env-file .env --max-repairs 1
+```
+
+The AST verifier is a safety gate, not a complete sandbox. Production execution
+should use a networkless container, non-root user, CPU/memory/time limits, and
+only one writable output directory.
 
 ### Estimate Cost Before Running
 
