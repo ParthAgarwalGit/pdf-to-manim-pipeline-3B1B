@@ -1,345 +1,184 @@
-# PDF to Manim Animation Pipeline
+# PDF-to-Video Pipeline V2
 
-An agent-orchestrated system that transforms academic PDF documents into short, 3Blue1Brown-style animated **visualizations** using the Manim animation engine.
+V2 turns an educational PDF into a source-grounded, narrated Manim video. It plans the lesson around narration, defines machine-readable visual artifacts and lifecycles, generates expressive raw Manim with Gemini, verifies low-quality previews deterministically, optionally performs one targeted multimodal repair, and only then renders the final video.
 
-## Overview
+The previous implementations remain available in Git:
 
-This is a **visualization-first** tool, not an end-to-end learning system. It reads study material, deeply segments it, and produces a series of short vignette videos — each one visually depicting a single concept with motion, transformation, and progressive reveal. The design goals, in order:
+- `main`: original pipeline plus Gemini Manim generation
+- `vignesh/v1.0`: TTS-first and raw-verifier experiment
+- `vignesh/v2.0`: this architecture
 
-1. **Impactful visuals** — every scene must *draw* the concept, never narrate over a text wall.
-2. **Breadth coverage** — every part of the source document is covered exactly once; nothing is compressed away or repeated across videos.
-3. **Short vignettes** — scenes run ~8–45 seconds, one focused visual idea each. A 20-page paper becomes many small videos, not one long lecture.
+## Pipeline
 
-## Architecture
+```text
+PDF
+  -> local grounded extraction; vision OCR only for low-confidence pages
+  -> lesson plan with source references
+  -> continuous narration and semantic beats
+  -> TTS timing + visual artifact contracts in parallel
+  -> per-scene raw Manim generation
+  -> AST safety gate + tracked 480p15 preview
+  -> deterministic lifecycle/layout diagnostics
+  -> optional screenshot-guided repair
+  -> accepted high-quality scene renders
+  -> audio composition, ordered concatenation, and final A/V review
+```
 
-A 10-stage sequential pipeline with embedded quality loops:
+V2 does not use SceneIR or MCP internally. Generated classes inherit a thin `TrackedScene` helper while otherwise using ordinary Manim.
 
-1. **Ingestion Agent** — detects file uploads and routes them
-2. **Validation Agent** — verifies PDF type and structural integrity
-3. **Vision + OCR Agent** — extracts text, mathematical notation, and diagrams from every page
-4. **Script/Storyboard Architect** — the visual brain:
-   - **Document Segmenter** partitions the source into ordered, non-overlapping segments (~half a page each, tunable via `--granularity`) with guaranteed full coverage
-   - one narration beat script is generated **per segment**, with a concept ledger enforcing "introduce once, reference later"
-   - a deterministic chunker groups beats into vignette-sized scenes that never cross segment boundaries
-   - a per-scene visual planner emits a structured **visual plan**: closed-catalog Manim primitives with kwargs, an `(x, y)` position, a `(t_in, t_out)` visibility window, and a beat-linked instructional purpose
-   - scenes may use up to 15 objects over time, but no more than seven concurrently; overloaded multi-beat scenes are split instead of silently truncated
-   - the **visual-archetype library** classifies each scene's concept family (derivative, vector, limit, probability, …) and injects a proven visual pattern into the planner prompt
-   - a **non-text-visual invariant** retries any plan that came back as a text wall
-   - *quality loop:* the **Storyboard Grader** scores coverage and pedagogy; failing storyboards regenerate with critique
-5. **JSON Sanitizer** — enforces schema compliance on the storyboard (abort on failure)
-6. **Scene Controller** — iterates scenes deterministically, carrying narrative/color/notation continuity into code generation; the **Animation Code Generator** turns each visual plan into Manim code that honors the plan
-   - *quality loop:* the **Manim Code Validator** checks syntax and imports, while the optional **Raw-Manim Vision Verifier** performs a stricter AST safety gate, low-quality preview render, four-frame visual review, and controlled full-script repair
-7. **Persistence Agent** — writes scene `.py` files, storyboard, and narration to disk
-8. **Video Renderer Agent** — renders each scene file with Manim → `.mp4`
-9. **TTS Agent** — generates narration audio; `--tts-first` moves this before code generation and makes measured audio duration authoritative
-10. **Audio-Video Composer Agent** — merges per-scene video + audio and concatenates the final video
-    - *quality loop:* the **Video Quality Reviewer** inspects results — including **frame-level visual QA** that samples rendered keyframes via FFmpeg and flags empty frames and static "still-slide" scenes — and routes findings back as regeneration guidance
+## Visual Contracts
 
-Each agent has a single responsibility, explicit input/output contracts, and isolated failure modes: a failing scene is logged and skipped, never fatal to the run.
+The visual planner separates four kinds of artifacts before arranging them:
 
-## Key Features
+- `primary_visual`: graphs, geometry, diagrams, algorithm state, and data demonstrations
+- `semantic_text`: titles, labels, equations, and short callouts
+- `annotation`: target-linked arrows, braces, and highlights
+- `transient_effect`: temporary emphasis that must not remain on screen
 
-- **Full-coverage segmentation** — the storyboard provably covers every source segment exactly once; gaps and redundant coverage are detected and reported
-- **Visual-archetype library** — 11 curated concept→visual patterns (tangent-sweep for derivatives, tip-to-tail for vectors, grid-morph for matrices, …) steer every scene toward a proven design
-- **Closed primitive catalog** — the LLM can only emit schema-validated Manim primitives; hallucinated classes are rejected at the boundary, not at render time
-- **Narration-timed pilot** — `--tts-first` generates speech before code and rescales visual beats to measured audio duration
-- **Purpose-aware visuals** — every planned and generated display object must state which narration beat it serves
-- **Security gate** — generated scene code is AST-screened (import allowlist, forbidden calls, reflection escapes) before local execution, defending against prompt injection from malicious PDFs
-- **Raw-Manim vision verification** — low-quality previews, representative screenshots, deterministic frame diagnostics, and at most two controlled full-script repairs
-- **Frame-level visual QA** — rendered pixels are judged directly: blank or static scenes are flagged with concrete rewrite directions
-- **Failure isolation & determinism** — per-scene error recovery, stable IDs, reproducible structure for the same input
-- **Cost tracking** — per-run LLM/TTS spend is recorded in the manifest
+Every artifact has a stable ID, teaching purpose, source facts, narration beats, enter/exit beat, region, layer, priority, carry policy, and intentional-overlap policy. There is no arbitrary seven-object rejection. Runtime validation uses actual active objects, bounding boxes, text occupancy, and weighted visual density.
+
+Each scene now chooses one bounded layout template before code generation:
+
+- `full_visual`: one large central diagram, with optional header and footer
+- `split`: independent left and right content regions
+- `three_column`: three compact peer regions
+- `center_with_notes`: one wide central visual with narrow side-note regions
+
+The templates use fixed Manim-coordinate boxes with gaps between regions. An artifact also declares its footprint, preferred aspect ratio, padding, minimum acceptable scale, overflow policy, and overlap policy. Only one independent artifact may own a region during a beat; related labels and geometry should be composed inside one registered `VGroup`, while target-linked annotations may share the target region explicitly. `TrackedScene.place_in_region()` scales and anchors the completed artifact into its box. Content that cannot fit above its minimum scale must be simplified or spread across beats instead of becoming unreadably small.
+
+## Verification
+
+Generated Python is never executed before AST validation. The gate checks imports, dangerous calls, one tracked scene, required artifact registration, beat checkpoints, script size, suspicious coordinates, and unsupported LaTeX.
+
+During preview rendering, `TrackedScene` records stable state after `play()`, `wait()`, `add()`, and `remove()`, plus 25/50/75 percent samples inside each animation. Registered `VGroup` containers retain one logical artifact ID for lifecycle validation while their visible children receive deterministic leaf IDs for layout checks. The verifier detects:
+
+- early entry and late exit
+- missing and unplanned objects
+- off-screen objects and clipped text
+- preferred-region and hard-region overflow
+- text-text and text-geometry overlap
+- unreadably small text
+- excessive active visual density
+- empty or static intervals
+- raw scene coordinates when axes exist
+- narration/video duration mismatch
+
+Overlap detection first measures the intersection as a fraction of the smaller leaf object's bounds. Text-related candidates are then rendered separately into small alpha masks, and occupied-pixel intersection confirms whether visible marks actually collide. Text-text collisions become warnings or errors according to severity; geometry-geometry intersections remain allowed, and intentional contract overlaps are excluded. Tiny-text warnings use rendered relative height rather than nominal Manim `font_size`. The HTML report shows the timestamp, logical artifacts, exact leaf IDs, measured ratios, and evidence frame for every finding.
+
+Region validation has two levels. Crossing the padded preferred box creates a warning; crossing the slightly buffered hard box creates an error eligible for targeted vision repair. Because verification uses traced leaf bounds, putting several elements in a `VGroup` does not conceal a bad internal layout.
+
+Frames are extracted at narration boundaries, issue timestamps, 25/50/75 percent, and the final frame. A repair is accepted only when it renders, changes the checkpoint visuals, lowers the deterministic issue score, and introduces no new safety error. The original always remains available.
 
 ## Installation
 
-### Prerequisites
+Requirements:
 
 - Python 3.10+
-- LaTeX (for mathematical notation rendering)
-- FFmpeg (for video rendering and frame-level QA)
+- Manim Community
+- FFmpeg and ffprobe
+- MiKTeX or TeX Live
 
-#### Install LaTeX
-
-**Ubuntu/Debian:**
-
-```bash
-sudo apt-get install texlive-full
-```
-
-**macOS:**
-
-```bash
-brew install --cask mactex
-```
-
-**Windows:**
-Install MiKTeX or TeX Live from their respective websites.
-
-#### Install FFmpeg
-
-**Ubuntu/Debian:**
-
-```bash
-sudo apt-get install ffmpeg
-```
-
-**macOS:**
-
-```bash
-brew install ffmpeg
-```
-
-**Windows:**
-Download from [ffmpeg.org](https://ffmpeg.org)
-
-### Python Dependencies
-
-```bash
+```powershell
 pip install -e ".[dev]"
 ```
 
-If you only want runtime dependencies, `pip install -r requirements.txt` still works.
+Copy `keys.example.env` to `keys.env` or `.env`:
 
-### API Keys
+```text
+OPENAI_API_KEY=...     # artifact planning and TTS
+GEMINI_API_KEY=...     # lesson, narration, OCR, Manim code, and vision repair
+```
 
-Copy `keys.example.env` to `keys.env` (or use `.env`) and set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY`. Gemini 3.7 Flash generates the final Manim Python; without its key that stage degrades to deterministic mock output.
+Missing keys use deterministic local fallbacks unless `--strict-keys` is supplied. Tests always strip credentials and never make paid calls.
+V2 does not use Claude; `ANTHROPIC_API_KEY` is only relevant to legacy V1 paths.
 
 ## Usage
 
-### Process a Single PDF
+Normal high-quality conversion with the default one-dollar API ceiling:
 
-```bash
-pdf2manim convert path/to/document.pdf --output-dir ./output
+```powershell
+pdf2manim convert document.pdf --quality high --max-cost 1.00 --policy standard
 ```
 
-### Process with Custom Configuration
+Useful controls:
 
-```bash
-pdf2manim convert document.pdf \
-    --verbosity high \
-    --depth advanced \
-    --audience graduate \
-    --granularity fine \
-    --voice nova
-```
-
-### Execution Modes
-
-```bash
-# Planning only — segment, script, and storyboard, no code/render/TTS
+```powershell
+# Grounded lesson and narration only
 pdf2manim convert document.pdf --dry-run
 
-# Skip TTS (render video without narration audio)
-pdf2manim convert document.pdf --skip-tts
+# Disable paid visual repair
+pdf2manim convert document.pdf --repair off
 
-# Skip rendering entirely (generate scene code only)
+# Audit verifier findings without letting them reject a renderable scene
+pdf2manim convert document.pdf --verifier-mode audit --repair off
+
+# Generate code without Manim rendering
 pdf2manim convert document.pdf --skip-render
 
-# Set render quality: low / medium / high
-pdf2manim convert document.pdf --quality high
+# Withhold the official final video if any required scene/audio/check fails
+pdf2manim convert document.pdf --policy strict
 
-# Fail fast when API keys are missing instead of using mock fallbacks
-pdf2manim convert document.pdf --strict
+# Require every configured provider key; never use local content fallbacks
+pdf2manim convert document.pdf --strict-keys
 
-# Pilot: generate narration first and animate against measured audio duration
-pdf2manim convert document.pdf --tts-first
-
-# Observe preview-verifier findings without changing generated scripts
-pdf2manim convert document.pdf --verifier-mode shadow
-
-# Allow one screenshot-guided Gemini repair per failing scene
-# The verifier reads GEMINI_API_KEY from .env and never writes it to artifacts.
-pdf2manim convert document.pdf --verifier-mode repair --verifier-max-repairs 1
+# Bound external and local concurrency
+pdf2manim convert document.pdf --api-workers 4 --code-workers 3 --preview-workers 2 --render-workers 1
 ```
 
-`VERIFIER_MODE=off|shadow|repair` can also configure the mode. When the verifier
-is enabled, strict runs fail if a preview cannot render. Strict delivery also
-fails when a scene is lost or the final review contains a high/critical finding.
-Preview artifacts are retained under the run's ignored `verifier_runs/`
-directory.
+The default worker limits are four global API calls, two visual-contract batches, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. Scene jobs advance as soon as their own audio and contract are ready.
 
-### Verify a Raw Manim Script
+## Resume and Reports
 
-```bash
-# Offline safety check, preview render, four screenshots, and report
-manim-verifier scene.py --mode shadow
+Press `Ctrl+C` once to stop. V2 checkpoints running work, terminates active Manim children, and keeps every successful task and paid response.
 
-# Optional paid multimodal repair; reads only the specified .env file
-manim-verifier scene.py --mode repair --env-file .env --max-repairs 1
+```powershell
+pdf2manim resume output\document\RUN_ID
+pdf2manim resume output\document\RUN_ID --max-cost 1.50
+pdf2manim status output\document\RUN_ID
+pdf2manim report output\document\RUN_ID
 ```
 
-The AST verifier is a safety gate, not a complete sandbox. Production execution
-should use a networkless container, non-root user, CPU/memory/time limits, and
-only one writable output directory.
+Each ignored `output/{document}/{run_id}/` directory contains:
 
-### Estimate Cost Before Running
+- `run.json`: configuration, Git commit, environment, final status, and outputs
+- `run.db`: SQLite WAL task, cache, attempt, and budget state
+- `events.jsonl`: complete structured stage/scene/worker/provider timeline
+- `pipeline.log`: concise chronological human log
+- `storyboard.json` and `storyboard.md`: objectives, scene descriptions, narration, beats, and sources
+- `costs.json`: reservations and actual usage by call, stage, provider, and model
+- `report.html`: scene outcomes, failures, findings, timing, cost, and artifact links
+- `prompts/`: redacted model-visible requests and responses
+- `scenes/{scene_id}/`: narration, audio, contract, original/repaired/final code, traces, screenshots, diagnostics, render logs, and videos
 
-```bash
-pdf2manim cost document.pdf
-```
+Credentials, authorization headers, environment secrets, generated media, databases, prompts, and run artifacts are gitignored and redacted before persistence.
 
-## Docker & AMD Developer Cloud
+## Cost and Failure Policy
 
-The pipeline is containerized so the full workload runs on an AMD Developer
-Cloud instance. The base image ships LaTeX, Cairo, and FFmpeg, so the build is
-self-contained.
+The default hard budget is `$1.00`. Every paid call atomically reserves its worst-case configured token cost before execution. Actual usage replaces the reservation afterward. An ambiguous provider timeout remains conservatively charged and is not retried blindly.
 
-```bash
-# 1. Provide keys (git-ignored, never baked into the image)
-cp keys.example.env keys.env      # then add your OpenAI, Anthropic, and Gemini keys
+Schema failures receive at most one semantic retry. Confirmed rate-limit or connection failures receive at most two bounded retries; ambiguous timeouts are never retried automatically. Vision repair is limited to one attempt per scene and three per run. Cache keys include provider, model, prompt version, schema, settings, and inputs, so resume does not repeat completed paid calls.
 
-# 2. Build + prove the container works WITHOUT spending credits
-scripts/run_on_amd.sh smoke       # keyless --help and --dry-run
+`standard` may substitute a clearly marked source-page video when a scene cannot render. `strict` completes independent diagnostics but withholds `final.mp4` if required content is missing. Budget exhaustion produces `PAUSED_BUDGET` and is resumable.
 
-# 3. Convert a PDF
-scripts/run_on_amd.sh convert path/to/paper.pdf -q high
-```
+`--verifier-mode enforce` is the default and treats deterministic visual errors as scene failures. `--verifier-mode audit` still runs static checks, preview rendering, trace diagnostics, screenshots, and final-render diagnostics, but visual findings are observational: a safe scene that renders continues and receives an `AUDIT_ACCEPTED` status. In audit mode, `--repair eligible` only repairs scripts that fail to render; it does not repair overlap or layout findings, preserving those findings for evaluation. Static safety and actual render failures remain blocking.
 
-Or with Compose:
+## Presenter Extension
 
-```bash
-docker compose run --rm convert   # ./input/document.pdf -> ./output
-docker compose up demo            # web demo on http://<host>:7860
-```
-
-**What runs on AMD:** rendering and encoding — the bulk of the compute — run on
-AMD Developer Cloud (EPYC CPUs, optional AMD GPU). Frontier models (gpt-5,
-claude) are used only for reasoning/codegen over the API, so output quality is
-unchanged. Full guide, evidence-capture tips, and the optional ROCm GPU
-render/encode path: [docs/amd-deployment.md](docs/amd-deployment.md).
-
-## Web Demo
-
-A minimal Gradio app (`app.py`) lets you upload a PDF and watch the generated
-vignettes in the browser — this is the hosted "Application URL":
-
-```bash
-pip install -e ".[demo]"
-python app.py                     # http://localhost:7860
-
-# Public URL for a submission/judging (compute stays on the host):
-GRADIO_SHARE=1 python app.py      # prints https://<id>.gradio.live (~72h)
-```
-
-Note: the demo must run on a host with LaTeX/FFmpeg/Manim and minute-long
-render budgets (i.e. the container on AMD Developer Cloud) — it is **not**
-deployable to serverless platforms like Vercel. To use a serverless frontend,
-put only a static page there and point it at this app running on AMD.
-
-## Configuration
-
-| Option | Values | Controls |
-|---|---|---|
-| `--verbosity` | `low` \| `medium` \| `high` | Narration detail level |
-| `--depth` | `introductory` \| `intermediate` \| `advanced` | Content depth |
-| `--audience` | `high-school` \| `undergraduate` \| `graduate` | Terminology level |
-| `--granularity` | `coarse` \| `balanced` \| `fine` | Source segment size — `fine` yields more, shorter videos covering the same material |
-| `--quality` | `low` \| `medium` \| `high` | Manim render quality |
-| `--voice` | `alloy` \| `echo` \| `fable` \| `onyx` \| `nova` \| `shimmer` | TTS voice |
+The timeline model already supports `manim`, `presenter`, `mixed`, and `transition` segments through one `SegmentRenderer` protocol. V2 currently enables only Manim. A future avatar provider can consume the same narration audio for lip synchronization, reserve presenter-safe layout regions for mixed scenes, and return a clip to the existing compositor without changing lesson planning, verification, or run-state infrastructure.
 
 ## Testing
 
-The default lane is **hermetic**: provider API keys are stripped for every test not marked `live_api`, so it is fast, free, and deterministic.
+```powershell
+# Entire hermetic suite, including one real local Manim/FFmpeg A/V smoke
+pytest
 
-```bash
-# Fast lane (~20s, no network, no keys needed)
-python -m pytest
+# V2 fast tests without the renderer smoke
+pytest tests\test_v2_models.py tests\test_v2_state_and_observability.py `
+       tests\test_v2_providers.py tests\test_v2_static_and_diagnostics.py `
+       tests\test_v2_pipeline.py -m "not integration"
 
-# With coverage
-python -m pytest --cov=src --cov-report=html
-
-# Property-based lane (Hypothesis)
-scripts/run_property_tests.sh
-
-# Real-API smoke tests (requires keys; excluded from the default lane)
-python -m pytest -m live_api
-
-# Specific test file
-python -m pytest tests/test_script_architect.py
+# Lint the active V2 surface
+ruff check src\pipeline_v2 src\cli.py tests\test_v2_*.py tests\test_cli.py
 ```
 
-## Project Structure
-
-```
-.
-├── src/
-│   ├── agents/          # Pipeline agents (segmenter, architect, codegen, validators, reviewers)
-│   ├── schemas/         # Pydantic data contracts (storyboard, segments, video script, ...)
-│   ├── orchestrator/    # 10-stage pipeline orchestration + retry policies
-│   └── utils/           # Primitive catalog, visual archetypes, frame analysis, Manim helpers
-├── tests/               # Hermetic test suite (+ property and live_api lanes)
-├── docs/
-│   └── adr/             # Architecture Decision Records
-├── scripts/             # Dev scripts (property-test lane)
-├── output/              # Generated artifacts (runtime)
-├── pyproject.toml       # Packaging, CLI entry point, pytest and lint configuration
-└── requirements.txt     # Runtime dependency fallback
-```
-
-## Output Structure
-
-```
-output/{pdf_filename}/{timestamp}/
-├── scene_*.py              # Generated Manim code (one vignette per file)
-├── narration_script.txt    # Narration with scene markers
-├── storyboard.json         # Scene specifications with visual plans
-├── processing_report.json  # Success/failure summary
-├── storyboard_review.json  # Storyboard quality review (coverage, pedagogy)
-├── scene_code_review.json  # Code validation review (incl. security gate)
-├── video_review.json       # Final media review (incl. frame-level visual QA)
-├── tts.json                # TTS batch outcome
-├── manifest.json           # File listing + cost summary
-├── audio/                  # Per-scene narration .mp3
-└── pipeline.log            # Structured execution logs
-```
-
-## Architecture Decision Records
-
-| ADR | Decision |
-|---|---|
-| [001](docs/adr/001-sync-vs-async-orchestrator.md) | Synchronous orchestrator with targeted parallel fan-out |
-| [002](docs/adr/002-unified-script-chunked-render.md) | One unified script, deterministically chunked into scenes |
-| [003](docs/adr/003-closed-primitive-catalog.md) | Closed, schema-validated Manim primitive catalog |
-| [004](docs/adr/004-xyt-layout-validation.md) | (Superseded) standalone (x,y,t) layout validation |
-| [005](docs/adr/005-visual-first-render-path.md) | Visual-first render path: plan-informed codegen, vignette pacing |
-
-## Development
-
-### Agent Interface
-
-All agents implement a common interface:
-
-```python
-class Agent(ABC):
-    def execute(self, input_data: AgentInput) -> AgentOutput:
-        """Execute agent logic"""
-
-    def validate_input(self, input_data: AgentInput) -> bool:
-        """Validate input conforms to expected schema"""
-
-    def get_retry_policy(self) -> RetryPolicy:
-        """Return retry policy for this agent"""
-```
-
-### Extending the Visual Vocabulary
-
-- **New Manim primitive** — add one entry to `MOBJECT_CATALOG` in `src/utils/manim_primitives.py`; schema validation, prompts, and the code emitter pick it up automatically. Then allow any new import roots in the validator's security allowlist if needed.
-- **New visual archetype** — append a `VisualArchetype` to `ARCHETYPE_REGISTRY` in `src/utils/visual_archetypes.py` (keywords, catalog-only primitives, motion design, fallback primitive). Registry-integrity tests enforce that it can never recommend anything the schema rejects.
-- **New agent** — create the class in `src/agents/`, define its schemas in `src/schemas/`, add tests, and wire it into the orchestrator sequence.
-
-## Documentation
-
-- [Output Contract](docs/output-contract.md) — manifest schema, file types, and inspection commands
-- [Troubleshooting](docs/troubleshooting.md) — common failures and fixes
-- [Determinism](docs/determinism.md) — reproducibility guarantees
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
-
-## Contributors
-
-- **Parth Agarwal**
-- **Sumit Galgalkar**
-- **Divyansh Bisht**
-- **Vignesh KS**
+Production execution should still use a networkless, non-root container with CPU/memory/time limits and only the run directory writable. The AST gate is deliberately conservative but is not a complete operating-system sandbox.

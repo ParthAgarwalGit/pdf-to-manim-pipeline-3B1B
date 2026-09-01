@@ -34,6 +34,8 @@ env/
 
 # Testing
 .pytest_cache/
+.pytest_tmp*/
+pytest-cache-files-*/
 .coverage
 .coverage.*
 htmlcov/
@@ -114,6 +116,8 @@ CTO_COMPREHENSIVE_REVIEW.md
 *.bak
 *.swp
 *~.nib
+/tmp/pdfs/*_render/
+/tmp/pdfs/*_text.txt
 
 # Jupyter Notebook
 .ipynb_checkpoints

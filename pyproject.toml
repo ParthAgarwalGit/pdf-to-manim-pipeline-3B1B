@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf-to-manim-pipeline"
-version = "0.1.0"
+version = "2.0.0"
 description = "Convert PDFs to Manim animations using AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -58,7 +58,6 @@ demo = [
 
 [project.scripts]
 pdf2manim = "src.cli:main"
-manim-verifier = "src.manim_verifier.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,610 +1,185 @@
-"""
-CLI entry point for pdf2manim - PDF to Manim video conversion tool.
+"""Command-line interface for the narration-directed V2 pipeline."""
 
-This module provides a command-line interface for converting PDF documents to
-animated mathematical explanations using Manim. The CLI supports configuration
-options for verbosity, content depth, target audience, and output formats.
+from __future__ import annotations
 
-Usage:
-    pdf2manim convert input.pdf --output-dir ./videos --depth intermediate
-    pdf2manim cost input.pdf
-    pdf2manim --version
-"""
-
-import logging
+import json
 import os
-import sys
 from pathlib import Path
 from typing import Optional
 
 import click
 
-from src.orchestrator.pipeline import Orchestrator, PipelineConfig, PipelineAbortError
-from src.utils.cost_tracker import CostTracker
+from src.pipeline_v2 import PipelineV2, PipelineV2Config, RunStatus
 
 
 def _load_env_files() -> None:
-    """Load .env / keys.env from the project root into the environment.
-
-    Called from the CLI group callback — NOT at import time. Loading at import
-    time leaked real API keys into every process that merely imported this
-    module (most damagingly pytest: collecting test_cli put live credentials
-    in the whole suite, turning the fast mock-path lane into slow, paid,
-    non-deterministic live-API calls).
-    """
     if os.getenv("PYTEST_CURRENT_TEST"):
-        # Under pytest, CliRunner fires this callback inside tests; loading
-        # keys.env here would re-inject real credentials after the hermetic
-        # conftest fixture stripped them. live_api tests provide keys
-        # explicitly via their own environment.
         return
     try:
         from dotenv import load_dotenv
     except ImportError:
-        return  # python-dotenv is optional; keys can be set manually
-
+        return
     project_root = Path(__file__).resolve().parent.parent
-    for env_name in (".env", "keys.env"):
-        env_path = project_root / env_name
-        if env_path.is_file():
-            load_dotenv(env_path)
+    for name in (".env", "keys.env"):
+        path = project_root / name
+        if path.is_file():
+            load_dotenv(path)
             break
 
 
-# Setup logging for the application
-def setup_logging(verbosity: str) -> logging.Logger:
-    """Configure logging based on verbosity level."""
-    log_level = logging.INFO
-    if verbosity == "low":
-        log_level = logging.WARNING
-    elif verbosity == "high":
-        log_level = logging.DEBUG
-
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    return logging.getLogger(__name__)
-
-
-def validate_pdf_path(ctx, param, value: str) -> str:
-    """Validate that the PDF file exists and is a valid file."""
-    if not value:
-        raise click.BadParameter("PDF file path is required")
-
-    pdf_path = Path(value)
-    if not pdf_path.exists():
+def _pdf_path(_ctx, _param, value: str) -> str:
+    path = Path(value).resolve()
+    if not path.is_file():
         raise click.BadParameter(f"PDF file not found: {value}")
-
-    if not pdf_path.is_file():
-        raise click.BadParameter(f"Path is not a file: {value}")
-
-    if pdf_path.suffix.lower() != '.pdf':
-        raise click.BadParameter(f"File must be a PDF: {value}")
-
-    return str(pdf_path.resolve())
-
-
-def validate_output_dir(ctx, param, value: str) -> str:
-    """Validate and create output directory if needed."""
-    if not value:
-        value = "./output"
-
-    output_path = Path(value)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    return str(output_path.resolve())
+    if path.suffix.lower() != ".pdf":
+        raise click.BadParameter("Input must be a PDF file")
+    return str(path)
 
 
 @click.group()
-@click.version_option(version="1.0.0", prog_name="pdf2manim")
-def pdf2manim():
-    """
-    pdf2manim - Convert PDF documents to animated mathematical explanations.
-
-    Transform educational PDFs into engaging Manim video animations with
-    narration. Customize content depth, audience level, and output quality.
-    """
-    # Runs before every subcommand — the only place env files are loaded.
+@click.version_option(version="2.0.0", prog_name="pdf2manim")
+def pdf2manim() -> None:
+    """Convert educational PDFs into verified narrated Manim videos."""
     _load_env_files()
 
 
 @pdf2manim.command()
-@click.argument('input_pdf', callback=validate_pdf_path)
+@click.argument("input_pdf", callback=_pdf_path)
+@click.option("-o", "--output-dir", type=click.Path(path_type=Path), default=Path("output"))
+@click.option("-q", "--quality", type=click.Choice(["low", "medium", "high"]), default="medium")
+@click.option("--audience", default="undergraduate", show_default=True)
+@click.option("--voice", type=click.Choice(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]), default="alloy")
+@click.option("--policy", type=click.Choice(["standard", "strict"]), default="standard")
+@click.option("--strict", is_flag=True, help="Alias for --policy strict.")
+@click.option("--repair", type=click.Choice(["off", "eligible"]), default="eligible")
 @click.option(
-    '-o', '--output-dir',
-    callback=validate_output_dir,
-    default='./output',
-    help='Output directory for generated files (default: ./output)'
+    "--verifier-mode",
+    type=click.Choice(["enforce", "audit"]),
+    default="enforce",
+    show_default=True,
+    help="Audit logs visual findings without rejecting renderable scenes.",
 )
-@click.option(
-    '-v', '--verbosity',
-    type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
-    default='medium',
-    help='Narration verbosity level (default: medium)'
-)
-@click.option(
-    '-d', '--depth',
-    type=click.Choice(['introductory', 'intermediate', 'advanced'], case_sensitive=False),
-    default='intermediate',
-    help='Content depth level (default: intermediate)'
-)
-@click.option(
-    '-a', '--audience',
-    type=click.Choice(['high-school', 'undergraduate', 'graduate'], case_sensitive=False),
-    default='undergraduate',
-    help='Target audience level (default: undergraduate)'
-)
-@click.option(
-    '--granularity',
-    type=click.Choice(['coarse', 'balanced', 'fine'], case_sensitive=False),
-    default='balanced',
-    help='Source coverage granularity (default: balanced)'
-)
-@click.option(
-    '--target-minutes',
-    type=click.FloatRange(min=0, min_open=True),
-    default=None,
-    help='Requested finished-video length in minutes; caps the scene budget '
-         'so length is a chosen input (default: ungoverned by length)'
-)
-@click.option(
-    '-q', '--quality',
-    type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
-    default='medium',
-    help='Video quality (default: medium)'
-)
-@click.option(
-    '--voice',
-    type=click.Choice(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'], case_sensitive=False),
-    default='alloy',
-    help='TTS voice selection (default: alloy)'
-)
-@click.option(
-    '--skip-tts',
-    is_flag=True,
-    default=False,
-    help='Skip TTS generation and only create animation code'
-)
-@click.option(
-    '--skip-render',
-    is_flag=True,
-    default=False,
-    help='Skip Manim video rendering'
-)
-@click.option(
-    '--dry-run',
-    is_flag=True,
-    default=False,
-    help='Generate storyboard only, skip code generation and rendering'
-)
-@click.option(
-    '--strict',
-    is_flag=True,
-    default=False,
-    help='Fail immediately when API keys are missing instead of falling back to mocks'
-)
-@click.option(
-    '--tts-first',
-    is_flag=True,
-    default=False,
-    help='Generate narration before Manim code and use measured audio durations'
-)
-@click.option(
-    '--verifier-mode',
-    type=click.Choice(['off', 'shadow', 'repair'], case_sensitive=False),
-    default='off',
-    envvar='VERIFIER_MODE',
-    help='Raw-Manim preview verifier mode'
-)
-@click.option(
-    '--verifier-max-repairs',
-    type=click.IntRange(0, 2),
-    default=1,
-    envvar='VERIFIER_MAX_REPAIRS',
-    help='Maximum visual repair attempts per scene (default: 1)'
-)
+@click.option("--max-cost", type=click.FloatRange(min=0.01), default=1.0, show_default=True)
+@click.option("--max-scenes", type=click.IntRange(1, 12), default=12, show_default=True)
+@click.option("--skip-tts", is_flag=True)
+@click.option("--skip-render", is_flag=True)
+@click.option("--dry-run", is_flag=True, help="Stop after grounded lesson and narration planning.")
+@click.option("--strict-keys", is_flag=True, help="Disallow deterministic fallbacks for missing provider keys.")
+@click.option("--api-workers", type=click.IntRange(1, 16), default=4, show_default=True)
+@click.option("--code-workers", type=click.IntRange(1, 8), default=3, show_default=True)
+@click.option("--preview-workers", type=click.IntRange(1, 4), default=2, show_default=True)
+@click.option("--render-workers", type=click.IntRange(1, 2), default=1, show_default=True)
 def convert(
     input_pdf: str,
-    output_dir: str,
-    verbosity: str,
-    depth: str,
-    audience: str,
-    granularity: str,
-    target_minutes: Optional[float],
+    output_dir: Path,
     quality: str,
+    audience: str,
     voice: str,
+    policy: str,
+    strict: bool,
+    repair: str,
+    verifier_mode: str,
+    max_cost: float,
+    max_scenes: int,
     skip_tts: bool,
     skip_render: bool,
     dry_run: bool,
-    strict: bool,
-    tts_first: bool,
-    verifier_mode: str,
-    verifier_max_repairs: int,
+    strict_keys: bool,
+    api_workers: int,
+    code_workers: int,
+    preview_workers: int,
+    render_workers: int,
 ) -> None:
-    """
-    Convert a PDF document to an animated Manim video.
+    """Run a new V2 conversion for INPUT_PDF."""
+    effective_policy = "strict" if strict else policy
+    config = PipelineV2Config(
+        output_dir=output_dir,
+        quality=quality,
+        audience=audience,
+        voice=voice,
+        policy=effective_policy,
+        repair=repair,
+        verifier_mode=verifier_mode,
+        max_cost_usd=max_cost,
+        max_scenes=max_scenes,
+        enable_tts=not skip_tts,
+        enable_render=not skip_render,
+        dry_run=dry_run,
+        strict_keys=strict_keys,
+        global_api_workers=api_workers,
+        code_workers=code_workers,
+        preview_workers=preview_workers,
+        render_workers=render_workers,
+    )
+    click.echo("pdf2manim V2")
+    click.echo(f"  Input:       {input_pdf}")
+    click.echo(f"  Policy:      {effective_policy}")
+    click.echo(f"  Quality:     {quality}")
+    click.echo(f"  API budget:  ${max_cost:.2f}")
+    click.echo(f"  Repair:      {repair}")
+    click.echo(f"  Verifier:    {verifier_mode}")
+    click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
+    result = PipelineV2(config).run(input_pdf)
+    _print_result(result)
 
-    INPUT_PDF is the path to the PDF file to convert.
 
-    Examples:
-
-        pdf2manim convert document.pdf
-
-        pdf2manim convert math.pdf --depth advanced --audience graduate
-
-        pdf2manim convert slides.pdf -o ./videos -q high --voice nova
-
-        pdf2manim convert notes.pdf --dry-run
-    """
-    try:
-        # Setup logging
-        logger = setup_logging(verbosity)
-
-        # Normalize string inputs to lowercase
-        verbosity = verbosity.lower()
-        depth = depth.lower()
-        audience = audience.lower()
-        granularity = granularity.lower()
-        quality = quality.lower()
-        voice = voice.lower()
-
-        # Display conversion parameters
-        click.echo(click.style("\n" + "=" * 60, fg="cyan"))
-        click.echo(click.style("pdf2manim - PDF to Manim Conversion", fg="cyan", bold=True))
-        click.echo(click.style("=" * 60, fg="cyan"))
-        click.echo()
-
-        click.echo(click.style("Input Configuration:", bold=True))
-        click.echo(f"  PDF File:     {input_pdf}")
-        click.echo(f"  Output Dir:   {output_dir}")
-        click.echo()
-
-        click.echo(click.style("Content Configuration:", bold=True))
-        click.echo(f"  Verbosity:    {verbosity}")
-        click.echo(f"  Depth:        {depth}")
-        click.echo(f"  Audience:     {audience}")
-        click.echo(f"  Granularity:  {granularity}")
-        click.echo(f"  Target Length:{' ' + str(target_minutes) + ' min' if target_minutes else ' auto'}")
-        click.echo()
-
-        click.echo(click.style("Rendering Configuration:", bold=True))
-        click.echo(f"  Quality:      {quality}")
-        click.echo(f"  Voice:        {voice}")
-        click.echo(f"  TTS Enabled:  {not skip_tts}")
-        click.echo(f"  Render Video: {not skip_render}")
-        click.echo(f"  Dry Run:      {dry_run}")
-        click.echo(f"  Strict Mode:  {strict}")
-        click.echo(f"  TTS First:    {tts_first}")
-        click.echo(f"  Verifier:     {verifier_mode}")
-        click.echo()
-
-        # Create pipeline configuration
-        pipeline_config = PipelineConfig(
-            verbosity=verbosity,
-            depth=depth,
-            audience=audience,
-            granularity=granularity,
-            target_minutes=target_minutes,
-            base_output_dir=output_dir,
-            enable_ocr_debug=False,
-            strict=strict,
-            enable_tts=not skip_tts,
-            enable_render=not skip_render,
-            dry_run=dry_run,
-            tts_voice=voice,
-            render_quality=quality,
-            tts_first=tts_first,
-            verifier_mode=verifier_mode.lower(),
-            verifier_max_repairs=verifier_max_repairs,
-        )
-
-        # Initialize cost tracker
-        cost_tracker = CostTracker.get_instance()
-        cost_tracker.reset()
-
-        # Run the pipeline
-        click.echo(click.style("Starting pipeline...", fg="yellow"))
-        click.echo()
-
-        orchestrator = Orchestrator(config=pipeline_config)
-
-        # Get PDF filename for logging
-        pdf_path = Path(input_pdf)
-        event_source = 'local'  # We're using local files in CLI mode
-
-        # Execute pipeline
-        try:
-            click.echo(click.style("Executing pipeline stages:", fg="yellow"))
-            with click.progressbar(
-                length=7,
-                label=click.style("  Pipeline Progress", bold=True),
-                show_pos=True
-            ) as bar:
-                # In a real implementation, we would track actual progress
-                # For now, we'll run the pipeline and show completion
-                manifest = orchestrator.run_pipeline(
-                    pdf_file_path=input_pdf,
-                    event_source=event_source
-                )
-                bar.update(7)
-
-            click.echo()
-            if manifest.status == "SUCCESS":
-                click.echo(click.style("Pipeline completed successfully!", fg="green", bold=True))
-            else:
-                click.echo(click.style(
-                    f"Pipeline completed with status {manifest.status}.",
-                    fg="yellow" if manifest.status == "PARTIAL_SUCCESS" else "red",
-                    bold=True,
-                ))
-            click.echo()
-
-            # Display results summary
-            click.echo(click.style("Results Summary:", bold=True))
-            click.echo(f"  Output Directory: {manifest.output_directory}")
-            click.echo(f"  Total Scenes:     {manifest.total_scenes}")
-            click.echo(f"  Successful:       {manifest.successful_scenes}")
-            click.echo(f"  Failed:           {manifest.total_scenes - manifest.successful_scenes}")
-            delivered = getattr(manifest, "delivered_scenes", None)
-            lost = getattr(manifest, "lost_scenes", None)
-            if isinstance(delivered, int):
-                click.echo(f"  Delivered:        {delivered} (in the final video)")
-                if isinstance(lost, list) and lost:
-                    click.echo(click.style(
-                        f"  Lost Scenes:      {len(lost)} "
-                        f"({', '.join(lost[:5])}"
-                        f"{', ...' if len(lost) > 5 else ''})",
-                        fg="yellow",
-                    ))
-            if manifest.total_scenes > 0:
-                effective = (
-                    delivered if isinstance(delivered, int)
-                    else manifest.successful_scenes
-                )
-                click.echo(f"  Success Rate:     {effective / manifest.total_scenes * 100:.1f}%")
-            click.echo(f"  Status:           {manifest.status}")
-            if manifest.warning_count:
-                click.echo(click.style(
-                    f"  Warnings:         {manifest.warning_count} "
-                    f"(see {Path(manifest.output_directory) / 'warnings.log'})",
-                    fg="yellow",
-                ))
-            click.echo()
-
-            # Display cost information
-            total_cost = cost_tracker.get_total_cost()
-            if total_cost > 0:
-                click.echo(click.style("Cost Summary:", bold=True))
-                click.echo(f"  Total Estimated Cost: ${total_cost:.4f} USD")
-
-                breakdown = cost_tracker.get_breakdown()
-                if breakdown.get('by_provider'):
-                    click.echo("  Cost by Provider:")
-                    for provider, cost in breakdown['by_provider'].items():
-                        click.echo(f"    {provider}: ${cost:.4f}")
-
-                if breakdown.get('by_model'):
-                    click.echo("  Cost by Model:")
-                    for model, cost in sorted(
-                        breakdown['by_model'].items(),
-                        key=lambda x: x[1],
-                        reverse=True
-                    )[:3]:  # Show top 3 models
-                        click.echo(f"    {model}: ${cost:.4f}")
-                click.echo()
-
-            # Output generated files
-            if manifest.files:
-                click.echo(click.style("Generated Files:", bold=True))
-                for file_ref in manifest.files[:10]:  # Show first 10 files
-                    click.echo(f"  - {file_ref.path}  ({file_ref.size_bytes:,} bytes, {file_ref.type})")
-                if len(manifest.files) > 10:
-                    click.echo(f"  ... and {len(manifest.files) - 10} more files")
-                click.echo()
-
-            # Report media outputs from the manifest (no filesystem globbing)
-            output_path = Path(manifest.output_directory)
-            video_entries = [f for f in manifest.files if f.type in ("scene_video", "composed_video", "final_video")]
-            audio_entries = [f for f in manifest.files if f.type == "scene_audio"]
-
-            if video_entries:
-                click.echo(click.style("Video Output:", fg="green", bold=True))
-                for vf in video_entries:
-                    full = output_path / vf.path
-                    size_mb = vf.size_bytes / (1024 * 1024)
-                    click.echo(f"  {click.style('VIDEO', fg='green')}: {full}  ({size_mb:.1f} MB)")
-                click.echo()
-            else:
-                # Fallback: scan filesystem in case manifest was written before render
-                fs_videos = sorted(output_path.rglob("*.mp4")) if output_path.exists() else []
-                if fs_videos:
-                    click.echo(click.style("Video Output (from filesystem):", fg="green", bold=True))
-                    for vf in fs_videos:
-                        size_mb = vf.stat().st_size / (1024 * 1024)
-                        click.echo(f"  {click.style('VIDEO', fg='green')}: {vf}  ({size_mb:.1f} MB)")
-                    click.echo()
-                else:
-                    click.echo(click.style("Warning: No video files were produced.", fg="yellow", bold=True))
-                    click.echo("  Check: manim installed? ffmpeg available? Scene code errors?")
-                    click.echo()
-
-            if audio_entries:
-                click.echo(click.style("Audio Output:", bold=True))
-                for af in audio_entries:
-                    full = output_path / af.path
-                    size_mb = af.size_bytes / (1024 * 1024)
-                    click.echo(f"  {click.style('AUDIO', fg='cyan')}: {full}  ({size_mb:.1f} MB)")
-                click.echo()
-
-            # Quality review artifacts
-            review_files = {
-                "storyboard_review.json": "Storyboard Review",
-                "scene_code_review.json": "Scene Code Review",
-                "video_review.json": "Video Review",
-            }
-            found_reviews = []
-            for filename, label in review_files.items():
-                review_path = output_path / filename
-                if review_path.exists():
-                    found_reviews.append((label, review_path))
-            if found_reviews:
-                click.echo(click.style("Quality Review Artifacts:", bold=True))
-                for label, path in found_reviews:
-                    click.echo(f"  {label}: {path}")
-                click.echo()
-
-            click.echo(click.style("=" * 60, fg="cyan"))
-            if manifest.status in {"FAILURE", "CRITICAL_FAILURE"}:
-                click.echo(click.style("Conversion failed quality gates.", fg="red", bold=True))
-                if manifest.final_video_path:
-                    click.echo(f"  Diagnostic video: {output_path / manifest.final_video_path}")
-            elif manifest.final_video_path:
-                click.echo(click.style("Conversion completed successfully!", fg="green", bold=True))
-                click.echo(f"  Final video: {output_path / manifest.final_video_path}")
-            elif video_entries:
-                click.echo(click.style("Conversion completed successfully!", fg="green", bold=True))
-            else:
-                click.echo(click.style("Pipeline finished but no video was produced.", fg="yellow", bold=True))
-            click.echo(click.style("=" * 60, fg="cyan"))
-            if manifest.status in {"FAILURE", "CRITICAL_FAILURE"}:
-                raise click.ClickException(
-                    f"Pipeline finished with status {manifest.status}; inspect the saved reports."
-                )
-
-        except PipelineAbortError as e:
-            click.echo()
-            click.echo(click.style(
-                f"Pipeline aborted at stage '{e.stage}'",
-                fg="red",
-                bold=True
-            ))
-            click.echo(f"Error Code: {e.error_code}")
-            click.echo(f"Message: {e.message}")
-            if e.context:
-                click.echo("Context:")
-                for key, value in e.context.items():
-                    click.echo(f"  {key}: {value}")
-            sys.exit(1)
-
-    except click.ClickException:
-        # Re-raise Click exceptions (validation errors, etc.)
-        raise
-    except Exception as e:
-        click.echo()
-        click.echo(click.style(
-            f"Error: {str(e)}",
-            fg="red",
-            bold=True
-        ))
-        logger = logging.getLogger(__name__)
-        logger.exception("Unexpected error during conversion")
-        sys.exit(1)
+@pdf2manim.command("resume")
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--max-cost", type=click.FloatRange(min=0.01), default=None)
+def resume_command(run_directory: Path, max_cost: Optional[float]) -> None:
+    """Resume an interrupted or budget-paused run without repeating successful tasks."""
+    result = PipelineV2.resume(run_directory, max_cost_usd=max_cost)
+    _print_result(result)
 
 
 @pdf2manim.command()
-@click.argument('input_pdf', callback=validate_pdf_path)
-def cost(input_pdf: str) -> None:
-    """
-    Estimate the cost for converting a PDF to video.
-
-    Analyzes the input PDF and provides a cost estimate for running the
-    complete conversion pipeline, including API calls and processing.
-
-    INPUT_PDF is the path to the PDF file to analyze.
-
-    Examples:
-
-        pdf2manim cost document.pdf
-    """
-    try:
-        click.echo(click.style("\n" + "=" * 60, fg="cyan"))
-        click.echo(click.style("pdf2manim - Cost Estimation", fg="cyan", bold=True))
-        click.echo(click.style("=" * 60, fg="cyan"))
-        click.echo()
-
-        click.echo(f"Analyzing: {input_pdf}")
-        click.echo()
-
-        # Get file information
-        pdf_path = Path(input_pdf)
-        file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
-
-        click.echo(click.style("File Information:", bold=True))
-        click.echo(f"  Filename:   {pdf_path.name}")
-        click.echo(f"  Size:       {file_size_mb:.2f} MB")
-        click.echo()
-
-        # Estimate costs based on file size and typical processing
-        # These are rough estimates
-        estimated_input_tokens = max(5000, int(file_size_mb * 50000))  # ~50k tokens per MB
-        estimated_output_tokens = int(estimated_input_tokens * 0.5)
-
-        # Estimate TTS characters (rough: ~1 char per 0.005 input tokens)
-        estimated_tts_chars = int(estimated_input_tokens * 0.005)
-
-        click.echo(click.style("Estimated Token Usage:", bold=True))
-        click.echo(f"  Input Tokens:  {estimated_input_tokens:,}")
-        click.echo(f"  Output Tokens: {estimated_output_tokens:,}")
-        click.echo(f"  TTS Characters: {estimated_tts_chars:,}")
-        click.echo()
-
-        # Cost estimation for different configurations
-        # Using typical pricing from cost_tracker
-        gpt_4o_input_price = 2.50 / 1_000_000
-        gpt_4o_output_price = 10.00 / 1_000_000
-        tts_price = 15.00 / 1_000_000  # per character
-
-        llm_cost = (
-            (estimated_input_tokens * gpt_4o_input_price) +
-            (estimated_output_tokens * gpt_4o_output_price)
-        )
-
-        tts_cost = estimated_tts_chars * tts_price
-
-        total_cost = llm_cost + tts_cost
-
-        click.echo(click.style("Estimated Costs:", bold=True))
-        click.echo(f"  LLM Processing:  ${llm_cost:.4f} USD")
-        click.echo(f"  TTS Generation:  ${tts_cost:.4f} USD")
-        click.echo(f"  Total Estimate:  ${total_cost:.4f} USD")
-        click.echo()
-
-        click.echo(click.style("Notes:", bold=True))
-        click.echo("  - Costs are estimates based on file size and typical processing")
-        click.echo("  - Actual costs depend on content complexity and API usage")
-        click.echo("  - Run 'convert' command for precise cost tracking during execution")
-        click.echo()
-
-        click.echo(click.style("=" * 60, fg="cyan"))
-
-    except Exception as e:
-        click.echo()
-        click.echo(click.style(
-            f"Error: {str(e)}",
-            fg="red",
-            bold=True
-        ))
-        sys.exit(1)
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def status(run_directory: Path) -> None:
+    """Print the persisted status and cost summary for a run."""
+    run_path = run_directory / "run.json"
+    if not run_path.exists():
+        raise click.ClickException(f"run.json not found in {run_directory}")
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    costs_path = run_directory / "costs.json"
+    costs = json.loads(costs_path.read_text(encoding="utf-8")) if costs_path.exists() else {}
+    click.echo(f"Run:       {payload.get('run_id', run_directory.name)}")
+    click.echo(f"Status:    {payload.get('status', 'UNKNOWN')}")
+    click.echo(f"Input:     {payload.get('input_pdf', 'unknown')}")
+    click.echo(f"API cost:  ${float(costs.get('total_usd', 0.0)):.4f}")
+    result = payload.get("result") or {}
+    if result:
+        click.echo(f"Scenes:    {result.get('successful_scenes', 0)}/{result.get('total_scenes', 0)}")
+        click.echo(f"Final:     {result.get('final_video_path') or 'not available'}")
 
 
-def main() -> None:
-    """Main entry point for the CLI."""
-    try:
-        pdf2manim()
-    except KeyboardInterrupt:
-        click.echo()
-        click.echo(click.style("Conversion cancelled by user", fg="yellow"))
-        sys.exit(130)
-    except Exception as e:
-        click.echo()
-        click.echo(click.style(
-            f"Fatal error: {str(e)}",
-            fg="red",
-            bold=True
-        ))
-        sys.exit(1)
+@pdf2manim.command()
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def report(run_directory: Path) -> None:
+    """Print the path to a run's local HTML report."""
+    path = (run_directory / "report.html").resolve()
+    if not path.exists():
+        raise click.ClickException(f"Report has not been generated: {path}")
+    click.echo(str(path))
 
 
-if __name__ == '__main__':
-    main()
+def _print_result(result) -> None:
+    click.echo()
+    click.echo(f"Status:       {result.status.value}")
+    click.echo(f"Run:          {result.run_directory}")
+    click.echo(f"Scenes:       {result.successful_scenes}/{result.total_scenes}")
+    click.echo(f"API cost:     ${result.estimated_cost_usd:.4f}")
+    click.echo(f"Report:       {result.report_path or 'not available'}")
+    click.echo(f"Final video:  {result.final_video_path or 'not produced'}")
+    if result.message:
+        click.echo(f"Message:      {result.message}")
+    if result.status == RunStatus.FAILED:
+        raise click.ClickException("Conversion failed; inspect the run report.")
+    if result.status == RunStatus.PAUSED_BUDGET:
+        raise click.ClickException("API budget exhausted; resume with a higher --max-cost.")
+
+
+main = pdf2manim
+
+
+if __name__ == "__main__":
+    pdf2manim()
