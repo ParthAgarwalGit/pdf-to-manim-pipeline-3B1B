@@ -130,7 +130,7 @@ pdf2manim convert document.pdf --api-workers 4 --code-workers 3 --preview-worker
 
 The default worker limits are four global API calls, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. The creative scaffold is local, so scene code generation starts as soon as its measured audio is ready.
 
-V2 plans short lessons as roughly four to six substantial scenes. Narration beats carry a speaking role, pause cue, transition note, and one visual action. TTS receives punctuated beat paragraphs, is slowed slightly without changing pitch, and receives a short trailing pause before the next scene. The measured paced audio remains authoritative for animation timing.
+V2 plans short lessons as roughly four to six substantial scenes. Narration beats carry a speaking role, pause cue, transition note, and one visual action. TTS receives punctuated beat paragraphs, is slowed slightly without changing pitch, and receives a two-second trailing buffer before the next scene. The measured paced audio remains authoritative for animation timing, giving the final animation room to finish after narration stops.
 
 Code generation receives a compact summary of the previous three scenes: their visual objectives, facts already shown, and constructions that must not be replayed. A local frame-sequence check also logs `REDUNDANT_VISUAL_REPLAY` when adjacent scenes look nearly identical; this is advisory and makes no paid call.
 
@@ -144,6 +144,15 @@ pdf2manim resume output\document\RUN_ID --max-cost 1.50
 pdf2manim status output\document\RUN_ID
 pdf2manim report output\document\RUN_ID
 ```
+
+Retry one or more scenes by naming the exact run directory and scene IDs shown in its report. The command keeps the original grounded plan and TTS, regenerates only the selected Manim scenes, runs preview/repair/render again, and rebuilds `final.mp4` from every scene in order.
+
+```powershell
+pdf2manim retry-scenes output\document\RUN_ID scene_002
+pdf2manim retry-scenes output\document\RUN_ID scene_002 scene_005 --max-cost 1.50
+```
+
+`--max-cost` is the new total ceiling for that run, not an additional allowance. Retry attempts and costs are appended to the same `run.db`, `events.jsonl`, and report.
 
 Each ignored `output/{document}/{run_id}/` directory contains:
 

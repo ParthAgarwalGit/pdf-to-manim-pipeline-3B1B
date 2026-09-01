@@ -115,18 +115,19 @@ def write_html_report(
 
     scene_rows = []
     for scene in result.scene_results:
+        scene_base = artifacts.run_dir / "scenes" / scene.scene_id
+        if scene.original_code_path:
+            scene_base = Path(scene.original_code_path).resolve().parent.parent
         issues = "<br>".join(
             _finding_html(artifacts.run_dir, item)
             for item in scene.findings
         ) or "None"
         repair_diagnostics = sorted(
-            (artifacts.run_dir / "scenes" / scene.scene_id).glob(
-                "attempt-*/diagnostics.json"
-            )
+            scene_base.glob("attempt-*/diagnostics.json")
         )[1:]
         links = [
-            _artifact_link(artifacts.run_dir, "Narration", artifacts.run_dir / "scenes" / scene.scene_id / "scene.json"),
-            _artifact_link(artifacts.run_dir, "Contract", artifacts.run_dir / "scenes" / scene.scene_id / "visual_contract.json"),
+            _artifact_link(artifacts.run_dir, "Narration", scene_base / "scene.json"),
+            _artifact_link(artifacts.run_dir, "Contract", scene_base / "visual_contract.json"),
             _artifact_link(artifacts.run_dir, "Original code", scene.original_code_path),
             _artifact_link(artifacts.run_dir, "Final code", scene.final_code_path),
             _artifact_link(artifacts.run_dir, "Preview", scene.preview_path),
@@ -135,7 +136,7 @@ def write_html_report(
             _artifact_link(
                 artifacts.run_dir,
                 "Original diagnostics",
-                artifacts.run_dir / "scenes" / scene.scene_id / "attempt-00" / "diagnostics.json",
+                scene_base / "attempt-00" / "diagnostics.json",
             ),
             *[
                 _artifact_link(

@@ -190,3 +190,14 @@ def test_offline_one_scene_produces_verified_audio_video(monkeypatch, tmp_path):
         json.loads(line)["event"] for line in trace.read_text(encoding="utf-8").splitlines()
     }
     assert "play_sample" in trace_events
+
+    original_code = Path(scene.original_code_path)
+    retried = PipelineV2.retry_scenes(result.run_directory, [scene.scene_id])
+    retried_scene = retried.scene_results[0]
+
+    assert retried.status == RunStatus.SUCCESS
+    assert retried.final_video_path
+    assert original_code.exists()
+    assert "retries" in Path(retried_scene.original_code_path).parts
+    assert "retry-01" in Path(retried_scene.original_code_path).parts
+    assert Path(retried_scene.final_video_path).exists()

@@ -49,7 +49,12 @@ from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VER
 from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
 from .state import BudgetExceeded, RunStore
-from .tts import NarrationAudioService, TTS_TIMING_VERSION
+from .tts import (
+    SCENE_END_PAUSE_SECONDS,
+    NarrationAudioService,
+    TTS_TIMING_VERSION,
+    ensure_trailing_buffer,
+)
 
 
 T = TypeVar("T")
@@ -67,6 +72,9 @@ class PipelineV2:
         self._preview_limit = asyncio.Semaphore(self.config.preview_workers)
         self._repair_limit = asyncio.Semaphore(self.config.repair_workers)
         self._render_limit = asyncio.Semaphore(self.config.render_workers)
+        self._retry_scene_ids: set[str] | None = None
+        self._retry_attempts: dict[str, int] = {}
+        self._previous_scene_results: dict[str, SceneResult] = {}
 
     def run(self, input_pdf: str | Path, *, run_dir: Optional[str | Path] = None) -> RunResult:
         input_path = Path(input_pdf).resolve()
@@ -102,6 +110,62 @@ class PipelineV2:
         config = PipelineV2Config.model_validate(config_data)
         return cls(config).run(payload["input_pdf"], run_dir=path)
 
+    @classmethod
+    def retry_scenes(
+        cls,
+        run_dir: str | Path,
+        scene_ids: list[str],
+        *,
+        max_cost_usd: Optional[float] = None,
+    ) -> RunResult:
+        path = Path(run_dir).resolve()
+        run_json = path / "run.json"
+        storyboard_json = path / "storyboard.json"
+        database = path / "run.db"
+        if not run_json.is_file() or not storyboard_json.is_file() or not database.is_file():
+            raise ValueError(f"Not a complete V2 run directory: {path}")
+        payload = json.loads(run_json.read_text(encoding="utf-8"))
+        input_path = Path(payload.get("input_pdf", "")).resolve()
+        if not input_path.is_file():
+            raise ValueError(f"The run's input PDF is no longer available: {input_path}")
+        storyboard = json.loads(storyboard_json.read_text(encoding="utf-8"))
+        known_ids = {
+            str(scene["scene_id"])
+            for scene in storyboard.get("lesson", {}).get("scenes", [])
+            if scene.get("scene_id")
+        }
+        requested = list(dict.fromkeys(scene_ids))
+        unknown = sorted(set(requested) - known_ids)
+        if not requested:
+            raise ValueError("At least one scene ID is required")
+        if unknown:
+            raise ValueError(
+                f"Unknown scene IDs: {', '.join(unknown)}. Available: {', '.join(sorted(known_ids))}"
+            )
+        config_data = payload["config"]
+        if max_cost_usd is not None:
+            config_data["max_cost_usd"] = max_cost_usd
+        config = PipelineV2Config.model_validate(config_data)
+        previous = {
+            item["scene_id"]: SceneResult.model_validate(item)
+            for item in (payload.get("result") or {}).get("scene_results", [])
+        }
+        missing_results = sorted(known_ids - set(previous))
+        if missing_results:
+            raise ValueError(
+                "Run does not contain reusable results for: " + ", ".join(missing_results)
+            )
+        store = RunStore(database, config.max_cost_usd)
+        try:
+            retry_attempts = store.prepare_scene_retry(requested)
+        finally:
+            store.close()
+        pipeline = cls(config)
+        pipeline._retry_scene_ids = set(requested)
+        pipeline._retry_attempts = retry_attempts
+        pipeline._previous_scene_results = previous
+        return pipeline.run(input_path, run_dir=path)
+
     async def _run(self, input_path: Path, resume_dir: Optional[Path]) -> RunResult:
         run_dir, run_id = self._prepare_run(input_path, resume_dir)
         self.artifacts = RunArtifacts(run_dir, run_id)
@@ -129,59 +193,84 @@ class PipelineV2:
         result = RunResult(run_id=run_id, run_directory=str(run_dir), status=RunStatus.RUNNING)
 
         try:
-            input_hash = hashlib.sha256(input_path.read_bytes()).hexdigest()
-            source_data = await self._task(
-                "source", "source_extraction", None,
-                {"sha256": input_hash, "stage_version": "source-v2-1"},
-                lambda: asyncio.to_thread(extract_source, input_path),
-            )
-            source = SourceDocument.model_validate(source_data)
-            enriched_data = await self._task(
-                "ocr-enrichment", "ocr", None,
-                {"source_sha256": source.sha256,
-                 "pages": source.low_confidence_pages, "prompt_version": PROMPT_VERSION},
-                lambda: planner.enrich_low_confidence_pages(
-                    source, input_path, run_dir / "source" / "ocr"
-                ),
-                dependencies=["source"],
-            )
-            source = SourceDocument.model_validate(enriched_data)
-            self.artifacts.write_json("source/document.json", source.model_dump(mode="json"))
+            if self._retry_scene_ids is not None:
+                source = SourceDocument.model_validate_json(
+                    (run_dir / "source" / "document.json").read_text(encoding="utf-8")
+                )
+                storyboard = json.loads(
+                    (run_dir / "storyboard.json").read_text(encoding="utf-8")
+                )
+                lesson = LessonPlan.model_validate(storyboard["lesson"])
+                narration = NarrationPlan.model_validate(storyboard["narration"])
+                self.artifacts.event(
+                    "scene_retry_started",
+                    stage="retry",
+                    message="Reusing grounded planning and narration for selected scene retries.",
+                    scene_ids=sorted(self._retry_scene_ids),
+                    retry_attempts=self._retry_attempts,
+                )
+            else:
+                input_hash = hashlib.sha256(input_path.read_bytes()).hexdigest()
+                source_data = await self._task(
+                    "source", "source_extraction", None,
+                    {"sha256": input_hash, "stage_version": "source-v2-1"},
+                    lambda: asyncio.to_thread(extract_source, input_path),
+                )
+                source = SourceDocument.model_validate(source_data)
+                enriched_data = await self._task(
+                    "ocr-enrichment", "ocr", None,
+                    {"source_sha256": source.sha256,
+                     "pages": source.low_confidence_pages, "prompt_version": PROMPT_VERSION},
+                    lambda: planner.enrich_low_confidence_pages(
+                        source, input_path, run_dir / "source" / "ocr"
+                    ),
+                    dependencies=["source"],
+                )
+                source = SourceDocument.model_validate(enriched_data)
+                self.artifacts.write_json("source/document.json", source.model_dump(mode="json"))
 
-            lesson_data = await self._task(
-                "lesson", "lesson", None,
-                {"source": source.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
-                 "structured_output_version": STRUCTURED_OUTPUT_VERSION,
-                 "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
-                lambda: planner.lesson(source),
-                dependencies=["ocr-enrichment"],
-            )
-            lesson = LessonPlan.model_validate(lesson_data)
-            lesson = lesson.model_copy(update={
-                "scenes": [scene.model_copy(update={"delivery_mode": "manim"}) for scene in lesson.scenes]
-            })
-            narration_data = await self._task(
-                "narration", "narration", None,
-                {"lesson": lesson.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
-                 "structured_output_version": STRUCTURED_OUTPUT_VERSION,
-                 "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
-                lambda: planner.narration(lesson, source),
-                dependencies=["lesson"],
-            )
-            narration = NarrationPlan.model_validate(narration_data)
-            grounding_errors = validate_grounding(lesson, narration, source)
-            if grounding_errors:
-                self.artifacts.event(
-                    "grounding_failed", stage="narration", message="; ".join(grounding_errors),
+                lesson_data = await self._task(
+                    "lesson", "lesson", None,
+                    {"source": source.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
+                     "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                     "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                    lambda: planner.lesson(source),
+                    dependencies=["ocr-enrichment"],
                 )
-                if self.config.policy == "strict":
-                    raise RuntimeError("Grounding validation failed: " + "; ".join(grounding_errors))
-                lesson = planner._fallback_lesson(source)
-                narration = planner._fallback_narration(lesson, source)
-                self.artifacts.event(
-                    "grounding_fallback", stage="narration",
-                    message="Replaced unsupported lesson output with a deterministic source-grounded plan.",
+                lesson = LessonPlan.model_validate(lesson_data)
+                lesson = lesson.model_copy(update={
+                    "scenes": [
+                        scene.model_copy(update={"delivery_mode": "manim"})
+                        for scene in lesson.scenes
+                    ]
+                })
+                narration_data = await self._task(
+                    "narration", "narration", None,
+                    {"lesson": lesson.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
+                     "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                     "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                    lambda: planner.narration(lesson, source),
+                    dependencies=["lesson"],
                 )
+                narration = NarrationPlan.model_validate(narration_data)
+                grounding_errors = validate_grounding(lesson, narration, source)
+                if grounding_errors:
+                    self.artifacts.event(
+                        "grounding_failed", stage="narration", message="; ".join(grounding_errors),
+                    )
+                    if self.config.policy == "strict":
+                        raise RuntimeError(
+                            "Grounding validation failed: " + "; ".join(grounding_errors)
+                        )
+                    lesson = planner._fallback_lesson(source)
+                    narration = planner._fallback_narration(lesson, source)
+                    self.artifacts.event(
+                        "grounding_fallback", stage="narration",
+                        message=(
+                            "Replaced unsupported lesson output with a deterministic "
+                            "source-grounded plan."
+                        ),
+                    )
             write_storyboard(self.artifacts, lesson, narration)
             result.total_scenes = len(lesson.scenes)
 
@@ -198,7 +287,48 @@ class PipelineV2:
 
             tts_tasks: dict[str, asyncio.Task] = {}
             for scene in narration.scenes:
-                if self.config.enable_tts:
+                persisted_audio = (
+                    self.store.successful_task_output(f"tts-{scene.scene_id}")
+                    if self._retry_scene_ids is not None else None
+                )
+                if persisted_audio is not None:
+                    persisted_scene = NarratedScene.model_validate(persisted_audio)
+                    if scene.scene_id in (self._retry_scene_ids or set()):
+                        retry_number = self._retry_attempts[scene.scene_id]
+                        padded_path = (
+                            scene_dirs[scene.scene_id] / "retries"
+                            / f"retry-{retry_number:02d}" / "audio"
+                            / f"{scene.scene_id}_buffered.mp3"
+                        )
+                        original_tail = persisted_scene.audio_tail_seconds
+                        persisted_scene = await asyncio.to_thread(
+                            ensure_trailing_buffer,
+                            persisted_scene,
+                            padded_path,
+                        )
+                        if persisted_scene.audio_tail_seconds > original_tail:
+                            self.artifacts.event(
+                                "retry_audio_buffer_extended",
+                                stage="tts",
+                                scene_id=scene.scene_id,
+                                task_id=f"tts-{scene.scene_id}",
+                                message=(
+                                    "Extended legacy narration locally to the current "
+                                    "two-second scene buffer."
+                                ),
+                                previous_tail_seconds=original_tail,
+                                final_tail_seconds=persisted_scene.audio_tail_seconds,
+                            )
+                    tts_tasks[scene.scene_id] = asyncio.create_task(
+                        _return(persisted_scene.model_dump(mode="json")),
+                        name=f"tts-reused-{scene.scene_id}",
+                    )
+                    self.artifacts.event(
+                        "retry_audio_reused", stage="tts", scene_id=scene.scene_id,
+                        task_id=f"tts-{scene.scene_id}",
+                        message="Reused the run's existing narration audio without a paid TTS call.",
+                    )
+                elif self.config.enable_tts:
                     tts_tasks[scene.scene_id] = asyncio.create_task(
                         self._tts_task(audio, scene, scene_dirs[scene.scene_id]),
                         name=f"tts-{scene.scene_id}",
@@ -207,10 +337,13 @@ class PipelineV2:
                     duration = max(
                         2.0,
                         len(scene.narration.split()) * 60.0 / scene.target_words_per_minute
-                        + sum(beat.pause_after_seconds for beat in scene.beats),
+                        + sum(beat.pause_after_seconds for beat in scene.beats)
+                        + SCENE_END_PAUSE_SECONDS,
                     )
                     tts_tasks[scene.scene_id] = asyncio.create_task(
-                        _return(apply_audio_timing(scene, duration)),
+                        _return(apply_audio_timing(scene, duration).model_copy(update={
+                            "audio_tail_seconds": SCENE_END_PAUSE_SECONDS,
+                        })),
                         name=f"tts-local-{scene.scene_id}",
                     )
 
@@ -225,20 +358,42 @@ class PipelineV2:
                     name=f"visual-{batch_index:03d}",
                 )
 
-            scene_jobs = [asyncio.create_task(
-                self._process_scene(
-                    input_path=input_path,
-                    source=source,
-                    lesson=lesson,
-                    original_scene=scene,
-                    timed_scene_task=tts_tasks[scene.scene_id],
-                    contract_task=contract_tasks[scene_batch[scene.scene_id]],
-                    scene_dir=scene_dirs[scene.scene_id],
-                    generator=generator,
-                ),
-                name=f"scene-{scene.scene_id}",
-            ) for scene in narration.scenes]
-            result.scene_results = await asyncio.gather(*scene_jobs)
+            selected_ids = self._retry_scene_ids or {
+                scene.scene_id for scene in narration.scenes
+            }
+            selected_scenes = [
+                scene for scene in narration.scenes if scene.scene_id in selected_ids
+            ]
+            scene_jobs = [
+                asyncio.create_task(
+                    self._process_scene(
+                        input_path=input_path,
+                        source=source,
+                        lesson=lesson,
+                        original_scene=scene,
+                        timed_scene_task=tts_tasks[scene.scene_id],
+                        contract_task=contract_tasks[scene_batch[scene.scene_id]],
+                        scene_dir=(
+                            scene_dirs[scene.scene_id]
+                            if not self._retry_attempts.get(scene.scene_id)
+                            else scene_dirs[scene.scene_id] / "retries"
+                            / f"retry-{self._retry_attempts[scene.scene_id]:02d}"
+                        ),
+                        generator=generator,
+                        retry_attempt=self._retry_attempts.get(scene.scene_id, 0),
+                    ),
+                    name=f"scene-{scene.scene_id}",
+                )
+                for scene in selected_scenes
+            ]
+            selected_results = {
+                item.scene_id: item for item in await asyncio.gather(*scene_jobs)
+            }
+            result.scene_results = [
+                selected_results.get(scene.scene_id)
+                or self._previous_scene_results[scene.scene_id]
+                for scene in narration.scenes
+            ]
             _audit_repeated_visuals(result.scene_results, self.artifacts)
             timed_scenes = [NarratedScene.model_validate(await tts_tasks[scene.scene_id])
                             for scene in narration.scenes]
@@ -323,6 +478,18 @@ class PipelineV2:
             else:
                 result.status = RunStatus.FAILED
                 result.message = "No deliverable scene videos were produced."
+            if self._retry_scene_ids is not None:
+                scene_list = ", ".join(sorted(self._retry_scene_ids))
+                if not result.message:
+                    result.message = f"Retried {scene_list} and rebuilt the complete final video."
+                self.artifacts.event(
+                    "scene_retry_finished",
+                    stage="retry",
+                    message=result.message,
+                    scene_ids=sorted(self._retry_scene_ids),
+                    status=result.status.value,
+                    final_video_path=result.final_video_path,
+                )
         except BudgetExceeded as exc:
             result.status = RunStatus.PAUSED_BUDGET
             result.message = str(exc)
@@ -394,10 +561,14 @@ class PipelineV2:
         contract_task: asyncio.Task,
         scene_dir: Path,
         generator: CodeGenerationService,
+        retry_attempt: int = 0,
     ) -> SceneResult:
         scene_id = original_scene.scene_id
         result = SceneResult(scene_id=scene_id)
         try:
+            artifact_prefix = Path("scenes") / scene_id
+            if retry_attempt:
+                artifact_prefix /= Path("retries") / f"retry-{retry_attempt:02d}"
             lesson_scene = next(
                 item for item in lesson.scenes if item.scene_id == scene_id
             )
@@ -425,12 +596,12 @@ class PipelineV2:
                     message="Replaced invalid visual contract with a grounded deterministic contract.",
                 )
             self.artifacts.write_json(
-                Path("scenes") / scene_id / "scene.json",
+                artifact_prefix / "scene.json",
                 {"narration": timed_scene.model_dump(mode="json"),
                  "lesson": next(item.model_dump(mode="json") for item in lesson.scenes if item.scene_id == scene_id)},
             )
             self.artifacts.write_json(
-                Path("scenes") / scene_id / "visual_contract.json",
+                artifact_prefix / "visual_contract.json",
                 contract.model_dump(mode="json"),
             )
             fact_ids = {fact_id for beat in timed_scene.beats for fact_id in beat.source_fact_ids}
@@ -441,10 +612,12 @@ class PipelineV2:
                     {"scene": timed_scene.model_dump(mode="json"), "prompt_version": CODE_PROMPT_VERSION,
                      "contract": contract.model_dump(mode="json"),
                      "lesson_scene": lesson_scene.model_dump(mode="json"),
-                     "visual_history": visual_history},
+                     "visual_history": visual_history,
+                     "retry_attempt": retry_attempt},
                     lambda: generator.generate(
                         timed_scene, contract, facts, lesson_scene=lesson_scene,
                         visual_history=visual_history,
+                        retry_attempt=retry_attempt,
                     ),
                     dependencies=[f"tts-{scene_id}", f"visual-{_batch_index(scene_id, lesson):03d}"],
                 )
@@ -477,7 +650,7 @@ class PipelineV2:
                 )
             original = _outcome(original_data)
             self.artifacts.write_json(
-                Path("scenes") / scene_id / "attempt-00" / "diagnostics.json",
+                artifact_prefix / "attempt-00" / "diagnostics.json",
                 _serialize(original),
             )
             if self.config.verifier_mode == "audit":
@@ -542,8 +715,7 @@ class PipelineV2:
                             )
                         repaired = _outcome(repaired_data)
                         self.artifacts.write_json(
-                            Path("scenes") / scene_id / f"attempt-{attempt_label}"
-                            / "diagnostics.json",
+                            artifact_prefix / f"attempt-{attempt_label}" / "diagnostics.json",
                             _serialize(repaired),
                         )
                         if self.config.verifier_mode == "audit":

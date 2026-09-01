@@ -19,8 +19,8 @@ from .state import RunStore
 
 
 SPEECH_RATE = 0.94
-SCENE_END_PAUSE_SECONDS = 0.7
-TTS_TIMING_VERSION = "tts-v2-2"
+SCENE_END_PAUSE_SECONDS = 2.0
+TTS_TIMING_VERSION = "tts-v2-3"
 
 
 class NarrationAudioService:
@@ -51,7 +51,7 @@ class NarrationAudioService:
             speech_seconds = len(narration_text.split()) * 60.0 / scene.target_words_per_minute
             duration = max(2.0, speech_seconds + sum(
                 beat.pause_after_seconds for beat in scene.beats
-            ))
+            ) + SCENE_END_PAUSE_SECONDS)
             path = audio_dir / f"{scene.scene_id}.mp3"
             await asyncio.to_thread(_silence, path, duration)
             self.artifacts.event(
@@ -73,7 +73,10 @@ class NarrationAudioService:
                 },
             )
             timed = apply_audio_timing(scene, duration)
-            return timed.model_copy(update={"audio_path": str(path.resolve())})
+            return timed.model_copy(update={
+                "audio_path": str(path.resolve()),
+                "audio_tail_seconds": SCENE_END_PAUSE_SECONDS,
+            })
 
         model = "tts-1-hd" if self.high_quality else "tts-1"
         characters = len(narration_text)
@@ -175,7 +178,12 @@ class NarrationAudioService:
                 task_id=f"tts-{scene.scene_id}", message=str(exc),
             )
         timed = apply_audio_timing(scene, final_duration)
-        return timed.model_copy(update={"audio_path": str(final_path.resolve())})
+        return timed.model_copy(update={
+            "audio_path": str(final_path.resolve()),
+            "audio_tail_seconds": (
+                SCENE_END_PAUSE_SECONDS if final_path == paced_path else 0.0
+            ),
+        })
 
 
 def _silence(path: Path, duration: float) -> None:
@@ -234,3 +242,31 @@ def _probe_duration(path: Path) -> float:
     if result.returncode != 0 or duration <= 0:
         raise RuntimeError(f"Could not measure paced narration: {result.stderr[-800:]}")
     return duration
+
+
+def ensure_trailing_buffer(
+    scene: NarratedScene,
+    output: Path,
+    minimum_seconds: float = SCENE_END_PAUSE_SECONDS,
+) -> NarratedScene:
+    """Pad legacy narration locally so retries get the current minimum tail."""
+
+    missing = max(0.0, minimum_seconds - scene.audio_tail_seconds)
+    if missing <= 0.001 or not scene.audio_path:
+        return scene
+    source = Path(scene.audio_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        get_ffmpeg(), "-y", "-i", str(source),
+        "-filter:a", f"apad=pad_dur={missing:.3f}",
+        "-codec:a", "libmp3lame", "-q:a", "2", str(output),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"Could not extend narration buffer: {result.stderr[-800:]}")
+    duration = _probe_duration(output)
+    timed = apply_audio_timing(scene, duration)
+    return timed.model_copy(update={
+        "audio_path": str(output.resolve()),
+        "audio_tail_seconds": minimum_seconds,
+    })

@@ -59,6 +59,33 @@ def test_running_tasks_become_interrupted_and_remain_resumable(tmp_path):
     store.close()
 
 
+def test_scene_retry_invalidates_generated_work_but_preserves_tts(tmp_path):
+    store = RunStore(tmp_path / "run.db", 1.0)
+    for task_id, stage in (
+        ("tts-scene_001", "tts"),
+        ("code-scene_001", "code_generation"),
+        ("preview-scene_001-00", "preview"),
+    ):
+        store.upsert_task(task_id, stage, "scene_001", "hash")
+        store.start_task(task_id)
+        store.finish_task(task_id, {"task": task_id}, 1.0)
+    store.upsert_task("final-compose", "composition", None, "hash")
+    store.start_task("final-compose")
+    store.finish_task("final-compose", "final.mp4", 1.0)
+
+    attempts = store.prepare_scene_retry(["scene_001"])
+    rows = {row["task_id"]: row for row in store.task_rows()}
+
+    assert attempts == {"scene_001": 1}
+    assert rows["tts-scene_001"]["status"] == "SUCCEEDED"
+    assert store.successful_task_output("tts-scene_001") == {"task": "tts-scene_001"}
+    assert rows["code-scene_001"]["status"] == "PENDING"
+    assert rows["preview-scene_001-00"]["status"] == "PENDING"
+    assert rows["final-compose"]["status"] == "PENDING"
+    assert store.prepare_scene_retry(["scene_001"]) == {"scene_001": 2}
+    store.close()
+
+
 def test_full_artifacts_redact_secrets(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-super-secret-value")
     artifacts = RunArtifacts(tmp_path, "run")

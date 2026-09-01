@@ -162,6 +162,52 @@ class RunStore:
             return None
         return json.loads(row["output_json"]) if row["output_json"] else None
 
+    def successful_task_output(self, task_id: str) -> Optional[Any]:
+        """Return persisted output without recomputing its historical input hash."""
+
+        row = self._connection.execute(
+            "SELECT status, output_json FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if not row or row["status"] != TaskStatus.SUCCEEDED.value:
+            return None
+        return json.loads(row["output_json"]) if row["output_json"] else None
+
+    def prepare_scene_retry(self, scene_ids: list[str]) -> dict[str, int]:
+        """Invalidate generated scene work while preserving planning and paid TTS."""
+
+        unique_ids = sorted(set(scene_ids))
+        if not unique_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_ids)
+        retry_counts = self.get_meta("scene_retry_counts", {})
+        for scene_id in unique_ids:
+            retry_counts[scene_id] = int(retry_counts.get(scene_id, 0)) + 1
+        with self._lock, self._connection:
+            self._connection.execute(
+                f"""
+                UPDATE tasks
+                SET status=?, output_json=NULL, error=NULL, started_at=NULL,
+                    finished_at=NULL, duration_ms=NULL
+                WHERE scene_id IN ({placeholders})
+                  AND stage IN (
+                      'code_generation', 'preview', 'vision_repair',
+                      'high_render', 'composition', 'source_fallback'
+                  )
+                """,
+                (TaskStatus.PENDING.value, *unique_ids),
+            )
+            self._connection.execute(
+                """
+                UPDATE tasks
+                SET status=?, output_json=NULL, error=NULL, started_at=NULL,
+                    finished_at=NULL, duration_ms=NULL
+                WHERE task_id='final-compose'
+                """,
+                (TaskStatus.PENDING.value,),
+            )
+        self.set_meta("scene_retry_counts", retry_counts)
+        return {scene_id: int(retry_counts[scene_id]) for scene_id in unique_ids}
+
     def interrupt_running(self) -> None:
         with self._lock, self._connection:
             self._connection.execute(

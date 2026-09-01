@@ -46,7 +46,13 @@ def test_convert_passes_v2_budget_policy_and_workers(tmp_path):
 def test_status_and_report_commands(tmp_path):
     (tmp_path / "run.json").write_text(json.dumps({
         "run_id": "abc", "status": "SUCCESS", "input_pdf": "x.pdf",
-        "result": {"successful_scenes": 2, "total_scenes": 2, "final_video_path": "final.mp4"},
+        "result": {
+            "successful_scenes": 2, "total_scenes": 2, "final_video_path": "final.mp4",
+            "scene_results": [
+                {"scene_id": "scene_001", "status": "ACCEPTED"},
+                {"scene_id": "scene_002", "status": "REPAIRED_ACCEPTED", "repaired": True},
+            ],
+        },
     }))
     (tmp_path / "costs.json").write_text(json.dumps({"total_usd": 0.1234}))
     (tmp_path / "report.html").write_text("report")
@@ -56,5 +62,23 @@ def test_status_and_report_commands(tmp_path):
     assert status.exit_code == 0
     assert "2/2" in status.output
     assert "$0.1234" in status.output
+    assert "scene_001: ACCEPTED" in status.output
+    assert "scene_002: REPAIRED_ACCEPTED (repaired)" in status.output
     assert report.exit_code == 0
     assert "report.html" in report.output
+
+
+def test_retry_scenes_passes_exact_run_and_scene_ids(tmp_path):
+    with patch("src.cli.PipelineV2.retry_scenes", return_value=_result(tmp_path)) as retry:
+        result = CliRunner().invoke(pdf2manim, [
+            "retry-scenes", str(tmp_path), "scene_002", "scene_005",
+            "--max-cost", "1.50",
+        ])
+
+    assert result.exit_code == 0, result.output
+    retry.assert_called_once_with(
+        tmp_path,
+        ["scene_002", "scene_005"],
+        max_cost_usd=1.5,
+    )
+    assert "scene_002, scene_005" in result.output

@@ -113,6 +113,24 @@ def test_generation_request_is_compact_and_free_of_tracking_bookkeeping():
     assert "drawing the sine wave from scratch" in payload["do_not_repeat"]
 
 
+def test_retry_attempt_changes_generation_request_and_demands_fresh_layout():
+    _, original = generation_request(
+        scene=_scene(), contract=_contract(),
+        source_facts=[SourceFact(fact_id="f1", page_number=1, text="y = sin(x)")],
+        class_name="V2Scene01",
+    )
+    _, retry = generation_request(
+        scene=_scene(), contract=_contract(),
+        source_facts=[SourceFact(fact_id="f1", page_number=1, text="y = sin(x)")],
+        class_name="V2Scene01", retry_attempt=2,
+    )
+
+    assert original != retry
+    payload = json.loads(retry)
+    assert payload["regeneration_attempt"] == 2
+    assert "fresh visual composition" in payload["regeneration_instruction"]
+
+
 def test_instrumentation_adds_tracking_and_retimes_each_narration_section():
     result = instrument_scene_code(
         RAW_SCENE, class_name="V2Scene01", scene=_scene(), contract=_contract(),

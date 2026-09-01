@@ -27,6 +27,7 @@ class CodeGenerationService:
         source_facts: list[SourceFact],
         lesson_scene: LessonScene | None = None,
         visual_history: list[dict[str, object]] | None = None,
+        retry_attempt: int = 0,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system, prompt = generation_request(
@@ -36,6 +37,7 @@ class CodeGenerationService:
             class_name=class_name,
             lesson_scene=lesson_scene,
             visual_history=visual_history,
+            retry_attempt=retry_attempt,
         )
         try:
             response = await self.router.text(
@@ -111,6 +113,7 @@ def generation_request(
     class_name: str,
     lesson_scene: LessonScene | None = None,
     visual_history: list[dict[str, object]] | None = None,
+    retry_attempt: int = 0,
 ) -> tuple[str, str]:
     """Build the deliberately small model-facing creative request."""
 
@@ -141,6 +144,12 @@ to fill narration time; use a calm hold or a focused highlight when no new const
             "out": scene.transition_out,
         },
         "visual_history": visual_history or [],
+        "regeneration_attempt": retry_attempt,
+        "regeneration_instruction": (
+            "Create a fresh visual composition for this retry; do not reproduce the previous "
+            "candidate's layout verbatim."
+            if retry_attempt else ""
+        ),
         "do_not_repeat": lesson_scene.do_not_repeat if lesson_scene else [],
         "required_new_visual_fact": lesson_scene.new_visual_fact if lesson_scene else "",
         "grounded_facts": [fact.text[:500] for fact in source_facts[:8]],

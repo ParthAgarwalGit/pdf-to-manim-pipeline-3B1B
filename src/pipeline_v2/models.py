@@ -110,6 +110,7 @@ class NarratedScene(BaseModel):
     target_words_per_minute: int = Field(default=135, ge=110, le=160)
     audio_path: Optional[str] = None
     audio_duration_seconds: Optional[float] = Field(default=None, gt=0.0)
+    audio_tail_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
 
 
 class NarrationPlan(BaseModel):

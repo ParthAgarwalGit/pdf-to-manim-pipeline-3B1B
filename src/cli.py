@@ -142,6 +142,37 @@ def resume_command(run_directory: Path, max_cost: Optional[float]) -> None:
     _print_result(result)
 
 
+@pdf2manim.command("retry-scenes")
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("scene_ids", nargs=-1, required=True)
+@click.option(
+    "--max-cost",
+    type=click.FloatRange(min=0.01),
+    default=None,
+    help="New total run budget ceiling, including money already spent.",
+)
+def retry_scenes_command(
+    run_directory: Path,
+    scene_ids: tuple[str, ...],
+    max_cost: Optional[float],
+) -> None:
+    """Regenerate selected SCENE_IDS in one existing run and rebuild its final video."""
+
+    click.echo("pdf2manim V2 scene retry")
+    click.echo(f"  Run:     {run_directory.resolve()}")
+    click.echo(f"  Scenes:  {', '.join(scene_ids)}")
+    click.echo("  Reusing: lesson, narration, TTS, and all unselected scene videos")
+    try:
+        result = PipelineV2.retry_scenes(
+            run_directory,
+            list(scene_ids),
+            max_cost_usd=max_cost,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _print_result(result)
+
+
 @pdf2manim.command()
 @click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
 def status(run_directory: Path) -> None:
@@ -160,6 +191,20 @@ def status(run_directory: Path) -> None:
     if result:
         click.echo(f"Scenes:    {result.get('successful_scenes', 0)}/{result.get('total_scenes', 0)}")
         click.echo(f"Final:     {result.get('final_video_path') or 'not available'}")
+        scene_results = result.get("scene_results") or []
+        if scene_results:
+            click.echo("Scene IDs:")
+            for scene in scene_results:
+                markers = []
+                if scene.get("repaired"):
+                    markers.append("repaired")
+                if scene.get("fallback_used"):
+                    markers.append("fallback")
+                suffix = f" ({', '.join(markers)})" if markers else ""
+                click.echo(
+                    f"  {scene.get('scene_id', 'unknown')}: "
+                    f"{scene.get('status', 'UNKNOWN')}{suffix}"
+                )
 
 
 @pdf2manim.command()
