@@ -269,6 +269,7 @@ class TrackedScene(Scene):
                 objects.append({
                     "artifact_id": artifact_id,
                     "object_id": object_id,
+                    "runtime_id": id(mobject),
                     "trace_path": path or str(top_index),
                     "category": category,
                     "purpose": record["purpose"] if record else "",

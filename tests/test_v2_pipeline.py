@@ -103,7 +103,8 @@ def test_scene_can_use_three_sequential_improving_repairs(tmp_path):
                 video_path=str(tmp_path / f"{quality}-{attempt}.mp4"),
                 findings=[
                     VerificationFinding(
-                        code=f"WARNING_{index}", severity="warning", message="warning",
+                        code="TEXT_TEXT_OVERLAP", severity="warning",
+                        message=f"overlap pair {index}",
                     )
                     for index in range(warning_count)
                 ],

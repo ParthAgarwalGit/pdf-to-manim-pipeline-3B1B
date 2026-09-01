@@ -35,9 +35,20 @@ def write_storyboard(
         lines.extend([
             "", f"### {scene.scene_id}: {scene.title}", "",
             scene.description, "", f"Learning goal: {scene.learning_goal}", "",
+            f"Visual objective: {scene.visual_objective or 'Not specified'}", "",
+            f"New visual fact: {scene.new_visual_fact or 'Not specified'}", "",
+            f"Do not repeat: {', '.join(scene.do_not_repeat) or 'None'}", "",
             f"Source facts: {', '.join(scene.source_fact_ids)}", "",
             spoken.narration if spoken else "Narration unavailable.",
         ])
+        if spoken:
+            lines.extend(["", f"Transition in: {spoken.transition_in or 'None'}", ""])
+            lines.extend(
+                f"- {beat.role}: {beat.text} [pause {beat.pause_after_seconds:.2f}s; "
+                f"visual: {beat.visual_action or 'unspecified'}]"
+                for beat in spoken.beats
+            )
+            lines.extend(["", f"Transition out: {spoken.transition_out or 'None'}"])
     artifacts.write_text("storyboard.md", "\n".join(lines) + "\n")
 
 

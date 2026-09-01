@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 from pydantic import BaseModel
 
-from .diagnostics import frame_fingerprint, issue_score
+from .diagnostics import frame_fingerprint, frame_sequence_similarity, issue_score
 from .generation import CODE_PROMPT_VERSION, CodeGenerationService
 from .instrumentation import deinstrument_scene_code
 from .media import compose_scene, concatenate, inspect_av, source_page_fallback
@@ -31,6 +31,7 @@ from .models import (
     SourceDocument,
     TaskStatus,
     TimelineSegment,
+    VerificationFinding,
     VisualContractBatch,
 )
 from .observability import RunArtifacts
@@ -48,7 +49,7 @@ from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VER
 from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
 from .state import BudgetExceeded, RunStore
-from .tts import NarrationAudioService
+from .tts import NarrationAudioService, TTS_TIMING_VERSION
 
 
 T = TypeVar("T")
@@ -203,7 +204,11 @@ class PipelineV2:
                         name=f"tts-{scene.scene_id}",
                     )
                 else:
-                    duration = max(1.5, len(scene.narration.split()) / 2.8)
+                    duration = max(
+                        2.0,
+                        len(scene.narration.split()) * 60.0 / scene.target_words_per_minute
+                        + sum(beat.pause_after_seconds for beat in scene.beats),
+                    )
                     tts_tasks[scene.scene_id] = asyncio.create_task(
                         _return(apply_audio_timing(scene, duration)),
                         name=f"tts-local-{scene.scene_id}",
@@ -234,6 +239,7 @@ class PipelineV2:
                 name=f"scene-{scene.scene_id}",
             ) for scene in narration.scenes]
             result.scene_results = await asyncio.gather(*scene_jobs)
+            _audit_repeated_visuals(result.scene_results, self.artifacts)
             timed_scenes = [NarratedScene.model_validate(await tts_tasks[scene.scene_id])
                             for scene in narration.scenes]
             write_storyboard(self.artifacts, lesson, NarrationPlan(scenes=timed_scenes))
@@ -346,7 +352,8 @@ class PipelineV2:
         async with self._tts_limit:
             return await self._task(
                 f"tts-{scene.scene_id}", "tts", scene.scene_id,
-                {"narration": scene.narration, "voice": self.config.voice, "stage_version": "tts-v2-1",
+                {"narration": scene.model_dump(mode="json"), "voice": self.config.voice,
+                 "stage_version": TTS_TIMING_VERSION,
                  "quality": self.config.quality},
                 lambda: service.generate(scene, scene_dir),
                 dependencies=["narration"],
@@ -394,6 +401,7 @@ class PipelineV2:
             lesson_scene = next(
                 item for item in lesson.scenes if item.scene_id == scene_id
             )
+            visual_history = _visual_history(lesson, scene_id)
             timed_scene = NarratedScene.model_validate(await timed_scene_task)
             contract_batch = VisualContractBatch.model_validate(await contract_task)
             contract = next(
@@ -432,9 +440,11 @@ class PipelineV2:
                     f"code-{scene_id}", "code_generation", scene_id,
                     {"scene": timed_scene.model_dump(mode="json"), "prompt_version": CODE_PROMPT_VERSION,
                      "contract": contract.model_dump(mode="json"),
-                     "lesson_scene": lesson_scene.model_dump(mode="json")},
+                     "lesson_scene": lesson_scene.model_dump(mode="json"),
+                     "visual_history": visual_history},
                     lambda: generator.generate(
                         timed_scene, contract, facts, lesson_scene=lesson_scene,
+                        visual_history=visual_history,
                     ),
                     dependencies=[f"tts-{scene_id}", f"visual-{_batch_index(scene_id, lesson):03d}"],
                 )
@@ -500,6 +510,7 @@ class PipelineV2:
                                 scene=timed_scene, contract=contract, code=selected_code,
                                 findings=selected.findings, frame_paths=selected.frame_paths,
                                 lesson_scene=lesson_scene,
+                                visual_history=visual_history,
                             ),
                             dependencies=[selected_preview_task],
                         )
@@ -577,7 +588,9 @@ class PipelineV2:
             result.findings = selected.findings
             result.frame_paths = selected.frame_paths
 
-            selected_acceptable = _render_acceptable(selected, self.config.verifier_mode)
+            selected_acceptable = _render_acceptable(
+                selected, self.config.verifier_mode, self.config.policy,
+            )
             if selected_acceptable:
                 async with self._render_limit:
                     final_data = await self._task(
@@ -596,7 +609,9 @@ class PipelineV2:
                 result.frame_paths = final_render.frame_paths or selected.frame_paths
                 if self.config.verifier_mode == "audit":
                     self._log_audit_outcome(scene_id, "high_render", final_render)
-                final_acceptable = _render_acceptable(final_render, self.config.verifier_mode)
+                final_acceptable = _render_acceptable(
+                    final_render, self.config.verifier_mode, self.config.policy,
+                )
                 render_path = Path(final_render.video_path) if final_acceptable and final_render.video_path else Path(selected.video_path)
                 if not final_acceptable and self.config.policy == "strict":
                     raise RuntimeError(final_render.error or "High-quality render failed")
@@ -636,7 +651,32 @@ class PipelineV2:
                 else:
                     result.final_video_path = str(render_path.resolve())
                 result.success = True
-                if self.config.verifier_mode == "audit":
+                retained_findings = bool(final_render.findings)
+                if (
+                    self.config.verifier_mode == "enforce"
+                    and self.config.policy == "standard"
+                    and retained_findings
+                ):
+                    result.status = (
+                        "REPAIRED_ACCEPTED_WITH_FINDINGS"
+                        if result.repaired else "ACCEPTED_WITH_FINDINGS"
+                    )
+                    self.artifacts.event(
+                        "verifier_findings_retained",
+                        stage="high_render",
+                        scene_id=scene_id,
+                        message=(
+                            "Standard policy retained the successfully rendered Manim scene "
+                            "after bounded repair instead of using a source-page fallback."
+                        ),
+                        error_count=sum(
+                            item.severity == "error" for item in final_render.findings
+                        ),
+                        warning_count=sum(
+                            item.severity == "warning" for item in final_render.findings
+                        ),
+                    )
+                elif self.config.verifier_mode == "audit":
                     result.status = (
                         "AUDIT_REPAIRED_ACCEPTED" if result.repaired else "AUDIT_ACCEPTED"
                     )
@@ -853,16 +893,25 @@ def _repair_needed(outcome: RenderOutcome, verifier_mode: str) -> bool:
         return True
     if verifier_mode == "audit":
         return False
-    return (
-        any(item.severity == "error" for item in outcome.findings)
-        or sum(item.severity == "warning" for item in outcome.findings) >= 3
+    if any(item.severity == "error" for item in outcome.findings):
+        return True
+    overlap_warnings = sum(
+        item.severity == "warning" and item.code == "TEXT_TEXT_OVERLAP"
+        for item in outcome.findings
     )
+    return overlap_warnings >= 2
 
 
-def _render_acceptable(outcome: RenderOutcome, verifier_mode: str) -> bool:
+def _render_acceptable(
+    outcome: RenderOutcome,
+    verifier_mode: str,
+    policy: str = "standard",
+) -> bool:
     if not outcome.safe or not outcome.render_success:
         return False
-    return verifier_mode == "audit" or not any(
+    if verifier_mode == "audit" or policy == "standard":
+        return True
+    return not any(
         item.severity == "error" for item in outcome.findings
     )
 
@@ -896,6 +945,57 @@ def _batch_index(scene_id: str, lesson: LessonPlan) -> int:
         0,
     )
     return position // 3
+
+
+def _visual_history(lesson: LessonPlan, scene_id: str) -> list[dict[str, object]]:
+    """Give generation compact continuity without serializing earlier Manim code."""
+
+    position = next(
+        (index for index, scene in enumerate(lesson.scenes) if scene.scene_id == scene_id),
+        0,
+    )
+    history = []
+    for scene in lesson.scenes[max(0, position - 3):position]:
+        history.append({
+            "scene_id": scene.scene_id,
+            "title": scene.title,
+            "learning_goal": scene.learning_goal,
+            "visual_objective": scene.visual_objective,
+            "visual_fact_already_shown": scene.new_visual_fact,
+            "constructions_not_to_replay": scene.do_not_repeat,
+        })
+    return history
+
+
+def _audit_repeated_visuals(
+    scene_results: list[SceneResult], artifacts: RunArtifacts,
+) -> None:
+    previous: SceneResult | None = None
+    for current in scene_results:
+        if not current.success or len(current.frame_paths) < 2:
+            continue
+        if previous is not None and len(previous.frame_paths) >= 2:
+            similarity = frame_sequence_similarity(previous.frame_paths, current.frame_paths)
+            if similarity >= 0.94:
+                finding = VerificationFinding(
+                    code="REDUNDANT_VISUAL_REPLAY",
+                    severity="warning",
+                    message=(
+                        f"Checkpoint sequence is {similarity:.0%} visually similar to "
+                        f"{previous.scene_id}; review whether this scene adds a new visual step."
+                    ),
+                    screenshot_path=current.frame_paths[0],
+                )
+                current.findings.append(finding)
+                artifacts.event(
+                    "repeated_visual_sequence",
+                    stage="final_review",
+                    scene_id=current.scene_id,
+                    message=finding.message,
+                    previous_scene_id=previous.scene_id,
+                    similarity=round(similarity, 4),
+                )
+        previous = current
 
 
 def _fallback_page(fact_ids: list[str], source: SourceDocument) -> int:

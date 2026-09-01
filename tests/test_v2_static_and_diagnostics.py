@@ -364,6 +364,44 @@ def test_pixel_confirmation_rejects_bbox_only_false_overlap(tmp_path):
     assert "TEXT_TEXT_OVERLAP" not in codes
 
 
+def test_duplicate_transform_alias_is_not_reported_as_text_overlap(tmp_path):
+    scene = NarratedScene(
+        scene_id="scene", narration="Transform the equation.",
+        beats=[NarrationBeat(beat_id="b1", text="Transform", source_fact_ids=["f"])],
+    )
+    artifacts = [
+        ArtifactSpec(
+            artifact_id=value, category=ArtifactCategory.SEMANTIC_TEXT,
+            role="equation", purpose="Show equation", source_fact_ids=["f"],
+            beat_ids=["b1"], enter_beat="b1", exit_beat="b1",
+        ) for value in ("source", "target")
+    ]
+    contract = VisualContract(
+        scene_id="scene", artifact_inventory=artifacts,
+        composition_plan=[BeatComposition(
+            beat_id="b1", active_artifact_ids=["source", "target"],
+        )],
+    )
+    bounds = {"left": -1, "right": 1, "top": 0.5, "bottom": -0.5,
+              "width": 2, "height": 1}
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(json.dumps({
+        "event": "play", "time": 1.0, "beat_id": "b1",
+        "objects": [
+            {"artifact_id": "source", "object_id": "source", "category": "semantic_text",
+             "class_name": "MathTex", "bounds": bounds},
+            {"artifact_id": "target", "object_id": "target", "category": "semantic_text",
+             "class_name": "MathTex", "bounds": bounds},
+        ],
+        "pixel_overlaps": [{
+            "left_object_id": "source", "right_object_id": "target", "ratio": 0.98,
+        }],
+    }), encoding="utf-8")
+
+    codes = {item.code for item in analyze_trace(contract, scene, trace, 1.0)}
+    assert "TEXT_TEXT_OVERLAP" not in codes
+
+
 def test_partial_text_overlap_is_warning_without_pixel_confirmation(tmp_path):
     scene = NarratedScene(
         scene_id="scene", narration="Labels.",

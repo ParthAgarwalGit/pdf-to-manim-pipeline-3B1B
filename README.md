@@ -130,6 +130,10 @@ pdf2manim convert document.pdf --api-workers 4 --code-workers 3 --preview-worker
 
 The default worker limits are four global API calls, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. The creative scaffold is local, so scene code generation starts as soon as its measured audio is ready.
 
+V2 plans short lessons as roughly four to six substantial scenes. Narration beats carry a speaking role, pause cue, transition note, and one visual action. TTS receives punctuated beat paragraphs, is slowed slightly without changing pitch, and receives a short trailing pause before the next scene. The measured paced audio remains authoritative for animation timing.
+
+Code generation receives a compact summary of the previous three scenes: their visual objectives, facts already shown, and constructions that must not be replayed. A local frame-sequence check also logs `REDUNDANT_VISUAL_REPLAY` when adjacent scenes look nearly identical; this is advisory and makes no paid call.
+
 ## Resume and Reports
 
 Press `Ctrl+C` once to stop. V2 checkpoints running work, terminates active Manim children, and keeps every successful task and paid response.
@@ -161,9 +165,9 @@ The default hard budget is `$1.00`. Every paid call atomically reserves its wors
 
 Schema failures receive at most one semantic retry. Confirmed rate-limit or connection failures receive at most two bounded retries; ambiguous timeouts are never retried automatically. Vision repair allows up to three sequential attempts per scene and has no separate run-wide scene cap; the atomic dollar budget remains the global limit. A scene stops early when it passes, returns unchanged code or visuals, fails to improve deterministic diagnostics, or exhausts the budget. Cache keys include provider, model, prompt version, schema, settings, and inputs, so resume does not repeat completed paid calls.
 
-`standard` may substitute a clearly marked source-page video when a scene cannot render. `strict` completes independent diagnostics but withholds `final.mp4` if required content is missing. Budget exhaustion produces `PAUSED_BUDGET` and is resumable.
+`standard` substitutes a clearly marked source-page video only when a scene cannot render safely. A successfully rendered Manim scene is retained after bounded repair even when visual findings remain, and is labeled `ACCEPTED_WITH_FINDINGS` rather than silently presented as clean. `strict` keeps visual errors blocking and withholds `final.mp4` if required content is missing. Budget exhaustion produces `PAUSED_BUDGET` and is resumable.
 
-`--verifier-mode enforce` is the default and treats deterministic visual errors as scene failures. `--verifier-mode audit` still runs static checks, preview rendering, trace diagnostics, screenshots, and final-render diagnostics, but visual findings are observational: a safe scene that renders continues and receives an `AUDIT_ACCEPTED` status. In audit mode, `--repair eligible` only repairs scripts that fail to render; it does not repair overlap or layout findings, preserving those findings for evaluation. Static safety and actual render failures remain blocking.
+`--verifier-mode enforce` is the default. Errors and repeated text-overlap warnings can trigger bounded repair, while unrelated advisory warnings do not spend repair calls. `--verifier-mode audit` still runs static checks, preview rendering, trace diagnostics, screenshots, and final-render diagnostics, but visual findings are observational: a safe scene that renders continues and receives an `AUDIT_ACCEPTED` status. In audit mode, `--repair eligible` only repairs scripts that fail to render; it does not repair overlap or layout findings, preserving those findings for evaluation. Static safety and actual render failures remain blocking in every mode.
 
 ## Presenter Extension
 

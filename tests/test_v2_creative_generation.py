@@ -90,7 +90,13 @@ def test_generation_request_is_compact_and_free_of_tracking_bookkeeping():
         lesson_scene=LessonScene(
             scene_id="scene_01", title="The sine wave", description="Build a sine wave.",
             learning_goal="Connect the graph to its equation.", source_fact_ids=["f1"],
+            new_visual_fact="The equation names the wave already drawn.",
+            do_not_repeat=["drawing the sine wave from scratch"],
         ),
+        visual_history=[{
+            "scene_id": "scene_00",
+            "visual_fact_already_shown": "A point traced the sine wave.",
+        }],
     )
 
     assert len(system) < 1800
@@ -100,7 +106,11 @@ def test_generation_request_is_compact_and_free_of_tracking_bookkeeping():
     assert "TrackedScene" not in system + prompt
     assert "artifact_inventory" not in system + prompt
     assert "ordinary Manim" in system
-    assert json.loads(prompt)["narration_beats"][1]["beat_id"] == "beat_2"
+    payload = json.loads(prompt)
+    assert payload["narration_beats"][1]["beat_id"] == "beat_2"
+    assert payload["visual_history"][0]["scene_id"] == "scene_00"
+    assert payload["required_new_visual_fact"].startswith("The equation")
+    assert "drawing the sine wave from scratch" in payload["do_not_repeat"]
 
 
 def test_instrumentation_adds_tracking_and_retimes_each_narration_section():

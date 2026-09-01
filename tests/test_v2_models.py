@@ -20,7 +20,11 @@ from src.pipeline_v2.models import (
     VisualContract,
     PipelineV2Config,
 )
-from src.pipeline_v2.planning import PlanningService, validate_visual_contract
+from src.pipeline_v2.planning import (
+    PlanningService,
+    apply_audio_timing,
+    validate_visual_contract,
+)
 
 
 def _scene():
@@ -150,6 +154,32 @@ def test_lesson_and_narration_use_gemini():
         ("google", "gemini-3.7-flash"),
     ]
     assert [call["max_output_tokens"] for call in calls] == [7000, 9000]
+    assert "Prefer 4-6 substantial scenes" in calls[0]["prompt"]
+    assert "calm teaching pace" in calls[1]["prompt"]
+    assert "pause_after_seconds" in calls[1]["prompt"]
+
+
+def test_audio_timing_reserves_declared_pause_inside_beat_window():
+    scene = NarratedScene(
+        scene_id="scene",
+        narration="One two. Three four.",
+        beats=[
+            NarrationBeat(
+                beat_id="b1", text="One two.", source_fact_ids=["f1"],
+                pause_after_seconds=1.0,
+            ),
+            NarrationBeat(
+                beat_id="b2", text="Three four.", source_fact_ids=["f1"],
+                pause_after_seconds=0.0,
+            ),
+        ],
+    )
+
+    timed = apply_audio_timing(scene, 10.0)
+
+    assert timed.beats[0].end_seconds == 5.5
+    assert timed.beats[1].start_seconds == 5.5
+    assert timed.beats[1].end_seconds == 10.0
 
 
 def test_repairs_default_to_three_per_scene_without_a_run_cap():

@@ -89,7 +89,7 @@ def test_source_fallback_requires_standard_policy_and_audio():
     assert not _source_fallback_allowed("standard", None)
 
 
-def test_audit_mode_logs_visual_errors_without_rejecting_or_repairing():
+def test_standard_retains_rendered_visual_errors_after_bounded_repair():
     outcome = RenderOutcome(
         safe=True,
         render_success=True,
@@ -98,7 +98,8 @@ def test_audit_mode_logs_visual_errors_without_rejecting_or_repairing():
         )],
     )
 
-    assert not _render_acceptable(outcome, "enforce")
+    assert _render_acceptable(outcome, "enforce", "standard")
+    assert not _render_acceptable(outcome, "enforce", "strict")
     assert _render_acceptable(outcome, "audit")
     assert _repair_needed(outcome, "enforce")
     assert not _repair_needed(outcome, "audit")
@@ -112,6 +113,32 @@ def test_audit_mode_still_blocks_unsafe_or_failed_renders_and_allows_repair():
     assert not _render_acceptable(failed, "audit")
     assert _repair_needed(unsafe, "audit")
     assert _repair_needed(failed, "audit")
+
+
+def test_advisory_warnings_do_not_spend_repairs_but_repeated_overlap_does():
+    advisory = RenderOutcome(
+        safe=True,
+        render_success=True,
+        findings=[
+            VerificationFinding(
+                code=f"ADVISORY_{index}", severity="warning", message="minor",
+            )
+            for index in range(6)
+        ],
+    )
+    overlap = RenderOutcome(
+        safe=True,
+        render_success=True,
+        findings=[
+            VerificationFinding(
+                code="TEXT_TEXT_OVERLAP", severity="warning", message=f"pair {index}",
+            )
+            for index in range(2)
+        ],
+    )
+
+    assert not _repair_needed(advisory, "enforce")
+    assert _repair_needed(overlap, "enforce")
 
 
 def test_timestamped_finding_links_to_nearest_evidence_frame(tmp_path):

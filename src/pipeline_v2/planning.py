@@ -34,7 +34,7 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.1.0"
+PROMPT_VERSION = "v2.2.0"
 PLANNING_PROVIDER = "google"
 PLANNING_MODEL = "gemini-3.7-flash"
 
@@ -160,9 +160,13 @@ class PlanningService:
         facts = [fact.model_dump(mode="json") for fact in source.facts]
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            "Create a source-grounded educational lesson plan. Use 6-12 substantial scenes "
-            "when the source supports them. Every scene must cite source_fact_ids from the input. "
-            "Do not invent facts, examples, or equations. Set delivery_mode to manim.\n\n"
+            "Create a source-grounded educational lesson plan. Prefer 4-6 substantial scenes for "
+            "a short document and use at most 8 unless the source genuinely needs more. Merge "
+            "adjacent scenes that teach the same relationship; do not fragment one example into "
+            "several tiny scenes. Every scene must cite source_fact_ids from the input. For every "
+            "scene set visual_objective, the one new_visual_fact it contributes, and do_not_repeat "
+            "items already demonstrated by earlier scenes. Do not invent facts, examples, or "
+            "equations. Set delivery_mode to manim.\n\n"
             + json.dumps({"document": source.filename, "facts": facts}, ensure_ascii=False)
         )
         return await self.router.structured(
@@ -176,9 +180,17 @@ class PlanningService:
         facts = {fact.fact_id: fact.text for fact in source.facts}
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            "Write one continuous, concise narration for this lesson. Split every scene into "
-            "2-5 semantic beats. Every beat must cite only supplied source_fact_ids. Preserve "
-            "mathematical notation and do not add unsupported claims. Timing fields must be zero; "
+            "Write one continuity-aware spoken lesson at a calm teaching pace of 125-140 words "
+            "per minute. Split each scene into 2-4 semantic beats and keep one main idea per "
+            "sentence. Avoid dense clauses, breathless lists, repeated definitions, and abrupt "
+            "openings. The first beat of each scene must connect naturally to what the learner just "
+            "saw; the final beat must either pause for reflection or bridge to the next scene. "
+            "Populate role, pause_after_seconds (normally 0.25-0.55, or 0.6-0.9 for reflection and "
+            "scene endings), visual_action, continuity_note, transition_in, and transition_out. "
+            "Every visual_action must introduce, transform, compare, highlight, or remove visual "
+            "information; never request the same complete construction more than once. Every beat "
+            "must cite only supplied source_fact_ids. Preserve mathematical notation and do not add "
+            "unsupported claims. Set target_words_per_minute to 135. Timing fields must be zero; "
             "the pipeline computes them after TTS.\n\n"
             + json.dumps({"lesson": lesson.model_dump(mode="json"), "facts": facts}, ensure_ascii=False)
         )
@@ -274,7 +286,7 @@ class PlanningService:
         )
 
     def _fallback_lesson(self, source: SourceDocument) -> LessonPlan:
-        target = min(self.max_scenes, max(1, min(8, max(source.page_count, 6))))
+        target = min(self.max_scenes, max(1, min(6, source.page_count)))
         chunks = _chunks(source.facts, target)
         scenes = []
         for index, chunk in enumerate(chunks):
@@ -303,9 +315,16 @@ class PlanningService:
             beats = [NarrationBeat(
                 beat_id=f"{scene.scene_id}_beat_{index + 1:02d}",
                 text=" ".join(group), source_fact_ids=scene.source_fact_ids,
+                role=("introduce" if index == 0 else
+                      "conclude" if index == len(groups) - 1 else "explain"),
+                pause_after_seconds=0.7 if index == len(groups) - 1 else 0.35,
+                visual_action=("Introduce the scene's central visual." if index == 0 else
+                               "Transform or highlight the existing visual with new information."),
             ) for index, group in enumerate(groups)]
             scenes.append(NarratedScene(
                 scene_id=scene.scene_id, narration=" ".join(beat.text for beat in beats), beats=beats,
+                transition_in=("" if not scenes else "Continue from the previous visual state."),
+                transition_out="Pause before the next idea.",
             ))
         return NarrationPlan(scenes=scenes)
 
@@ -340,6 +359,7 @@ class PlanningService:
                 active_artifact_ids=[primary_id] + ([title_id] if index == 0 else []),
                 focus_artifact_ids=[primary_id],
             ) for index, beat in enumerate(scene.beats)],
+            visual_progression=[beat.visual_action for beat in scene.beats if beat.visual_action],
             style_notes=["Use a dark background and high-contrast 3Blue1Brown-inspired colors."],
         )
 
@@ -347,10 +367,19 @@ class PlanningService:
 def apply_audio_timing(scene: NarratedScene, duration: float) -> NarratedScene:
     weights = [max(1, len(beat.text.split())) for beat in scene.beats]
     total = sum(weights)
+    pauses = [beat.pause_after_seconds for beat in scene.beats]
+    pause_total = min(sum(pauses), duration * 0.3)
+    pause_scale = pause_total / sum(pauses) if sum(pauses) else 0.0
+    speech_duration = max(0.0, duration - pause_total)
     cursor = 0.0
     beats = []
     for index, (beat, weight) in enumerate(zip(scene.beats, weights)):
-        end = duration if index == len(scene.beats) - 1 else cursor + duration * weight / total
+        allocated_pause = beat.pause_after_seconds * pause_scale
+        end = (
+            duration
+            if index == len(scene.beats) - 1
+            else cursor + speech_duration * weight / total + allocated_pause
+        )
         beats.append(beat.model_copy(update={
             "start_seconds": round(cursor, 3), "end_seconds": round(end, 3),
         }))

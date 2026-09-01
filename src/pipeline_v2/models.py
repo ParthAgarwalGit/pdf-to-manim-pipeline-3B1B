@@ -64,6 +64,9 @@ class LessonScene(BaseModel):
     learning_goal: str
     source_fact_ids: list[str] = Field(min_length=1)
     example: Optional[str] = None
+    visual_objective: str = ""
+    new_visual_fact: str = ""
+    do_not_repeat: list[str] = Field(default_factory=list)
     delivery_mode: Literal["manim", "presenter", "mixed", "transition"] = "manim"
 
 
@@ -88,6 +91,12 @@ class NarrationBeat(BaseModel):
     beat_id: str
     text: str = Field(min_length=1)
     source_fact_ids: list[str] = Field(min_length=1)
+    role: Literal[
+        "introduce", "explain", "demonstrate", "reflect", "bridge", "conclude",
+    ] = "explain"
+    pause_after_seconds: float = Field(default=0.35, ge=0.0, le=1.5)
+    visual_action: str = ""
+    continuity_note: str = ""
     start_seconds: float = Field(default=0.0, ge=0.0)
     end_seconds: float = Field(default=0.0, ge=0.0)
 
@@ -96,6 +105,9 @@ class NarratedScene(BaseModel):
     scene_id: str
     narration: str = Field(min_length=1)
     beats: list[NarrationBeat] = Field(min_length=1)
+    transition_in: str = ""
+    transition_out: str = ""
+    target_words_per_minute: int = Field(default=135, ge=110, le=160)
     audio_path: Optional[str] = None
     audio_duration_seconds: Optional[float] = Field(default=None, gt=0.0)
 
@@ -217,6 +229,8 @@ class VisualContract(BaseModel):
     ] = "concept"
     artifact_inventory: list[ArtifactSpec] = Field(min_length=1)
     composition_plan: list[BeatComposition] = Field(min_length=1)
+    visual_progression: list[str] = Field(default_factory=list)
+    avoid_repeating: list[str] = Field(default_factory=list)
     style_notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

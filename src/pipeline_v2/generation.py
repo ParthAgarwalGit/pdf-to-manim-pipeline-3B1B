@@ -13,7 +13,7 @@ from .models import LessonScene, NarratedScene, SourceFact, VerificationFinding,
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-creative-code-1"
+CODE_PROMPT_VERSION = "v2-creative-code-2"
 
 
 class CodeGenerationService:
@@ -26,6 +26,7 @@ class CodeGenerationService:
         contract: VisualContract,
         source_facts: list[SourceFact],
         lesson_scene: LessonScene | None = None,
+        visual_history: list[dict[str, object]] | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system, prompt = generation_request(
@@ -34,6 +35,7 @@ class CodeGenerationService:
             source_facts=source_facts,
             class_name=class_name,
             lesson_scene=lesson_scene,
+            visual_history=visual_history,
         )
         try:
             response = await self.router.text(
@@ -72,6 +74,7 @@ class CodeGenerationService:
         findings: list[VerificationFinding],
         frame_paths: list[str],
         lesson_scene: LessonScene | None = None,
+        visual_history: list[dict[str, object]] | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system = f"""PROMPT_VERSION={CODE_PROMPT_VERSION}
@@ -84,6 +87,7 @@ adds those automatically. Do not claim success; the pipeline will render and mea
         raw_code = deinstrument_scene_code(code)
         prompt = json.dumps({
             "brief": _lesson_brief(lesson_scene, scene),
+            "visual_history": visual_history or [],
             "narration_beats": _beat_payload(scene),
             "findings": [item.model_dump(mode="json") for item in findings[:8]],
             "existing_code": raw_code,
@@ -106,6 +110,7 @@ def generation_request(
     source_facts: list[SourceFact],
     class_name: str,
     lesson_scene: LessonScene | None = None,
+    visual_history: list[dict[str, object]] | None = None,
 ) -> tuple[str, str]:
     """Build the deliberately small model-facing creative request."""
 
@@ -119,12 +124,25 @@ Use ordinary Manim creatively. Prefer transforming a small number of meaningful 
 over presenting slide-like paragraphs. Develop one clear visual explanation through the supplied
 narration beats. At the start of each beat call self.next_section("beat_id"); do not calculate exact
 audio timing because the runtime retimes those sections. Keep visible content inside the frame,
-keep unrelated text separated, and use axes.c2p() for mathematical graph coordinates."""
+keep unrelated text separated, and use axes.c2p() for mathematical graph coordinates.
+
+Treat the scene as a progression, not a slideshow or replay. Each beat must preserve useful state
+and introduce, transform, compare, highlight, or remove information according to visual_action.
+Never rebuild or replay a complete construction listed in visual_history or do_not_repeat. Refer
+back to it briefly and begin from the new contribution instead. Do not repeat one animation merely
+to fill narration time; use a calm hold or a focused highlight when no new construction is needed."""
     payload = {
         "brief": _lesson_brief(lesson_scene, scene),
         "target_duration_seconds": round(_target_duration(scene), 3),
         "narration": scene.narration,
         "narration_beats": _beat_payload(scene),
+        "scene_transition": {
+            "in": scene.transition_in,
+            "out": scene.transition_out,
+        },
+        "visual_history": visual_history or [],
+        "do_not_repeat": lesson_scene.do_not_repeat if lesson_scene else [],
+        "required_new_visual_fact": lesson_scene.new_visual_fact if lesson_scene else "",
         "grounded_facts": [fact.text[:500] for fact in source_facts[:8]],
         "suggested_visual_direction": {
             "archetype": contract.archetype,
@@ -142,6 +160,8 @@ def _lesson_brief(lesson_scene: LessonScene | None, scene: NarratedScene) -> dic
         "title": lesson_scene.title,
         "description": lesson_scene.description,
         "learning_goal": lesson_scene.learning_goal,
+        "visual_objective": lesson_scene.visual_objective,
+        "new_visual_fact": lesson_scene.new_visual_fact,
     }
     if lesson_scene.example:
         values["example"] = lesson_scene.example
@@ -153,6 +173,10 @@ def _beat_payload(scene: NarratedScene) -> list[dict[str, object]]:
         {
             "beat_id": beat.beat_id,
             "text": beat.text,
+            "role": beat.role,
+            "pause_after_seconds": round(float(beat.pause_after_seconds), 3),
+            "visual_action": beat.visual_action,
+            "continuity_note": beat.continuity_note,
             "start_seconds": round(float(beat.start_seconds), 3),
             "end_seconds": round(float(beat.end_seconds), 3),
         }

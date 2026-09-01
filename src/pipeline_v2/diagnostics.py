@@ -16,11 +16,11 @@ from .models import (
     VisualContract,
 )
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 
 ERROR_WEIGHT = 100
-WARNING_WEIGHT = 10
+WARNING_WEIGHT = 3
 
 
 def issue_score(findings: list[VerificationFinding]) -> int:
@@ -38,6 +38,30 @@ def frame_fingerprint(frame_paths: list[str]) -> str:
         except Exception:
             continue
     return hashlib.sha256("|".join(hashes).encode("ascii")).hexdigest() if hashes else ""
+
+
+def frame_sequence_similarity(left_paths: list[str], right_paths: list[str]) -> float:
+    """Estimate repeated visual sequences without model calls.
+
+    This is deliberately advisory: it compares aligned low-resolution frames and
+    ignores pairs with almost no visible contrast.
+    """
+
+    similarities = []
+    for left_path, right_path in zip(left_paths[:8], right_paths[:8]):
+        try:
+            with Image.open(left_path) as left_source, Image.open(right_path) as right_source:
+                left = left_source.convert("L").resize((64, 36))
+                right = right_source.convert("L").resize((64, 36))
+                if max(ImageStat.Stat(left).stddev[0], ImageStat.Stat(right).stddev[0]) < 8.0:
+                    continue
+                difference = sum(
+                    abs(a - b) for a, b in zip(left.tobytes(), right.tobytes())
+                )
+                similarities.append(1.0 - difference / (255.0 * 64.0 * 36.0))
+        except Exception:
+            continue
+    return sum(similarities) / len(similarities) if similarities else 0.0
 
 
 def read_trace(path: Path) -> list[dict[str, Any]]:
@@ -247,6 +271,8 @@ def _overlap_checks(findings, seen, objects, artifacts, timestamp, pixel_overlap
                 right_bounds.get("width", 0.0) <= 0.001 and right_bounds.get("height", 0.0) <= 0.001
             ):
                 continue
+            if left.get("runtime_id") and left.get("runtime_id") == right.get("runtime_id"):
+                continue
             bbox_ratio = _overlap_ratio(left_bounds, right_bounds)
             if bbox_ratio <= 0.0:
                 continue
@@ -267,8 +293,10 @@ def _overlap_checks(findings, seen, objects, artifacts, timestamp, pixel_overlap
             artifact_ids = sorted({left_id, right_id})
             if left_text and right_text:
                 effective_ratio = pixel_ratio if pixel_ratio is not None else bbox_ratio
-                warning_threshold = 0.03 if pixel_ratio is not None else 0.10
-                error_threshold = 0.18 if pixel_ratio is not None else 0.30
+                if _same_visual_alias(left_bounds, right_bounds, pixel_ratio):
+                    continue
+                warning_threshold = 0.05 if pixel_ratio is not None else 0.12
+                error_threshold = 0.22 if pixel_ratio is not None else 0.35
                 if effective_ratio < warning_threshold:
                     continue
                 severity = "error" if effective_ratio >= error_threshold else "warning"
@@ -280,7 +308,7 @@ def _overlap_checks(findings, seen, objects, artifacts, timestamp, pixel_overlap
                 )
             elif left_text or right_text:
                 effective_ratio = pixel_ratio if pixel_ratio is not None else bbox_ratio
-                threshold = 0.04 if pixel_ratio is not None else 0.20
+                threshold = 0.08 if pixel_ratio is not None else 0.25
                 if effective_ratio < threshold:
                     continue
                 detail = _overlap_detail(bbox_ratio, pixel_ratio)
@@ -320,6 +348,17 @@ def _overlap_detail(bbox_ratio: float, pixel_ratio: float | None) -> str:
     if pixel_ratio is None:
         return f"{bbox_ratio:.0%} of the smaller bounding box"
     return f"{bbox_ratio:.0%} bounds, {pixel_ratio:.0%} occupied pixels"
+
+
+def _same_visual_alias(left, right, pixel_ratio: float | None) -> bool:
+    """Ignore duplicate references to the same rendered glyphs during transforms."""
+
+    if pixel_ratio is None or pixel_ratio < 0.95:
+        return False
+    return all(
+        abs(float(left[key]) - float(right[key])) <= 0.015
+        for key in ("left", "right", "top", "bottom")
+    )
 
 
 def _is_text(item) -> bool:
