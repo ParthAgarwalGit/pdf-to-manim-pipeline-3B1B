@@ -53,6 +53,13 @@ def pdf2manim() -> None:
 @click.option("--strict", is_flag=True, help="Alias for --policy strict.")
 @click.option("--repair", type=click.Choice(["off", "eligible"]), default="eligible")
 @click.option(
+    "--max-repairs-per-scene",
+    type=click.IntRange(0, 3),
+    default=3,
+    show_default=True,
+    help="Maximum sequential improving repair attempts for each scene.",
+)
+@click.option(
     "--verifier-mode",
     type=click.Choice(["enforce", "audit"]),
     default="enforce",
@@ -78,6 +85,7 @@ def convert(
     policy: str,
     strict: bool,
     repair: str,
+    max_repairs_per_scene: int,
     verifier_mode: str,
     max_cost: float,
     max_scenes: int,
@@ -99,6 +107,7 @@ def convert(
         voice=voice,
         policy=effective_policy,
         repair=repair,
+        max_repairs_per_scene=max_repairs_per_scene,
         verifier_mode=verifier_mode,
         max_cost_usd=max_cost,
         max_scenes=max_scenes,
@@ -117,6 +126,7 @@ def convert(
     click.echo(f"  Quality:     {quality}")
     click.echo(f"  API budget:  ${max_cost:.2f}")
     click.echo(f"  Repair:      {repair}")
+    click.echo(f"  Repair cap:  {max_repairs_per_scene} per scene")
     click.echo(f"  Verifier:    {verifier_mode}")
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
     result = PipelineV2(config).run(input_pdf)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from manim import Camera, Group, Scene, VGroup, config
+from manim import Camera, Group, Mobject, Scene, VGroup, config
 
 from .layout import region_bounds
 from .models import LayoutTemplate
@@ -28,6 +28,9 @@ class TrackedScene(Scene):
         self._artifact_registry: dict[int, dict[str, Any]] = {}
         self._layout_template = LayoutTemplate.CENTER_WITH_NOTES
         self._current_beat = ""
+        self._beat_schedule = self._schedule_from_environment()
+        self._target_duration = self._schedule_duration(self._beat_schedule)
+        self._auto_counter = 0
         self._checkpoint_index = 0
         self._animation_depth = 0
         self._play_start_time = 0.0
@@ -40,6 +43,48 @@ class TrackedScene(Scene):
 
     def set_layout(self, template: str) -> None:
         self._layout_template = LayoutTemplate(template)
+
+    def configure_generated_scene(
+        self,
+        *,
+        layout_template: str,
+        target_duration: float,
+        beat_schedule: list[tuple[str, float, float]],
+    ) -> None:
+        """Receive deterministic metadata injected after model generation."""
+
+        self.set_layout(layout_template)
+        self._target_duration = max(0.0, float(target_duration))
+        self._beat_schedule = [
+            (str(beat_id), float(start), float(end))
+            for beat_id, start, end in beat_schedule
+        ]
+
+    def auto_register(self, name: str, value):
+        """Register assigned mobjects without requiring model-written bookkeeping."""
+
+        if not isinstance(value, Mobject):
+            return value
+        if id(value) in self._artifact_registry:
+            return value
+        beat_ids = [item[0] for item in self._beat_schedule] or [self._current_beat or "scene"]
+        class_name = type(value).__name__
+        category = "semantic_text" if self._is_text_class(class_name) else "generated_visual"
+        base = str(name).strip() or "object"
+        artifact_id = base
+        used = {record["artifact_id"] for record in self._artifact_registry.values()}
+        suffix = 2
+        while artifact_id in used:
+            artifact_id = f"{base}_{suffix}"
+            suffix += 1
+        self._artifact_registry[id(value)] = {
+            "artifact_id": artifact_id,
+            "category": category,
+            "purpose": f"Generated {class_name}",
+            "beat_ids": beat_ids,
+            "mobject": value,
+        }
+        return value
 
     def place_in_region(
         self,
@@ -105,7 +150,17 @@ class TrackedScene(Scene):
         self._current_beat = beat_id
         self._checkpoint("beat")
 
+    def next_section(self, name: str, *args, **kwargs):
+        """Use standard Manim section markers as narration beat markers."""
+
+        self.set_beat(name)
+        return super().next_section(name, *args, **kwargs)
+
     def add(self, *mobjects):
+        for mobject in mobjects:
+            if self._artifact_record(id(mobject), mobject) is None:
+                self._auto_counter += 1
+                self.auto_register(f"auto_{self._auto_counter:03d}", mobject)
         result = super().add(*mobjects)
         if not self._animation_depth:
             self._checkpoint("add")
@@ -151,17 +206,18 @@ class TrackedScene(Scene):
     def _checkpoint(self, event: str, *, timestamp: float | None = None) -> None:
         if not self._trace_path or not hasattr(self, "renderer"):
             return
+        resolved_time = (
+            float(getattr(self.renderer, "time", 0.0)) if timestamp is None else timestamp
+        )
+        beat_id = self._current_beat or self._beat_at(resolved_time)
         traced_objects = self._trace_objects(getattr(self, "mobjects", []))
         objects = [{key: value for key, value in item.items() if key != "_mobject"}
                    for item in traced_objects]
         payload = {
             "checkpoint": self._checkpoint_index,
             "event": event,
-            "time": round(
-                float(getattr(self.renderer, "time", 0.0)) if timestamp is None else timestamp,
-                4,
-            ),
-            "beat_id": self._current_beat,
+            "time": round(resolved_time, 4),
+            "beat_id": beat_id,
             "objects": objects,
             "pixel_overlaps": self._pixel_overlap_records(traced_objects),
         }
@@ -171,6 +227,30 @@ class TrackedScene(Scene):
                 handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
         except OSError:
             pass
+
+    def _beat_at(self, timestamp: float) -> str:
+        for beat_id, start, end in self._beat_schedule:
+            if start <= timestamp <= end + 1e-6:
+                return beat_id
+        return self._beat_schedule[-1][0] if self._beat_schedule else ""
+
+    @staticmethod
+    def _schedule_from_environment() -> list[tuple[str, float, float]]:
+        raw = os.getenv("PDF2MANIM_BEAT_SCHEDULE", "")
+        if not raw:
+            return []
+        try:
+            values = json.loads(raw)
+            return [
+                (str(item["beat_id"]), float(item["start"]), float(item["end"]))
+                for item in values
+            ]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return []
+
+    @staticmethod
+    def _schedule_duration(schedule: list[tuple[str, float, float]]) -> float:
+        return max((end for _, _, end in schedule), default=0.0)
 
     def _trace_objects(self, mobjects) -> list[dict[str, Any]]:
         objects: list[dict[str, Any]] = []

@@ -57,6 +57,8 @@ def analyze_trace(
     scene: NarratedScene,
     trace_path: Path,
     video_duration: float,
+    *,
+    enforce_contract: bool = True,
 ) -> list[VerificationFinding]:
     records = read_trace(trace_path)
     if not records:
@@ -64,9 +66,10 @@ def analyze_trace(
             code="TRACE_MISSING", severity="error",
             message="The preview produced no runtime artifact checkpoints.",
         )]
-    expected_by_beat = {
-        item.beat_id: set(item.active_artifact_ids) for item in contract.composition_plan
-    }
+    expected_by_beat = (
+        {item.beat_id: set(item.active_artifact_ids) for item in contract.composition_plan}
+        if enforce_contract else {}
+    )
     artifacts = {item.artifact_id: item for item in contract.artifact_inventory}
     beat_order = {beat.beat_id: index for index, beat in enumerate(scene.beats)}
     findings: list[VerificationFinding] = []
@@ -92,10 +95,12 @@ def analyze_trace(
                 bounds = item.get("bounds") or {}
                 if bounds.get("width", 0.0) <= 0.001 and bounds.get("height", 0.0) <= 0.001:
                     continue
-                _add(findings, seen_keys, "UNPLANNED_OBJECT", "error",
-                     f"An unregistered {item.get('class_name', 'mobject')} is visible.", timestamp, [])
+                if enforce_contract:
+                    _add(findings, seen_keys, "UNPLANNED_OBJECT", "error",
+                         f"An unregistered {item.get('class_name', 'mobject')} is visible.", timestamp, [])
+                _bounds_checks(findings, seen_keys, item, timestamp)
                 continue
-            if artifact_id not in expected and beat_id in expected_by_beat:
+            if enforce_contract and artifact_id not in expected and beat_id in expected_by_beat:
                 artifact = artifacts.get(artifact_id)
                 if artifact:
                     current = beat_order.get(beat_id, -1)
@@ -108,7 +113,7 @@ def analyze_trace(
                      f"{artifact_id} is visible during {beat_id} but is not expected.", timestamp, [artifact_id])
             _bounds_checks(findings, seen_keys, item, timestamp)
             artifact = artifacts.get(artifact_id)
-            if artifact:
+            if enforce_contract and artifact:
                 _region_bounds_checks(
                     findings, seen_keys, item, artifact, contract, timestamp,
                 )
@@ -247,11 +252,13 @@ def _overlap_checks(findings, seen, objects, artifacts, timestamp, pixel_overlap
                 continue
             left_spec = artifacts.get(left_id)
             right_spec = artifacts.get(right_id)
-            if not left_spec or not right_spec:
-                continue
             left_text = _is_text(left)
             right_text = _is_text(right)
-            if _intentional_overlap(left_spec, right_spec, left_text, right_text):
+            if (
+                left_spec
+                and right_spec
+                and _intentional_overlap(left_spec, right_spec, left_text, right_text)
+            ):
                 continue
             if left_id == right_id and left_text != right_text:
                 continue

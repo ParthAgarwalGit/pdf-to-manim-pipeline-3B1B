@@ -302,8 +302,7 @@ class PipelineV2Config(BaseModel):
     preview_workers: int = Field(default=2, ge=1, le=4)
     repair_workers: int = Field(default=1, ge=1, le=2)
     render_workers: int = Field(default=1, ge=1, le=2)
-    max_repairs_per_scene: int = Field(default=1, ge=0, le=2)
-    max_repairs_per_run: int = Field(default=3, ge=0, le=12)
+    max_repairs_per_scene: int = Field(default=3, ge=0, le=3)
     preview_timeout_seconds: int = Field(default=120, ge=10)
     render_timeout_seconds: int = Field(default=600, ge=30)
 

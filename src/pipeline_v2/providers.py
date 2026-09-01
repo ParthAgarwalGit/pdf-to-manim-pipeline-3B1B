@@ -70,7 +70,7 @@ class ProviderRouter:
         *,
         max_api_workers: int = 4,
         strict_keys: bool = False,
-        retry_delays: tuple[float, float] = (0.5, 1.5),
+        retry_delays: tuple[float, float] = (5.0, 15.0),
     ):
         self.store = store
         self.artifacts = artifacts
@@ -600,17 +600,42 @@ class ProviderUnavailable(RuntimeError):
 
 
 def _confirmed_retryable(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None)
-    if status in {429, 502, 503}:
+    status = _provider_status_code(exc)
+    if status in {408, 409, 425, 429, 500, 502, 503, 504}:
         return True
     name = type(exc).__name__.lower()
     if "timeout" in name:
         return False
-    return isinstance(exc, ConnectionError) or "apiconnectionerror" in name
+    message = str(exc).upper()
+    return (
+        isinstance(exc, ConnectionError)
+        or "APICONNECTIONERROR" in name.upper()
+        or "RESOURCE_EXHAUSTED" in message
+        or "SERVICE_UNAVAILABLE" in message
+    )
 
 
 def _deterministic_request_rejection(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None)
+    status = _provider_status_code(exc)
     return isinstance(status, int) and 400 <= status < 500 and status not in {
         408, 409, 425, 429,
     }
+
+
+def _provider_status_code(exc: Exception) -> Optional[int]:
+    for attribute in ("status_code", "code"):
+        value = getattr(exc, attribute, None)
+        if callable(value):
+            try:
+                value = value()
+            except TypeError:
+                continue
+        if isinstance(value, int):
+            return value
+        nested = getattr(value, "value", None)
+        if isinstance(nested, int):
+            return nested
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    match = re.match(r"^\s*(\d{3})\b", str(exc))
+    return int(match.group(1)) if match else None

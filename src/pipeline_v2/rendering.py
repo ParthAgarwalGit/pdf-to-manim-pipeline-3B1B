@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ from .models import NarratedScene, VerificationFinding, VisualContract
 from .static_verifier import V2StaticVerifier
 
 
-VERIFIER_VERSION = "v2-verifier-7"
+VERIFIER_VERSION = "v2-verifier-8-creative"
 
 
 @dataclass
@@ -73,6 +74,7 @@ class TrackedManimRenderer:
             expected_regions={
                 item.artifact_id: item.region.value for item in contract.artifact_inventory
             },
+            require_contract_tracking=False,
         )
         report = verifier.verify(code)
         findings = [VerificationFinding(
@@ -91,7 +93,7 @@ class TrackedManimRenderer:
         trace_path = attempt_dir / "trace.jsonl"
         stdout_path = attempt_dir / "render_stdout.txt"
         stderr_path = attempt_dir / "render_stderr.txt"
-        environment = self._environment(trace_path)
+        environment = self._environment(trace_path, scene)
         video_path = attempt_dir / "video.mp4"
         # Manim nests partial files deeply. A short staging root avoids the
         # Windows MAX_PATH failure while durable artifacts remain in attempt_dir.
@@ -163,6 +165,7 @@ class TrackedManimRenderer:
         outcome.duration_seconds = probe_duration(video_path)
         outcome.findings.extend(analyze_trace(
             contract, scene, trace_path, outcome.duration_seconds,
+            enforce_contract=False,
         ))
         timestamps = sorted({
             *[beat.end_seconds for beat in scene.beats],
@@ -176,7 +179,7 @@ class TrackedManimRenderer:
         return outcome
 
     @staticmethod
-    def _environment(trace_path: Path) -> dict[str, str]:
+    def _environment(trace_path: Path, scene: NarratedScene) -> dict[str, str]:
         blocked = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
         environment = {
             key: value for key, value in os.environ.items()
@@ -186,6 +189,14 @@ class TrackedManimRenderer:
         current = environment.get("PYTHONPATH", "")
         environment["PYTHONPATH"] = project_root + (os.pathsep + current if current else "")
         environment["PDF2MANIM_TRACE_PATH"] = str(trace_path)
+        environment["PDF2MANIM_BEAT_SCHEDULE"] = json.dumps([
+            {
+                "beat_id": beat.beat_id,
+                "start": float(beat.start_seconds),
+                "end": float(beat.end_seconds),
+            }
+            for beat in scene.beats
+        ])
         return environment
 
 

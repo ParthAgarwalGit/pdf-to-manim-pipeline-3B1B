@@ -24,6 +24,7 @@ class V2StaticVerifier(StaticManimVerifier):
         *,
         expected_layout: str | None = None,
         expected_regions: dict[str, str] | None = None,
+        require_contract_tracking: bool = True,
     ):
         super().__init__(
             trusted_import_roots={"src.pipeline_v2.tracked_scene"},
@@ -33,6 +34,7 @@ class V2StaticVerifier(StaticManimVerifier):
         self.expected_beat_ids = expected_beat_ids
         self.expected_layout = expected_layout
         self.expected_regions = expected_regions or {}
+        self.require_contract_tracking = require_contract_tracking
 
     def verify(self, source: str) -> VerificationReport:
         report = super().verify(source)
@@ -42,52 +44,53 @@ class V2StaticVerifier(StaticManimVerifier):
         registered = self._literal_first_args(tree, "register_artifact")
         beats = self._literal_first_args(tree, "set_beat")
         layouts = self._literal_first_args(tree, "set_layout")
-        missing_artifacts = self.expected_artifact_ids - registered
-        unknown_artifacts = registered - self.expected_artifact_ids
-        missing_beats = self.expected_beat_ids - beats
-        if missing_artifacts:
-            report.issues.append(VerificationIssue(
-                code="MISSING_ARTIFACT_REGISTRATION", severity="error",
-                message=f"Missing artifact registrations: {sorted(missing_artifacts)}",
-                object_ids=sorted(missing_artifacts),
-            ))
-        if unknown_artifacts:
-            report.issues.append(VerificationIssue(
-                code="UNPLANNED_ARTIFACT_REGISTRATION", severity="warning",
-                message=f"Registered artifacts absent from the contract: {sorted(unknown_artifacts)}",
-                object_ids=sorted(unknown_artifacts),
-            ))
-        if missing_beats:
-            report.issues.append(VerificationIssue(
-                code="MISSING_BEAT_CHECKPOINT", severity="error",
-                message=f"Missing set_beat calls: {sorted(missing_beats)}",
-            ))
-        if self.expected_layout and self.expected_layout not in layouts:
-            report.issues.append(VerificationIssue(
-                code="MISSING_LAYOUT_TEMPLATE", severity="error",
-                message=f"Expected self.set_layout({self.expected_layout!r}).",
-            ))
-        registered_variables = self._registered_variables(tree)
-        placed_variables = self._placed_variables(tree)
-        for artifact_id, expected_region in self.expected_regions.items():
-            variable = registered_variables.get(artifact_id)
-            if not variable or variable not in placed_variables:
+        if self.require_contract_tracking:
+            missing_artifacts = self.expected_artifact_ids - registered
+            unknown_artifacts = registered - self.expected_artifact_ids
+            missing_beats = self.expected_beat_ids - beats
+            if missing_artifacts:
                 report.issues.append(VerificationIssue(
-                    code="MISSING_REGION_PLACEMENT", severity="error",
-                    message=f"Artifact {artifact_id!r} is not placed with self.place_in_region().",
-                    object_ids=[artifact_id],
+                    code="MISSING_ARTIFACT_REGISTRATION", severity="error",
+                    message=f"Missing artifact registrations: {sorted(missing_artifacts)}",
+                    object_ids=sorted(missing_artifacts),
                 ))
-                continue
-            actual_region = placed_variables[variable]
-            if actual_region != expected_region:
+            if unknown_artifacts:
                 report.issues.append(VerificationIssue(
-                    code="REGION_PLACEMENT_MISMATCH", severity="error",
-                    message=(
-                        f"Artifact {artifact_id!r} is placed in {actual_region!r}; "
-                        f"the contract requires {expected_region!r}."
-                    ),
-                    object_ids=[artifact_id],
+                    code="UNPLANNED_ARTIFACT_REGISTRATION", severity="warning",
+                    message=f"Registered artifacts absent from the contract: {sorted(unknown_artifacts)}",
+                    object_ids=sorted(unknown_artifacts),
                 ))
+            if missing_beats:
+                report.issues.append(VerificationIssue(
+                    code="MISSING_BEAT_CHECKPOINT", severity="error",
+                    message=f"Missing set_beat calls: {sorted(missing_beats)}",
+                ))
+            if self.expected_layout and self.expected_layout not in layouts:
+                report.issues.append(VerificationIssue(
+                    code="MISSING_LAYOUT_TEMPLATE", severity="error",
+                    message=f"Expected self.set_layout({self.expected_layout!r}).",
+                ))
+            registered_variables = self._registered_variables(tree)
+            placed_variables = self._placed_variables(tree)
+            for artifact_id, expected_region in self.expected_regions.items():
+                variable = registered_variables.get(artifact_id)
+                if not variable or variable not in placed_variables:
+                    report.issues.append(VerificationIssue(
+                        code="MISSING_REGION_PLACEMENT", severity="error",
+                        message=f"Artifact {artifact_id!r} is not placed with self.place_in_region().",
+                        object_ids=[artifact_id],
+                    ))
+                    continue
+                actual_region = placed_variables[variable]
+                if actual_region != expected_region:
+                    report.issues.append(VerificationIssue(
+                        code="REGION_PLACEMENT_MISMATCH", severity="error",
+                        message=(
+                            f"Artifact {artifact_id!r} is placed in {actual_region!r}; "
+                            f"the contract requires {expected_region!r}."
+                        ),
+                        object_ids=[artifact_id],
+                    ))
         for macro, guidance in self.UNSUPPORTED_LATEX.items():
             for match in re.finditer(re.escape(macro), source):
                 line = source.count("\n", 0, match.start()) + 1

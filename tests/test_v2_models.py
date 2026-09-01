@@ -18,6 +18,7 @@ from src.pipeline_v2.models import (
     SourceDocument,
     SourceFact,
     VisualContract,
+    PipelineV2Config,
 )
 from src.pipeline_v2.planning import PlanningService, validate_visual_contract
 
@@ -149,3 +150,10 @@ def test_lesson_and_narration_use_gemini():
         ("google", "gemini-3.7-flash"),
     ]
     assert [call["max_output_tokens"] for call in calls] == [7000, 9000]
+
+
+def test_repairs_default_to_three_per_scene_without_a_run_cap():
+    config = PipelineV2Config()
+
+    assert config.max_repairs_per_scene == 3
+    assert not hasattr(config, "max_repairs_per_run")

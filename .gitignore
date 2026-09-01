@@ -117,6 +117,7 @@ CTO_COMPREHENSIVE_REVIEW.md
 *.swp
 *~.nib
 /tmp/pdfs/*_render/
+/tmp/pdfs/*_rendered/
 /tmp/pdfs/*_text.txt
 
 # Jupyter Notebook

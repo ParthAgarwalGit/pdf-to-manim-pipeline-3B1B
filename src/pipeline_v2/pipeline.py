@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from .diagnostics import frame_fingerprint, issue_score
 from .generation import CODE_PROMPT_VERSION, CodeGenerationService
+from .instrumentation import deinstrument_scene_code
 from .media import compose_scene, concatenate, inspect_av, source_page_fallback
 from .models import (
     LessonPlan,
@@ -59,8 +60,6 @@ class PipelineV2:
         self.store: Optional[RunStore] = None
         self.artifacts: Optional[RunArtifacts] = None
         self.renderer = TrackedManimRenderer()
-        self._repair_count = 0
-        self._repair_lock = asyncio.Lock()
         self._visual_limit = asyncio.Semaphore(self.config.visual_workers)
         self._tts_limit = asyncio.Semaphore(self.config.tts_workers)
         self._code_limit = asyncio.Semaphore(self.config.code_workers)
@@ -361,15 +360,21 @@ class PipelineV2:
         source: SourceDocument,
         batch_index: int,
     ) -> dict[str, Any]:
-        async with self._visual_limit:
-            return await self._task(
-                f"visual-{batch_index:03d}", "visual_contract", None,
-                {"scenes": [scene.model_dump(mode="json") for scene in batch],
-                 "prompt_version": PROMPT_VERSION,
-                 "structured_output_version": STRUCTURED_OUTPUT_VERSION},
-                lambda: planner.visual_contract_batch(batch, lesson, source, batch_index),
-                dependencies=["narration"],
-            )
+        # The creative generator no longer needs a paid SceneIR-like planning
+        # call. Keep a small deterministic contract for fallback rendering and
+        # report compatibility; ordinary Manim receives the lesson brief.
+        del lesson, source
+        return await self._task(
+            f"visual-{batch_index:03d}", "creative_scaffold", None,
+            {
+                "scenes": [scene.model_dump(mode="json") for scene in batch],
+                "stage_version": "creative-scaffold-v1",
+            },
+            lambda: _return(VisualContractBatch(
+                contracts=[planner._fallback_contract(scene) for scene in batch]
+            )),
+            dependencies=["narration"],
+        )
 
     async def _process_scene(
         self,
@@ -386,6 +391,9 @@ class PipelineV2:
         scene_id = original_scene.scene_id
         result = SceneResult(scene_id=scene_id)
         try:
+            lesson_scene = next(
+                item for item in lesson.scenes if item.scene_id == scene_id
+            )
             timed_scene = NarratedScene.model_validate(await timed_scene_task)
             contract_batch = VisualContractBatch.model_validate(await contract_task)
             contract = next(
@@ -423,14 +431,20 @@ class PipelineV2:
                 code_data = await self._task(
                     f"code-{scene_id}", "code_generation", scene_id,
                     {"scene": timed_scene.model_dump(mode="json"), "prompt_version": CODE_PROMPT_VERSION,
-                     "contract": contract.model_dump(mode="json")},
-                    lambda: generator.generate(timed_scene, contract, facts),
+                     "contract": contract.model_dump(mode="json"),
+                     "lesson_scene": lesson_scene.model_dump(mode="json")},
+                    lambda: generator.generate(
+                        timed_scene, contract, facts, lesson_scene=lesson_scene,
+                    ),
                     dependencies=[f"tts-{scene_id}", f"visual-{_batch_index(scene_id, lesson):03d}"],
                 )
             code = str(code_data)
             original_code_path = scene_dir / "code" / "original.py"
             original_code_path.parent.mkdir(parents=True, exist_ok=True)
             original_code_path.write_text(code, encoding="utf-8")
+            (scene_dir / "code" / "model_raw.py").write_text(
+                deinstrument_scene_code(code), encoding="utf-8",
+            )
             result.original_code_path = str(original_code_path.resolve())
             result.audio_path = timed_scene.audio_path
             if not self.config.enable_render:
@@ -461,78 +475,100 @@ class PipelineV2:
             selected_code = code
             selected = original
             selected_preview_task = f"preview-{scene_id}-00"
-            eligible = (
-                self.config.repair == "eligible"
-                and self.config.max_repairs_per_scene > 0
-                and _repair_needed(original, self.config.verifier_mode)
-            )
-            if eligible and await self._claim_repair():
+            for repair_attempt in range(1, self.config.max_repairs_per_scene + 1):
+                eligible = (
+                    self.config.repair == "eligible"
+                    and _repair_needed(selected, self.config.verifier_mode)
+                )
+                if not eligible:
+                    break
+                attempt_label = f"{repair_attempt:02d}"
+                repair_task = f"repair-{scene_id}-{attempt_label}"
+                preview_task = f"preview-{scene_id}-{attempt_label}"
                 try:
                     async with self._repair_limit:
                         repaired_code_data = await self._task(
-                            f"repair-{scene_id}-01", "vision_repair", scene_id,
-                            {"code": _hash_text(code),
-                             "findings": [item.model_dump(mode="json") for item in original.findings]},
+                            repair_task, "vision_repair", scene_id,
+                            {
+                                "code": _hash_text(selected_code),
+                                "findings": [
+                                    item.model_dump(mode="json")
+                                    for item in selected.findings
+                                ],
+                            },
                             lambda: generator.repair(
-                                scene=timed_scene, contract=contract, code=code,
-                                findings=original.findings, frame_paths=original.frame_paths,
+                                scene=timed_scene, contract=contract, code=selected_code,
+                                findings=selected.findings, frame_paths=selected.frame_paths,
+                                lesson_scene=lesson_scene,
                             ),
-                            dependencies=[f"preview-{scene_id}-00"],
+                            dependencies=[selected_preview_task],
                         )
                     repaired_code = str(repaired_code_data)
-                    if _repair_code_unchanged(code, repaired_code):
+                    if _repair_code_unchanged(selected_code, repaired_code):
                         self.artifacts.event(
                             "repair_noop", stage="vision_repair", scene_id=scene_id,
-                            message="Repair returned code identical to the original.",
+                            message="Repair returned code identical to the current candidate.",
+                            repair_attempt=repair_attempt,
                         )
+                        break
                     else:
-                        repaired_path = scene_dir / "code" / "repaired.py"
+                        repaired_path = scene_dir / "code" / f"repaired-{attempt_label}.py"
                         repaired_path.write_text(repaired_code, encoding="utf-8")
+                        (scene_dir / "code" / f"repaired_raw-{attempt_label}.py").write_text(
+                            deinstrument_scene_code(repaired_code), encoding="utf-8",
+                        )
                         async with self._preview_limit:
                             repaired_data = await self._task(
-                                f"preview-{scene_id}-01", "preview", scene_id,
+                                preview_task, "preview", scene_id,
                                 {"code": _hash_text(repaired_code), "verifier_version": VERIFIER_VERSION,
                                  "contract": contract.model_dump(mode="json")},
                                 lambda: asyncio.to_thread(
                                     self.renderer.render, repaired_code, contract, timed_scene,
-                                    scene_dir / "attempt-01", quality="low",
+                                    scene_dir / f"attempt-{attempt_label}", quality="low",
                                     timeout_seconds=self.config.preview_timeout_seconds,
                                 ),
-                                dependencies=[f"repair-{scene_id}-01"],
+                                dependencies=[repair_task],
                             )
                         repaired = _outcome(repaired_data)
                         self.artifacts.write_json(
-                            Path("scenes") / scene_id / "attempt-01" / "diagnostics.json",
+                            Path("scenes") / scene_id / f"attempt-{attempt_label}"
+                            / "diagnostics.json",
                             _serialize(repaired),
                         )
                         if self.config.verifier_mode == "audit":
                             self._log_audit_outcome(scene_id, "repair_preview", repaired)
-                        visual_changed = _repair_visuals_changed(original, repaired)
-                        if _repair_improves(original, repaired) and visual_changed:
+                        visual_changed = _repair_visuals_changed(selected, repaired)
+                        if _repair_improves(selected, repaired) and visual_changed:
+                            before_score = _quality(selected)
                             selected_code, selected = repaired_code, repaired
-                            selected_preview_task = f"preview-{scene_id}-01"
+                            selected_preview_task = preview_task
                             result.repaired = True
                             self.artifacts.event(
                                 "repair_accepted", stage="vision_repair", scene_id=scene_id,
-                                before_score=_quality(original), after_score=_quality(repaired),
+                                before_score=before_score, after_score=_quality(repaired),
+                                repair_attempt=repair_attempt,
                             )
                         else:
                             self.artifacts.event(
                                 "repair_rejected", stage="vision_repair", scene_id=scene_id,
                                 message=("Checkpoint visuals were unchanged." if not visual_changed
                                          else "Objective diagnostics did not improve."),
-                                before_score=_quality(original), after_score=_quality(repaired),
+                                before_score=_quality(selected), after_score=_quality(repaired),
+                                repair_attempt=repair_attempt,
                             )
+                            break
                 except (MissingProviderKey, BudgetExceeded) as exc:
                     self.artifacts.event(
                         "repair_skipped", stage="vision_repair", scene_id=scene_id,
-                        message=str(exc),
+                        message=str(exc), repair_attempt=repair_attempt,
                     )
+                    break
                 except Exception as exc:
                     self.artifacts.event(
                         "repair_failed", stage="vision_repair", scene_id=scene_id,
-                        message=str(exc),
+                        message=str(exc), repair_attempt=repair_attempt,
                     )
+                    break
 
             final_code_path = scene_dir / "code" / "final.py"
             final_code_path.write_text(selected_code, encoding="utf-8")
@@ -567,7 +603,6 @@ class PipelineV2:
                 if not final_acceptable and _source_fallback_allowed(
                     self.config.policy, timed_scene.audio_path
                 ):
-                    lesson_scene = next(item for item in lesson.scenes if item.scene_id == scene_id)
                     page = _fallback_page(lesson_scene.source_fact_ids, source)
                     fallback = await self._task(
                         f"compose-{scene_id}", "source_fallback", scene_id,
@@ -610,7 +645,6 @@ class PipelineV2:
                 return result
 
             if _source_fallback_allowed(self.config.policy, timed_scene.audio_path):
-                lesson_scene = next(item for item in lesson.scenes if item.scene_id == scene_id)
                 page = _fallback_page(lesson_scene.source_fact_ids, source)
                 fallback = await self._task(
                     f"compose-{scene_id}", "source_fallback", scene_id,
@@ -638,13 +672,6 @@ class PipelineV2:
                 "scene_failed", stage="scene", scene_id=scene_id, message=str(exc),
             )
             return result
-
-    async def _claim_repair(self) -> bool:
-        async with self._repair_lock:
-            if self._repair_count >= self.config.max_repairs_per_run:
-                return False
-            self._repair_count += 1
-            return True
 
     def _log_audit_outcome(
         self, scene_id: str, stage: str, outcome: RenderOutcome,

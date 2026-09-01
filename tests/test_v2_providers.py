@@ -14,6 +14,7 @@ from src.pipeline_v2.providers import (
     ProviderRequestRejected,
     ProviderResponse,
     ProviderRouter,
+    ProviderUnavailable,
 )
 from src.pipeline_v2.state import RunStore
 
@@ -132,6 +133,71 @@ def test_confirmed_rate_limit_retries_twice_then_succeeds(monkeypatch, tmp_path)
     assert calls == 3
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert sum(event["event"] == "api_call_retry" for event in events) == 2
+    store.close()
+
+
+def test_gemini_code_503_is_retried_as_confirmed_unavailable(monkeypatch, tmp_path):
+    store = RunStore(tmp_path / "run.db", 10.0)
+    artifacts = RunArtifacts(tmp_path, "run")
+    router = ProviderRouter(store, artifacts, retry_delays=(0.0, 0.0))
+    monkeypatch.setattr(router, "_require_key", lambda _provider: None)
+    calls = 0
+
+    class GeminiUnavailable(RuntimeError):
+        code = 503
+
+    def invoke(*_args):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise GeminiUnavailable("503 UNAVAILABLE: model is under high demand")
+        return ProviderResponse(
+            text="ok", provider="google", model="gemini-3.7-flash",
+            input_units=10, output_units=2, exact_usage=True, raw={},
+        )
+
+    monkeypatch.setattr(router, "_invoke", invoke)
+    response = asyncio.run(router.text(
+        stage="lesson", task_id="lesson", provider="google", model="gemini-3.7-flash",
+        system="system", prompt="prompt", max_output_tokens=10,
+    ))
+
+    assert response.text == "ok"
+    assert calls == 3
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert sum(event["event"] == "api_call_retry" for event in events) == 2
+    assert store.cost_rows()[0]["status"] == "SUCCEEDED"
+    store.close()
+
+
+def test_exhausted_gemini_503_releases_budget_reservation(monkeypatch, tmp_path):
+    store = RunStore(tmp_path / "run.db", 10.0)
+    artifacts = RunArtifacts(tmp_path, "run")
+    router = ProviderRouter(store, artifacts, retry_delays=(0.0, 0.0))
+    monkeypatch.setattr(router, "_require_key", lambda _provider: None)
+    calls = 0
+
+    class GeminiUnavailable(RuntimeError):
+        code = 503
+
+    def invoke(*_args):
+        nonlocal calls
+        calls += 1
+        raise GeminiUnavailable("503 UNAVAILABLE: model is under high demand")
+
+    monkeypatch.setattr(router, "_invoke", invoke)
+    with pytest.raises(ProviderUnavailable):
+        asyncio.run(router.text(
+            stage="lesson", task_id="lesson", provider="google",
+            model="gemini-3.7-flash", system="system", prompt="prompt",
+            max_output_tokens=10,
+        ))
+
+    assert calls == 3
+    row = store.cost_rows()[0]
+    assert row["status"] == "FAILED_RETRYABLE"
+    assert row["actual_usd"] == 0
+    assert store.total_cost() == 0
     store.close()
 
 

@@ -1,4 +1,4 @@
-"""Artifact-contract-driven raw Manim generation and targeted repair."""
+"""Compact creative raw-Manim generation with automatic instrumentation."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ import keyword
 import re
 from pathlib import Path
 
-from .layout import layout_prompt_guide, region_bounds
-from .models import NarratedScene, SourceFact, VerificationFinding, VisualContract
+from .instrumentation import deinstrument_scene_code, instrument_scene_code
+from .layout import region_bounds
+from .models import LessonScene, NarratedScene, SourceFact, VerificationFinding, VisualContract
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-code-3"
+CODE_PROMPT_VERSION = "v2-creative-code-1"
 
 
 class CodeGenerationService:
@@ -24,44 +25,26 @@ class CodeGenerationService:
         scene: NarratedScene,
         contract: VisualContract,
         source_facts: list[SourceFact],
+        lesson_scene: LessonScene | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
-        payload = {
-            "scene": scene.model_dump(mode="json"),
-            "visual_contract": contract.model_dump(mode="json"),
-            "source_facts": [fact.model_dump(mode="json") for fact in source_facts],
-        }
-        system = f"""PROMPT_VERSION={CODE_PROMPT_VERSION}
-You write one complete executable Manim Community Python script.
-Use raw Manim creatively, but the class must be named {class_name} and inherit TrackedScene.
-Allowed imports are exactly:
-from manim import *
-import numpy as np
-from src.pipeline_v2.tracked_scene import TrackedScene
-
-For every contract artifact, construct one top-level mobject and immediately call:
-self.register_artifact("artifact_id", mobject, category="...", purpose="...", beat_ids=[...])
-Call self.set_beat("beat_id") before animating every beat. The composition_plan is authoritative:
-objects must enter and leave so the active set at each checkpoint matches it. Text uses reserved
-regions and must stay inside x=+/-6.9, y=+/-3.8. Call self.set_layout("layout_template") once before
-creating artifacts. After composing each top-level artifact, call self.place_in_region(mobject,
-"region", padding=region_padding, minimum_scale=minimum_scale,
-overflow_policy="overflow_policy"). Do not create unregistered visible mobjects.
-Prefer relational layout with arrange(), next_to(), align_to(), and to_edge() over guessed text
-coordinates. Keep unrelated text boxes separated by at least 0.2 Manim units at stable states.
-VGroup children are traced individually, so grouping objects does not hide internal collisions.
-Use axes.c2p() for data coordinates. Preserve source mathematics exactly. Match measured audio
-duration without empty padding. Return only the complete Python script, never a patch or markdown.
-
-{layout_prompt_guide()}
-"""
+        system, prompt = generation_request(
+            scene=scene,
+            contract=contract,
+            source_facts=source_facts,
+            class_name=class_name,
+            lesson_scene=lesson_scene,
+        )
         try:
             response = await self.router.text(
                 stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
                 provider="google", model="gemini-3.7-flash", system=system,
-                prompt=json.dumps(payload, ensure_ascii=False), max_output_tokens=9000,
+                prompt=prompt, max_output_tokens=9000,
             )
-            return clean_code(response.text)
+            raw_code = clean_code(response.text)
+            return instrument_scene_code(
+                raw_code, class_name=class_name, scene=scene, contract=contract,
+            ).code
         except MissingProviderKey:
             if self.router.strict_keys:
                 raise
@@ -71,7 +54,7 @@ duration without empty padding. Return only the complete Python script, never a 
                 scene_id=scene.scene_id,
                 request={
                     "provider": "google", "model": "gemini-3.7-flash",
-                    "system": system, "prompt": payload,
+                    "system": system, "prompt": prompt,
                 },
                 response={
                     "provider": "local", "model": "deterministic-manim-fallback",
@@ -88,30 +71,110 @@ duration without empty padding. Return only the complete Python script, never a 
         code: str,
         findings: list[VerificationFinding],
         frame_paths: list[str],
+        lesson_scene: LessonScene | None = None,
     ) -> str:
+        class_name = class_name_for(scene.scene_id)
         system = f"""PROMPT_VERSION={CODE_PROMPT_VERSION}
-You repair one complete raw-Manim TrackedScene using deterministic evidence.
-Make the smallest changes that fix the reported issues. Preserve mathematical meaning, artifact IDs,
-narration timing, and correct visuals. Return one complete executable Python script only, not a patch.
-Keep self.set_layout() and place every top-level artifact with self.place_in_region() using its contract
-region and fit policy. If an artifact cannot fit above minimum_scale, simplify its internal composition
-or distribute the explanation across beats. Do not claim success; the pipeline will re-render and score
-the replacement objectively.
-
-{layout_prompt_guide()}"""
+You repair one self-contained Manim Community Python animation using rendered evidence.
+Return one complete executable Python script only. Define exactly one Scene subclass named
+{class_name}. Make the smallest visual correction that fixes the reported problem. Preserve
+correct mathematics, the explanatory idea, and every self.next_section("beat_id") marker.
+Do not add tracking, layout-engine, artifact-registration, or audio-timing code; the runtime
+adds those automatically. Do not claim success; the pipeline will render and measure the result."""
+        raw_code = deinstrument_scene_code(code)
         prompt = json.dumps({
-            "scene": scene.model_dump(mode="json"),
-            "visual_contract": contract.model_dump(mode="json"),
-            "findings": [item.model_dump(mode="json") for item in findings],
-            "screenshots": frame_paths,
-            "existing_code": code,
+            "brief": _lesson_brief(lesson_scene, scene),
+            "narration_beats": _beat_payload(scene),
+            "findings": [item.model_dump(mode="json") for item in findings[:8]],
+            "existing_code": raw_code,
         }, ensure_ascii=False)
         response = await self.router.vision(
             stage="vision_repair", task_id=f"repair-{scene.scene_id}", scene_id=scene.scene_id,
             model="gemini-3.7-flash", system=system, prompt=prompt,
             image_paths=[Path(path) for path in frame_paths[:8]], max_output_tokens=9000,
         )
-        return clean_code(response.text)
+        repaired = clean_code(response.text)
+        return instrument_scene_code(
+            repaired, class_name=class_name, scene=scene, contract=contract,
+        ).code
+
+
+def generation_request(
+    *,
+    scene: NarratedScene,
+    contract: VisualContract,
+    source_facts: list[SourceFact],
+    class_name: str,
+    lesson_scene: LessonScene | None = None,
+) -> tuple[str, str]:
+    """Build the deliberately small model-facing creative request."""
+
+    system = f"""PROMPT_VERSION={CODE_PROMPT_VERSION}
+You create one self-contained Manim Community Edition Python animation.
+Return only executable Python, without Markdown or explanation. Define exactly one Scene
+subclass named {class_name}. Allowed imports are `from manim import *` and `import numpy as np`.
+Do not read files, call external services, or assume helper modules.
+
+Use ordinary Manim creatively. Prefer transforming a small number of meaningful visual objects
+over presenting slide-like paragraphs. Develop one clear visual explanation through the supplied
+narration beats. At the start of each beat call self.next_section("beat_id"); do not calculate exact
+audio timing because the runtime retimes those sections. Keep visible content inside the frame,
+keep unrelated text separated, and use axes.c2p() for mathematical graph coordinates."""
+    payload = {
+        "brief": _lesson_brief(lesson_scene, scene),
+        "target_duration_seconds": round(_target_duration(scene), 3),
+        "narration": scene.narration,
+        "narration_beats": _beat_payload(scene),
+        "grounded_facts": [fact.text[:500] for fact in source_facts[:8]],
+        "suggested_visual_direction": {
+            "archetype": contract.archetype,
+            "ingredients": _creative_ingredients(contract),
+            "style": contract.style_notes[:3],
+        },
+    }
+    return system, json.dumps(payload, ensure_ascii=False)
+
+
+def _lesson_brief(lesson_scene: LessonScene | None, scene: NarratedScene) -> dict[str, str]:
+    if lesson_scene is None:
+        return {"title": scene.scene_id, "description": scene.narration}
+    values = {
+        "title": lesson_scene.title,
+        "description": lesson_scene.description,
+        "learning_goal": lesson_scene.learning_goal,
+    }
+    if lesson_scene.example:
+        values["example"] = lesson_scene.example
+    return values
+
+
+def _beat_payload(scene: NarratedScene) -> list[dict[str, object]]:
+    return [
+        {
+            "beat_id": beat.beat_id,
+            "text": beat.text,
+            "start_seconds": round(float(beat.start_seconds), 3),
+            "end_seconds": round(float(beat.end_seconds), 3),
+        }
+        for beat in scene.beats
+    ]
+
+
+def _creative_ingredients(contract: VisualContract) -> list[str]:
+    values = []
+    for artifact in sorted(contract.artifact_inventory, key=lambda item: item.priority, reverse=True):
+        value = artifact.content.strip() or artifact.purpose.strip()
+        if value and value not in values:
+            values.append(value[:180])
+        if len(values) == 6:
+            break
+    return values
+
+
+def _target_duration(scene: NarratedScene) -> float:
+    if scene.audio_duration_seconds:
+        return float(scene.audio_duration_seconds)
+    return max(1.5, len(scene.narration.split()) / 2.8)
 
 
 def clean_code(value: str) -> str:

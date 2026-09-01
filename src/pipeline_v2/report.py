@@ -108,6 +108,11 @@ def write_html_report(
             _finding_html(artifacts.run_dir, item)
             for item in scene.findings
         ) or "None"
+        repair_diagnostics = sorted(
+            (artifacts.run_dir / "scenes" / scene.scene_id).glob(
+                "attempt-*/diagnostics.json"
+            )
+        )[1:]
         links = [
             _artifact_link(artifacts.run_dir, "Narration", artifacts.run_dir / "scenes" / scene.scene_id / "scene.json"),
             _artifact_link(artifacts.run_dir, "Contract", artifacts.run_dir / "scenes" / scene.scene_id / "visual_contract.json"),
@@ -121,11 +126,14 @@ def write_html_report(
                 "Original diagnostics",
                 artifacts.run_dir / "scenes" / scene.scene_id / "attempt-00" / "diagnostics.json",
             ),
-            _artifact_link(
-                artifacts.run_dir,
-                "Repair diagnostics",
-                artifacts.run_dir / "scenes" / scene.scene_id / "attempt-01" / "diagnostics.json",
-            ),
+            *[
+                _artifact_link(
+                    artifacts.run_dir,
+                    f"Repair {path.parent.name.removeprefix('attempt-')} diagnostics",
+                    path,
+                )
+                for path in repair_diagnostics
+            ],
         ]
         representative_frames = " ".join(
             link for link in (

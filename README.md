@@ -1,6 +1,6 @@
 # PDF-to-Video Pipeline V2
 
-V2 turns an educational PDF into a source-grounded, narrated Manim video. It plans the lesson around narration, defines machine-readable visual artifacts and lifecycles, generates expressive raw Manim with Gemini, verifies low-quality previews deterministically, optionally performs one targeted multimodal repair, and only then renders the final video.
+V2 turns an educational PDF into a source-grounded, narrated Manim video. It plans the lesson around narration, lets Gemini create ordinary Manim from a compact creative brief, injects tracking and measured-audio timing locally, verifies low-quality previews deterministically, optionally performs up to three targeted multimodal repairs per scene, and only then renders the final video.
 
 The previous implementations remain available in Git:
 
@@ -15,8 +15,10 @@ PDF
   -> local grounded extraction; vision OCR only for low-confidence pages
   -> lesson plan with source references
   -> continuous narration and semantic beats
-  -> TTS timing + visual artifact contracts in parallel
-  -> per-scene raw Manim generation
+  -> measured TTS timing
+  -> compact per-scene creative brief
+  -> unrestricted raw Manim generation
+  -> local tracking registration + beat retiming
   -> AST safety gate + tracked 480p15 preview
   -> deterministic lifecycle/layout diagnostics
   -> optional screenshot-guided repair
@@ -24,38 +26,36 @@ PDF
   -> audio composition, ordered concatenation, and final A/V review
 ```
 
-V2 does not use SceneIR or MCP internally. Generated classes inherit a thin `TrackedScene` helper while otherwise using ordinary Manim.
+V2 does not use SceneIR or MCP internally. Gemini writes a normal `Scene`; a local AST pass changes it to a thin `TrackedScene`, registers assigned mobjects, preserves variable names for diagnostics, and retimes marked sections to narration beats. Tracking rules, region schemas, and verifier internals are not included in the model prompt.
 
-## Visual Contracts
+## Creative Generation
 
-The visual planner separates four kinds of artifacts before arranging them:
+The code-generation prompt is intentionally close to the successful raw-Manim benchmark. It contains only the lesson brief, narration, measured duration, semantic beats, source-grounded facts, and a few optional visual ingredients. Gemini can use the full approved Manim API and is encouraged to develop one visual explanation rather than produce text-heavy slides.
 
-- `primary_visual`: graphs, geometry, diagrams, algorithm state, and data demonstrations
-- `semantic_text`: titles, labels, equations, and short callouts
-- `annotation`: target-linked arrows, braces, and highlights
-- `transient_effect`: temporary emphasis that must not remain on screen
+The only model-visible timing requirement is:
 
-Every artifact has a stable ID, teaching purpose, source facts, narration beats, enter/exit beat, region, layer, priority, carry policy, and intentional-overlap policy. There is no arbitrary seven-object rejection. Runtime validation uses actual active objects, bounding boxes, text occupancy, and weighted visual density.
+```python
+self.next_section("scene_001_beat_01")
+```
 
-Each scene now chooses one bounded layout template before code generation:
+The model identifies where each semantic beat begins but does not calculate seconds. After generation, local instrumentation:
 
-- `full_visual`: one large central diagram, with optional header and footer
-- `split`: independent left and right content regions
-- `three_column`: three compact peer regions
-- `center_with_notes`: one wide central visual with narrow side-note regions
+- adds the trusted `TrackedScene` import and base class;
+- registers assigned Manim mobjects without model-written calls;
+- retains names such as `triangle`, `equation`, and `point_label` in diagnostics;
+- scales each section's `play()` and `wait()` durations to the measured audio beat;
+- accounts for literal `for ... in range(...)` animation loops;
+- leaves geometry, transformations, visual metaphors, and composition under Gemini's control.
 
-The templates use fixed Manim-coordinate boxes with gaps between regions. An artifact also declares its footprint, preferred aspect ratio, padding, minimum acceptable scale, overflow policy, and overlap policy. Only one independent artifact may own a region during a beat; related labels and geometry should be composed inside one registered `VGroup`, while target-linked annotations may share the target region explicitly. `TrackedScene.place_in_region()` scales and anchors the completed artifact into its box. Content that cannot fit above its minimum scale must be simplified or spread across beats instead of becoming unreadably small.
+A small deterministic visual contract is still written to each run for local fallback rendering and report compatibility. It is no longer produced by a paid visual-planning call and is not a mandatory vocabulary for Gemini.
 
 ## Verification
 
-Generated Python is never executed before AST validation. The gate checks imports, dangerous calls, one tracked scene, required artifact registration, beat checkpoints, script size, suspicious coordinates, and unsupported LaTeX.
+Generated Python is never executed before AST validation. The gate checks imports, dangerous calls, exactly one scene, a `construct()` method, script size, suspicious coordinates, and unsupported LaTeX. Generated scenes do not fail static validation for missing artifact-registration, layout-template, or region-placement calls because those are no longer model responsibilities.
 
-During preview rendering, `TrackedScene` records stable state after `play()`, `wait()`, `add()`, and `remove()`, plus 25/50/75 percent samples inside each animation. Registered `VGroup` containers retain one logical artifact ID for lifecycle validation while their visible children receive deterministic leaf IDs for layout checks. The verifier detects:
+During preview rendering, `TrackedScene` records stable state after `play()`, `wait()`, `add()`, and `remove()`, plus 25/50/75 percent samples inside each animation. Registered groups retain useful generated names while visible children receive deterministic leaf IDs. The creative-mode verifier detects:
 
-- early entry and late exit
-- missing and unplanned objects
 - off-screen objects and clipped text
-- preferred-region and hard-region overflow
 - text-text and text-geometry overlap
 - unreadably small text
 - excessive active visual density
@@ -63,9 +63,9 @@ During preview rendering, `TrackedScene` records stable state after `play()`, `w
 - raw scene coordinates when axes exist
 - narration/video duration mismatch
 
-Overlap detection first measures the intersection as a fraction of the smaller leaf object's bounds. Text-related candidates are then rendered separately into small alpha masks, and occupied-pixel intersection confirms whether visible marks actually collide. Text-text collisions become warnings or errors according to severity; geometry-geometry intersections remain allowed, and intentional contract overlaps are excluded. Tiny-text warnings use rendered relative height rather than nominal Manim `font_size`. The HTML report shows the timestamp, logical artifacts, exact leaf IDs, measured ratios, and evidence frame for every finding.
+Overlap detection first measures the intersection as a fraction of the smaller leaf object's bounds. Text-related candidates are then rendered separately into small alpha masks, and occupied-pixel intersection confirms whether visible marks actually collide. Text-text collisions become warnings or errors according to severity, while geometry-geometry intersections remain allowed. Tiny-text warnings use rendered relative height rather than nominal Manim `font_size`. The HTML report shows the timestamp, generated object names, exact leaf IDs, measured ratios, and evidence frame for every finding.
 
-Region validation has two levels. Crossing the padded preferred box creates a warning; crossing the slightly buffered hard box creates an error eligible for targeted vision repair. Because verification uses traced leaf bounds, putting several elements in a `VGroup` does not conceal a bad internal layout.
+Because verification uses traced leaf bounds, putting several elements in a `VGroup` does not conceal a bad internal layout. Legacy strict contract/lifecycle checks remain available as unit-tested internals, but they are not imposed on creative generated scenes.
 
 Frames are extracted at narration boundaries, issue timestamps, 25/50/75 percent, and the final frame. A repair is accepted only when it renders, changes the checkpoint visuals, lowers the deterministic issue score, and introduces no new safety error. The original always remains available.
 
@@ -85,7 +85,7 @@ pip install -e ".[dev]"
 Copy `keys.example.env` to `keys.env` or `.env`:
 
 ```text
-OPENAI_API_KEY=...     # artifact planning and TTS
+OPENAI_API_KEY=...     # TTS
 GEMINI_API_KEY=...     # lesson, narration, OCR, Manim code, and vision repair
 ```
 
@@ -109,6 +109,9 @@ pdf2manim convert document.pdf --dry-run
 # Disable paid visual repair
 pdf2manim convert document.pdf --repair off
 
+# Override the default three improving repair attempts per scene
+pdf2manim convert document.pdf --repair eligible --max-repairs-per-scene 2
+
 # Audit verifier findings without letting them reject a renderable scene
 pdf2manim convert document.pdf --verifier-mode audit --repair off
 
@@ -125,7 +128,7 @@ pdf2manim convert document.pdf --strict-keys
 pdf2manim convert document.pdf --api-workers 4 --code-workers 3 --preview-workers 2 --render-workers 1
 ```
 
-The default worker limits are four global API calls, two visual-contract batches, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. Scene jobs advance as soon as their own audio and contract are ready.
+The default worker limits are four global API calls, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. The creative scaffold is local, so scene code generation starts as soon as its measured audio is ready.
 
 ## Resume and Reports
 
@@ -148,7 +151,7 @@ Each ignored `output/{document}/{run_id}/` directory contains:
 - `costs.json`: reservations and actual usage by call, stage, provider, and model
 - `report.html`: scene outcomes, failures, findings, timing, cost, and artifact links
 - `prompts/`: redacted model-visible requests and responses
-- `scenes/{scene_id}/`: narration, audio, contract, original/repaired/final code, traces, screenshots, diagnostics, render logs, and videos
+- `scenes/{scene_id}/`: narration, audio, local scaffold, `model_raw.py`, instrumented original/repaired/final code, traces, screenshots, diagnostics, render logs, and videos
 
 Credentials, authorization headers, environment secrets, generated media, databases, prompts, and run artifacts are gitignored and redacted before persistence.
 
@@ -156,7 +159,7 @@ Credentials, authorization headers, environment secrets, generated media, databa
 
 The default hard budget is `$1.00`. Every paid call atomically reserves its worst-case configured token cost before execution. Actual usage replaces the reservation afterward. An ambiguous provider timeout remains conservatively charged and is not retried blindly.
 
-Schema failures receive at most one semantic retry. Confirmed rate-limit or connection failures receive at most two bounded retries; ambiguous timeouts are never retried automatically. Vision repair is limited to one attempt per scene and three per run. Cache keys include provider, model, prompt version, schema, settings, and inputs, so resume does not repeat completed paid calls.
+Schema failures receive at most one semantic retry. Confirmed rate-limit or connection failures receive at most two bounded retries; ambiguous timeouts are never retried automatically. Vision repair allows up to three sequential attempts per scene and has no separate run-wide scene cap; the atomic dollar budget remains the global limit. A scene stops early when it passes, returns unchanged code or visuals, fails to improve deterministic diagnostics, or exhausts the budget. Cache keys include provider, model, prompt version, schema, settings, and inputs, so resume does not repeat completed paid calls.
 
 `standard` may substitute a clearly marked source-page video when a scene cannot render. `strict` completes independent diagnostics but withholds `final.mp4` if required content is missing. Budget exhaustion produces `PAUSED_BUDGET` and is resumable.
 
