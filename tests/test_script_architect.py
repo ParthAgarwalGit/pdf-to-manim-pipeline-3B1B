@@ -958,6 +958,55 @@ class TestNonTextVisualInvariant:
         assert len(calls) == 2
         assert any("Text-only visual intent" in r.getMessage() for r in caplog.records)
 
+    def test_invalid_text_only_retry_keeps_validated_first_plan(self, monkeypatch):
+        """A retry that fails purpose validation must not discard the first
+        plan (which passed) in favour of the generic narration fallback."""
+        from src.schemas.storyboard import MathematicalObject
+        text_only = self._intent([self._text_obj()])
+        invalid_retry = self._intent([MathematicalObject(
+            object_id="no_purpose", object_type="geometric_shape",
+            content="circle", primitive="Circle", args={"radius": 1.0},
+        )])
+        agent, calls = self._agent_with_scripted_intents(
+            monkeypatch, [text_only, invalid_retry],
+        )
+        storyboard = agent.execute(self._minimal_execute_input())
+        assert len(calls) == 2
+        assert storyboard.scenes[0].visual_intent is text_only
+
+    def test_overloaded_scene_split_respects_scene_ceiling(self, monkeypatch):
+        """Budget-error splitting must not push the scene count past
+        _effective_max_scenes; at the ceiling it falls back instead."""
+        from src.schemas.storyboard import MathematicalObject, TimeInterval
+        from src.schemas.video_script import Beat, VideoScript
+
+        agent, calls = self._agent_with_scripted_intents(monkeypatch, [])
+        script = VideoScript(beats=[
+            Beat(
+                beat_id=f"beat_00{i}", narration=" ".join(["word"] * 20),
+                visual_hint="h", introduces_concepts=[f"c{i}"],
+                source_segment_id="seg_001",
+            )
+            for i in (1, 2)
+        ])
+        monkeypatch.setattr(agent, "_generate_video_script", lambda *a, **kw: script)
+        monkeypatch.setattr(agent, "_effective_max_scenes", lambda config: 1)
+        overloaded = self._intent([
+            MathematicalObject(
+                object_id=f"o{i}", purpose=f"Step {i}", supports_beat_ids=["beat_001"],
+                object_type="geometric_shape", content="", primitive="Circle",
+                args={"radius": 0.1}, interval=TimeInterval(t_in=0, t_out=5),
+            )
+            for i in range(8)
+        ])
+        monkeypatch.setattr(
+            agent, "_generate_visual_intent_for_chunk",
+            lambda *a, **kw: (calls.append(1), overloaded)[1],
+        )
+        storyboard = agent.execute(self._minimal_execute_input())
+        assert len(storyboard.scenes) == 1
+        assert len(calls) == ScriptArchitectAgent.MAX_PURPOSE_RETRIES + 1
+
     def test_no_retry_on_keyless_fallback_path(self, monkeypatch):
         """The deterministic fallback would reproduce itself — never retried."""
         text_only = self._intent([self._text_obj()])

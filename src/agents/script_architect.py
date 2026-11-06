@@ -511,9 +511,13 @@ class ScriptArchitectAgent(Agent):
                         if not constraint_errors:
                             break
                     if constraint_errors:
+                        # Splitting adds a scene, so it must respect the
+                        # same ceiling the chunker enforces (target_minutes /
+                        # MAX_SCENES); past it, fall back instead.
                         if (
                             self._has_object_budget_error(constraint_errors)
                             and len(scene.source_beats) > 1
+                            and len(scenes) < self._effective_max_scenes(config)
                         ):
                             replacements = self._split_scene_at_beat_boundary(scene)
                             scenes[scene_index:scene_index + 1] = replacements
@@ -533,7 +537,8 @@ class ScriptArchitectAgent(Agent):
                         and self.client is not None
                         and os.getenv("OPENAI_API_KEY")
                     ):
-                        scene.visual_intent = self._generate_visual_intent_for_chunk(
+                        validated_intent = scene.visual_intent
+                        retry_intent = self._generate_visual_intent_for_chunk(
                             scene=scene,
                             video_script=video_script,
                             config=config,
@@ -542,10 +547,20 @@ class ScriptArchitectAgent(Agent):
                         )
                         retry_errors = self._visual_intent_constraint_errors(
                             scene,
-                            scene.visual_intent,
+                            retry_intent,
                         )
                         if retry_errors:
-                            raise ValueError("; ".join(retry_errors))
+                            # Keep the plan that already passed validation; a
+                            # failed retry must not discard it for the generic
+                            # narration fallback.
+                            logger.warning(
+                                "Text-only retry for %s failed validation (%s); "
+                                "keeping the validated first plan.",
+                                scene.scene_id, "; ".join(retry_errors),
+                            )
+                            scene.visual_intent = validated_intent
+                        else:
+                            scene.visual_intent = retry_intent
                         if self._is_text_only_intent(scene.visual_intent):
                             text_only_scenes.append(scene.scene_id)
                 except Exception as exc:

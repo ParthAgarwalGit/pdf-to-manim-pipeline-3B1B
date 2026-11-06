@@ -286,6 +286,11 @@ class Orchestrator:
                 }
             )
             
+            # Fail fast: verifier repair runs after all codegen spend, so a
+            # missing key must abort before any paid stage, not after.
+            if str(self.config.verifier_mode or "off").lower() == "repair":
+                self._verifier_repair_key()
+
             # Step 1: Ingestion
             file_ref = self._run_ingestion(pdf_file_path, event_source, temp_logger)
             
@@ -1304,10 +1309,24 @@ class Orchestrator:
                         f"No measured narration duration for {scene.scene_id}.",
                     )
                 continue
-            old_duration = max(float(scene.duration_estimate), 0.001)
+            intent = scene.visual_intent
+            # Scale from the plan's own timeline, not duration_estimate: the
+            # estimate is floored at MIN_SCENE_DURATION (8s) while the planner
+            # times visuals to ~word_count/3s, so a short scene would otherwise
+            # be compressed to a fraction of its measured audio.
+            plan_extent = max(
+                [obj.interval.t_out for obj in intent.mathematical_objects if obj.interval]
+                + [beat.end_time for beat in intent.beats]
+                + [t.timing for t in intent.transformations]
+                + [e.timestamp for e in intent.emphasis_points],
+                default=0.0,
+            )
+            old_duration = (
+                plan_extent if plan_extent > 0
+                else max(float(scene.duration_estimate), 0.001)
+            )
             new_duration = round(float(measured), 3)
             scale = new_duration / old_duration
-            intent = scene.visual_intent
 
             for obj in intent.mathematical_objects:
                 if obj.interval is not None:
@@ -1349,6 +1368,21 @@ class Orchestrator:
             "scenes": timing_report,
         }
 
+    def _verifier_repair_key(self) -> str:
+        """GEMINI_API_KEY for verifier repair: repo .env, then the process env
+        (where src/cli.py loads keys.env). Raises PipelineAbortError if absent."""
+        from src.manim_verifier.vision_reviewer import GeminiVisionReviewer
+
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+        try:
+            return GeminiVisionReviewer.resolve_api_key(env_path, allow_environ=True)
+        except ValueError as exc:
+            raise PipelineAbortError(
+                "ManimVerifier",
+                "VERIFIER_REVIEWER_UNAVAILABLE",
+                str(exc),
+            ) from exc
+
     def _run_raw_manim_verifier(self, scene_output, storyboard):
         """Preview generated raw Manim and optionally replace it with a repair."""
         mode = str(self.config.verifier_mode or "off").lower()
@@ -1363,9 +1397,10 @@ class Orchestrator:
 
         reviewer = None
         if mode == "repair":
-            env_path = Path(__file__).resolve().parents[2] / ".env"
             try:
-                reviewer = GeminiVisionReviewer.from_env(env_path)
+                reviewer = GeminiVisionReviewer(api_key=self._verifier_repair_key())
+            except PipelineAbortError:
+                raise
             except Exception as exc:
                 raise PipelineAbortError(
                     "ManimVerifier",

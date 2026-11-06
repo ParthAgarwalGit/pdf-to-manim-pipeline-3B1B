@@ -38,23 +38,52 @@ class MockVisionReviewer(VisionReviewer):
 class GeminiVisionReviewer(VisionReviewer):
     """Gemini multimodal repair provider. Construction performs no API call."""
 
-    def __init__(self, api_key: str, model: str = "gemini-3.7-flash"):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-3.7-flash",
+        timeout_seconds: int = 180,
+    ):
         if not api_key:
             raise ValueError("GEMINI_API_KEY is required for Gemini visual repair.")
         from google import genai
+        from google.genai import types
 
-        self.client = genai.Client(api_key=api_key)
+        # Without a timeout one stalled request hangs the whole pipeline run.
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=timeout_seconds * 1000),
+        )
         self.model = model
 
-    @classmethod
-    def from_env(cls, env_path: Path = Path(".env")) -> "GeminiVisionReviewer":
+    @staticmethod
+    def resolve_api_key(env_path: Path = Path(".env"), allow_environ: bool = False) -> str:
+        """Find GEMINI_API_KEY in ``env_path``, then (if allowed) os.environ.
+
+        The standalone CLI reads only the file it is given. The pipeline sets
+        ``allow_environ`` because src/cli.py loads keys.env into the process
+        environment, which is also where code generation reads the key.
+        """
+        import os
+
         from dotenv import dotenv_values
 
-        values = dotenv_values(env_path)
+        values = dotenv_values(env_path) if Path(env_path).is_file() else {}
         key = values.get("GEMINI_API_KEY")
+        if not key and allow_environ:
+            key = os.environ.get("GEMINI_API_KEY")
         if not key:
-            raise ValueError(f"GEMINI_API_KEY was not found in {env_path}.")
-        return cls(api_key=str(key))
+            where = f"{env_path} or the environment" if allow_environ else str(env_path)
+            raise ValueError(f"GEMINI_API_KEY was not found in {where}.")
+        return str(key)
+
+    @classmethod
+    def from_env(
+        cls,
+        env_path: Path = Path(".env"),
+        allow_environ: bool = False,
+    ) -> "GeminiVisionReviewer":
+        return cls(api_key=cls.resolve_api_key(env_path, allow_environ=allow_environ))
 
     async def repair(
         self,

@@ -110,3 +110,54 @@ class Demo(Scene):
     assert "OFFSCREEN_LITERAL_COORDINATE" in codes
     assert "RAW_COORDINATE_WITH_AXES" in codes
     assert "[9, 1, 0]" in source
+
+
+def _verify_body(body):
+    source = (
+        "from manim import *\nimport numpy as np\n\n"
+        "class Demo(Scene):\n    def construct(self):\n" + body
+    )
+    return StaticManimVerifier().verify(source)
+
+
+def test_aliased_exec_is_rejected():
+    report = _verify_body("        e = exec\n        e('imp' + 'ort os')\n")
+    assert not report.safe
+    assert any(issue.code == "DANGEROUS_NAME" for issue in report.issues)
+
+
+def test_numpy_file_read_is_rejected():
+    report = _verify_body("        x = np.loadtxt('keys.env', dtype=str)\n")
+    assert not report.safe
+
+
+def test_code_mobject_file_read_is_rejected():
+    report = _verify_body("        c = Code('keys.env')\n")
+    assert not report.safe
+    inline = _verify_body("        c = Code(code_string='x = 1')\n        self.add(c)\n")
+    assert inline.safe
+
+
+def test_bare_connect_helper_is_not_a_dangerous_attribute():
+    report = _verify_body(
+        "        a = Dot()\n        b = Dot()\n        line = connect(a, b)\n"
+        "        self.add(a, b, line)\n"
+    )
+    assert not any(issue.code == "DANGEROUS_ATTRIBUTE" for issue in report.issues)
+    sock = _verify_body("        s = Dot()\n        s.connect(('example.com', 80))\n")
+    assert any(issue.code == "DANGEROUS_ATTRIBUTE" for issue in sock.issues)
+
+
+def test_purpose_comment_covers_nested_multiline_constructor():
+    source = (
+        "from manim import *\n\n"
+        "class Demo(Scene):\n    def construct(self):\n"
+        "        # Purpose [beat_001]: label the two forces together\n"
+        "        labels = VGroup(\n"
+        "            Text('push'),\n"
+        "            Text('pull'),\n"
+        "        )\n"
+        "        self.add(labels)\n"
+    )
+    report = StaticManimVerifier(require_purpose_comments=True).verify(source)
+    assert not any(issue.code == "PURPOSE_COMMENT_MISSING" for issue in report.issues)

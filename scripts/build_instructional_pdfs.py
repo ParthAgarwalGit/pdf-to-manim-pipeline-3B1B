@@ -1,3 +1,10 @@
+"""Build two 7-page instructional test PDFs (DFS, linear regression).
+
+Usage: python scripts/build_instructional_pdfs.py
+Writes PDFs and intermediate cover images to output/pdf/ (git-ignored).
+Requires reportlab and Pillow; fonts are loaded from C:/Windows/Fonts.
+"""
+
 from __future__ import annotations
 
 import math
@@ -11,7 +18,7 @@ from reportlab.pdfgen import canvas
 from PIL import Image, ImageDraw, ImageFont
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "output" / "pdf"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -43,8 +50,8 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 def make_cover_images() -> tuple[Path, Path]:
     """Create high-resolution source diagrams for the two cover pages."""
-    dfs_path = ROOT / "tmp" / "pdfs" / "dfs_cover.jpg"
-    reg_path = ROOT / "tmp" / "pdfs" / "regression_cover.jpg"
+    dfs_path = OUT_DIR / "dfs_cover.jpg"
+    reg_path = OUT_DIR / "regression_cover.jpg"
 
     bg = (247, 249, 252)
     ink = (23, 32, 51)

@@ -104,12 +104,33 @@ ALLOWED_IMPORT_ROOTS = {
 
 FORBIDDEN_CALL_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "input", "breakpoint",
+    # Reflection: getattr(obj, "__glob" + "als__") defeats attribute checks.
+    "getattr", "setattr", "delattr", "globals", "locals", "vars",
 }
 
 FORBIDDEN_ATTRIBUTES = {
     "__globals__", "__builtins__", "__subclasses__", "__mro__",
     "__code__", "__reduce__", "__loader__",
+    # numpy file I/O: np.loadtxt("keys.env", dtype=str) reads secrets.
+    "loadtxt", "genfromtxt", "fromfile", "fromregex", "load", "save",
+    "savez", "savez_compressed", "savetxt", "tofile", "memmap",
+    "open_memmap", "DataSource",
 }
+
+# Manim's Code mobject reads and renders a file when given a path
+# (positional arg or code_file/file_name) — only inline code_string is allowed.
+CODE_FILE_KEYWORDS = {"code_file", "file_name"}
+
+
+def is_code_file_read(node: ast.Call) -> bool:
+    """True for Code(...) calls that would read a file from disk."""
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else (
+        func.attr if isinstance(func, ast.Attribute) else ""
+    )
+    if name != "Code":
+        return False
+    return bool(node.args) or any(kw.arg in CODE_FILE_KEYWORDS for kw in node.keywords)
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +631,12 @@ class ManimCodeValidatorAgent(Agent):
             return False
 
         ok = True
+        # Names used directly as call targets are reported by the Call branch;
+        # any OTHER load of a forbidden builtin is an alias (e = exec; e(...)).
+        call_func_ids = {
+            id(n.func) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -645,6 +672,12 @@ class ManimCodeValidatorAgent(Agent):
                         "is not allowed in scene code."
                     )
                     ok = False
+                elif is_code_file_read(node):
+                    errors.append(
+                        f"Security: Code(...) at line {node.lineno} would read a file; "
+                        "pass the source inline as code_string=... instead."
+                    )
+                    ok = False
             elif isinstance(node, ast.Attribute):
                 if node.attr in FORBIDDEN_ATTRIBUTES:
                     errors.append(
@@ -656,6 +689,17 @@ class ManimCodeValidatorAgent(Agent):
                 errors.append(
                     f"Security: access to '__builtins__' at line {node.lineno} "
                     "is not allowed in scene code."
+                )
+                ok = False
+            elif (
+                isinstance(node, ast.Name)
+                and node.id in FORBIDDEN_CALL_NAMES
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in call_func_ids
+            ):
+                errors.append(
+                    f"Security: reference to '{node.id}' at line {node.lineno} "
+                    "is not allowed in scene code (aliasing a forbidden builtin)."
                 )
                 ok = False
 
