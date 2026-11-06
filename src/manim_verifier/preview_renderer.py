@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Optional
 
 from src.manim_verifier.models import VerificationIssue, VerificationReport
 from src.manim_verifier.static_verifier import StaticManimVerifier
 from src.utils.ffmpeg_finder import get_ffprobe
+from src.utils.render_sandbox import RenderSandboxConfig, describe_sandbox_exit, run_manim
 
 
 class RawManimPreviewRenderer:
@@ -21,8 +21,13 @@ class RawManimPreviewRenderer:
         "high": "-qh",
     }
 
-    def __init__(self, verifier: Optional[StaticManimVerifier] = None):
+    def __init__(
+        self,
+        verifier: Optional[StaticManimVerifier] = None,
+        sandbox: Optional[RenderSandboxConfig] = None,
+    ):
         self.verifier = verifier or StaticManimVerifier()
+        self.sandbox = sandbox or RenderSandboxConfig()
 
     def render(
         self,
@@ -49,25 +54,18 @@ class RawManimPreviewRenderer:
         scene_path.write_text(source, encoding="utf-8")
         media_dir = attempt_dir / "media"
         quality_flag = self.QUALITY_FLAGS.get(quality, "-ql")
-        command = [
-            sys.executable,
-            "-m",
-            "manim",
-            quality_flag,
-            "--media_dir",
-            str(media_dir),
-            str(scene_path),
-            report.scene_class,
-        ]
 
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(attempt_dir),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                env=self._sanitized_environment(os.environ),
+            # attempt_dir is the scratch dir: cwd, and the only mount in docker mode.
+            completed = run_manim(
+                scene_path=scene_path,
+                scene_class=report.scene_class,
+                flags=[quality_flag],
+                media_dir=media_dir,
+                scratch_dir=attempt_dir,
+                timeout_seconds=timeout_seconds,
+                sandbox=self.sandbox,
+                native_command=(sys.executable, "-m", "manim"),
             )
             self._write_logs(stdout_path, stderr_path, completed.stdout, completed.stderr)
         except subprocess.TimeoutExpired as exc:
@@ -93,7 +91,10 @@ class RawManimPreviewRenderer:
 
         if completed.returncode != 0:
             detail = self._tail(completed.stderr or completed.stdout)
-            report.render_error = f"Manim exited with code {completed.returncode}: {detail}"
+            report.render_error = (
+                f"Manim exited with code {completed.returncode}"
+                f"{describe_sandbox_exit(self.sandbox, completed.returncode)}: {detail}"
+            )
             report.issues.append(VerificationIssue(
                 code="MANIM_RENDER_FAILED",
                 severity="error",
@@ -117,16 +118,6 @@ class RawManimPreviewRenderer:
         report.video_path = str(final_video.resolve())
         report.duration_seconds = self._probe_duration(final_video)
         return report
-
-    @staticmethod
-    def _sanitized_environment(source: Mapping[str, str]) -> dict[str, str]:
-        """Remove credentials before the generated subprocess starts."""
-        blocked_fragments = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
-        return {
-            key: value
-            for key, value in source.items()
-            if not any(fragment in key.upper() for fragment in blocked_fragments)
-        }
 
     @staticmethod
     def _find_video(media_dir: Path, scene_class: str) -> Optional[Path]:

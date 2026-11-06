@@ -45,6 +45,7 @@ from src.agents.json_sanitizer import JSONSanitizerAgent, JSONSanitizerInput, Sa
 from src.agents.scene_controller import SceneControllerAgent, SceneControllerInput, SceneControllerOutput
 from src.agents.manim_code_validator import ManimCodeValidatorAgent, ManimValidatorFailure, ManimValidatorInput, ManimValidatorOutput
 from src.agents.video_renderer import VideoRendererAgent, VideoRendererInput, VideoRendererOutput, VideoRendererFailure
+from src.utils.render_sandbox import RenderSandboxConfig
 from src.agents.tts_agent import TTSAgent, TTSInput, TTSOutput, TTSError
 from src.agents.audio_video_composer import (
     AudioVideoComposerAgent, AudioVideoComposerInput, AudioVideoComposerOutput,
@@ -109,6 +110,12 @@ class PipelineConfig:
     # LLM call, so a pathological run must not multiply the bill unbounded.
     # 0 disables salvage entirely.
     max_salvage_scenes: int = 10
+    # Isolation for executing generated Manim code (src/utils/render_sandbox.py).
+    # "native": secrets scrubbed from the env, cwd in a per-scene scratch dir.
+    # "docker": opt-in no-network, read-only, resource-limited container with
+    # one writable mount; needs render_sandbox_image built locally.
+    render_sandbox: str = "native"
+    render_sandbox_image: str = "pdf2manim:latest"
     
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -202,8 +209,13 @@ class Orchestrator:
         self.storyboard_grader_agent = StoryboardGraderAgent(strict=strict)
         self.json_sanitizer_agent = JSONSanitizerAgent()
         self.scene_controller_agent = SceneControllerAgent()
-        self.manim_code_validator_agent = ManimCodeValidatorAgent()
-        self.video_renderer_agent = VideoRendererAgent()
+        # Every execution of generated Manim code goes through this sandbox.
+        self.render_sandbox = RenderSandboxConfig(
+            mode=self.config.render_sandbox,
+            image=self.config.render_sandbox_image,
+        )
+        self.manim_code_validator_agent = ManimCodeValidatorAgent(sandbox=self.render_sandbox)
+        self.video_renderer_agent = VideoRendererAgent(sandbox=self.render_sandbox)
         self.tts_agent = TTSAgent(strict=strict)
         self.audio_video_composer_agent = AudioVideoComposerAgent()
         self.video_quality_reviewer_agent = VideoQualityReviewerAgent()
@@ -1419,7 +1431,9 @@ class Orchestrator:
             },
             require_purpose_comments=True,
         )
-        renderer = RawManimPreviewRenderer(verifier=static_verifier)
+        renderer = RawManimPreviewRenderer(
+            verifier=static_verifier, sandbox=self.render_sandbox
+        )
         verifier = RawManimVerifierPipeline(
             reviewer=reviewer,
             renderer=renderer,

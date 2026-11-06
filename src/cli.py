@@ -204,6 +204,21 @@ def pdf2manim():
     envvar='VERIFIER_MAX_REPAIRS',
     help='Maximum visual repair attempts per scene (default: 1)'
 )
+@click.option(
+    '--render-sandbox',
+    type=click.Choice(['native', 'docker'], case_sensitive=False),
+    default='native',
+    envvar='RENDER_SANDBOX',
+    help='How generated Manim code runs: native (secrets scrubbed from the env, '
+         'scratch cwd) or docker (no network, non-root, read-only, resource-limited '
+         'container). Default: native'
+)
+@click.option(
+    '--sandbox-image',
+    default='pdf2manim:latest',
+    envvar='RENDER_SANDBOX_IMAGE',
+    help='Local image for --render-sandbox docker; never pulled (default: pdf2manim:latest)'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -221,6 +236,8 @@ def convert(
     tts_first: bool,
     verifier_mode: str,
     verifier_max_repairs: int,
+    render_sandbox: str,
+    sandbox_image: str,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -277,6 +294,7 @@ def convert(
         click.echo(f"  Strict Mode:  {strict}")
         click.echo(f"  TTS First:    {tts_first}")
         click.echo(f"  Verifier:     {verifier_mode}")
+        click.echo(f"  Sandbox:      {render_sandbox.lower()}")
         click.echo()
 
         # Create pipeline configuration
@@ -297,6 +315,8 @@ def convert(
             tts_first=tts_first,
             verifier_mode=verifier_mode.lower(),
             verifier_max_repairs=verifier_max_repairs,
+            render_sandbox=render_sandbox.lower(),
+            render_sandbox_image=sandbox_image,
         )
 
         # Initialize cost tracker
