@@ -95,6 +95,7 @@ class SceneMedia:
     narration: str = ""
     # (beat_id, start, end, text) from the timing track, in narration order.
     beats: List[tuple] = field(default_factory=list)
+    kind: str = "manim"  # manim | presenter
 
 
 @dataclass
@@ -105,6 +106,7 @@ class GateResult:
     video_output: Any = None
     composition_output: Any = None
     gate: Any = None  # the DeliveryGate that produced it (builds the report)
+    proposals: List[str] = field(default_factory=list)  # unapproved presenter bridges
 
 
 def _frame_review(scene_id: str, video_path: str) -> List[Any]:
@@ -255,9 +257,11 @@ class DeliveryGate:
                 repair="renormalize" if (off_target or too_hot) else None,
             ))
 
-        if media.beats and media.video_path:
+        # A presenter clip is a talking head or title card, not an animation:
+        # motion-per-beat and blank-frame checks do not apply.
+        if media.beats and media.video_path and media.kind != "presenter":
             checks.append(self._check_beat_alignment(media))
-        if media.video_path:
+        if media.video_path and media.kind != "presenter":
             checks.append(self._check_visual_qa(media))
         if self.probes.transcribe is not None and media.narration and media.composed_path:
             checks.append(self._check_fidelity(media))
@@ -494,23 +498,36 @@ class DeliveryGate:
                     exhausted[m.scene_id].add(repair)
 
         final_path = getattr(composition_output, "final_video_path", None)
+        # Every composed clip in playback order, including ones outside the
+        # storyboard (the presenter credits card).
+        by_id = {m.scene_id: m for m in in_video}
+        clips = [
+            by_id.get(r.scene_id) or SceneMedia(r.scene_id, -1, composed_path=r.composed_video_path)
+            for r in getattr(composition_output, "scene_results", []) or []
+            if getattr(r, "success", False) and getattr(r, "composed_video_path", None)
+        ] or in_video
         if composed_changed and final_path:
-            self._concat(in_video, final_path, reencode=False)
+            self._concat(clips, final_path, reencode=False)
         if rerendered:
             self._reconcat_silent(video_output, output_dir)
-        final_checks = self.check_final(final_path, in_video)
+        final_checks = self.check_final(final_path, clips)
         if final_path and self.max_rounds and any(c.passed is False and c.repair == "reconcat" for c in final_checks):
             rounds = max(rounds, 1)
-            if self._concat(in_video, final_path, reencode=True):
-                final_checks = self.check_final(final_path, in_video, reencoded=True)
+            if self._concat(clips, final_path, reencode=True):
+                final_checks = self.check_final(final_path, clips, reencoded=True)
 
         scenes = self._timeline(media, checks, repairs)
+        proposals = [
+            s.scene_id for s in getattr(storyboard, "scenes", []) or []
+            if getattr(s, "is_presenter", False) and not getattr(s, "presenter_approved", False)
+        ]
         return GateResult(
             scenes=scenes,
             final_checks=final_checks,
             repair_rounds=rounds,
             video_output=video_output,
             composition_output=composition_output,
+            proposals=proposals,
         )
 
     def report(
@@ -552,8 +569,14 @@ class DeliveryGate:
             and not blocking
         )
         total = len(result.scenes)
+        proposal_note = (
+            f"{len(result.proposals)} presenter bridge(s) await your approval and are not in this video."
+            if result.proposals else ""
+        )
         if ready:
             summary = f"Ready: {total}/{total} scenes passed sync and quality checks."
+            if proposal_note:
+                summary += "\n" + proposal_note
         else:
             lines = [f"Needs review: {len(passed)}/{total} scenes passed sync and quality checks."]
             for index, scene in enumerate(result.scenes):
@@ -577,6 +600,8 @@ class DeliveryGate:
                     lines.append(f"Your brief: {check.message}")
             for entry in blocking:
                 lines.append(f"Review: {entry['issue']}")
+            if proposal_note:
+                lines.append(proposal_note)
             summary = "\n".join(lines)
         return DeliveryReport(
             status="ready" if ready else "needs_review",
@@ -610,6 +635,8 @@ class DeliveryGate:
         }
         media: List[SceneMedia] = []
         for index, scene in enumerate(getattr(storyboard, "scenes", []) or []):
+            if getattr(scene, "is_presenter", False) and not getattr(scene, "presenter_approved", False):
+                continue  # a proposal, not part of this video
             timings = getattr(scene, "beat_timings", None) or {}
             texts = {b.beat_id: b.narration for b in getattr(scene, "source_beats", None) or []}
             beats = sorted(
@@ -624,6 +651,7 @@ class DeliveryGate:
                 composed_path=composed.get(scene.scene_id),
                 narration=getattr(scene, "narration", "") or "",
                 beats=sorted(beats, key=lambda b: b[1]),
+                kind="presenter" if getattr(scene, "is_presenter", False) else "manim",
             ))
         return media
 

@@ -244,6 +244,43 @@ def pdf2manim():
     default=None,
     help='Concept plan (from `pdf2manim plan`): per-concept depth and analogy choices'
 )
+@click.option(
+    '--bridges',
+    type=click.Choice(['off', 'propose'], case_sensitive=False),
+    default='off',
+    help='Propose presenter bridges between scenes (rendered once approved)'
+)
+@click.option('--approve-bridges', is_flag=True, default=False, help='Approve every proposed bridge now')
+@click.option(
+    '--presenter-layout',
+    type=click.Choice(['full', 'pip'], case_sensitive=False),
+    default='full',
+    help='Presenter full-frame, or picture-in-picture over the previous scene'
+)
+@click.option(
+    '--avatar',
+    type=click.Choice(['none', 'heygen'], case_sensitive=False),
+    default='none',
+    help='Presenter avatar (none = narration over a title card)'
+)
+@click.option(
+    '--tts-provider',
+    type=click.Choice(['openai', 'elevenlabs'], case_sensitive=False),
+    default='openai',
+    help='Narration voice provider (elevenlabs = the professor\'s consented voice clone)'
+)
+@click.option(
+    '--profile', 'profile_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Professor profile with the signed consent record (required for avatar/voice clones)'
+)
+@click.option(
+    '--max-presenter-seconds',
+    type=click.FloatRange(min=0),
+    default=180.0,
+    help='Cap on presenter video seconds per run (default: 180)'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -264,6 +301,13 @@ def convert(
     brief_path: Optional[str] = None,
     assume_yes: bool = False,
     plan_path: Optional[str] = None,
+    bridges: str = 'off',
+    approve_bridges: bool = False,
+    presenter_layout: str = 'full',
+    avatar: str = 'none',
+    tts_provider: str = 'openai',
+    profile_path: Optional[str] = None,
+    max_presenter_seconds: float = 180.0,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -340,6 +384,13 @@ def convert(
             tts_first=tts_first,
             verifier_mode=verifier_mode.lower(),
             verifier_max_repairs=verifier_max_repairs,
+            presenter_bridges=bridges.lower(),
+            approve_bridges=approve_bridges,
+            presenter_layout=presenter_layout.lower(),
+            avatar_provider=avatar.lower(),
+            tts_provider=tts_provider.lower(),
+            professor_profile=profile_path,
+            max_presenter_seconds=max_presenter_seconds,
         )
 
         # Initialize cost tracker
@@ -714,6 +765,13 @@ def cost(input_pdf: str) -> None:
     help='With --density: keep or cut analogy beats (default: on)'
 )
 @click.option('--yes', 'assume_yes', is_flag=True, default=False, help='Do not ask to confirm the edits')
+@click.option('--approve-bridges', is_flag=True, default=False, help='Approve every proposed presenter bridge')
+@click.option(
+    '--profile', 'profile_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Professor profile with consent (needed when the run used an avatar or voice clone)'
+)
 def revise(
     run_dir: str,
     script_path: Optional[str],
@@ -729,6 +787,8 @@ def revise(
     density: Optional[str] = None,
     analogies: str = 'on',
     assume_yes: bool = False,
+    approve_bridges: bool = False,
+    profile_path: Optional[str] = None,
 ) -> None:
     """
     Rebuild a finished run from an edited lesson script, edit ops or feedback.
@@ -755,15 +815,15 @@ def revise(
     )
 
     setup_logging("medium")
-    if sum(bool(x) for x in (script_path, ops_path, feedback, density)) > 1:
-        raise click.ClickException("Use only one of --script, --ops, --say or --density.")
+    if sum(bool(x) for x in (script_path, ops_path, feedback, density, approve_bridges)) > 1:
+        raise click.ClickException("Use only one of --script, --ops, --say, --density or --approve-bridges.")
     visual_fixes: dict = {}
     ops_applied: list = []
     try:
         base = load_base_run(Path(run_dir))
-        if ops_path or feedback or density:
+        if ops_path or feedback or density or approve_bridges:
             script, visual_fixes, ops_applied = _plan_edits(
-                base, ops_path, feedback, density, analogies, voice,
+                base, ops_path, feedback, density, analogies, voice, approve_bridges,
             )
             script_file = Path(ops_path) if ops_path else "feedback"
             if not dry_run and not assume_yes and not click.confirm("Render these changes?", default=True):
@@ -791,6 +851,10 @@ def revise(
         render_quality=(quality or getattr(run_config, "render_quality", None) or "medium").lower(),
         tts_first=bool(getattr(run_config, "tts_first", False)),
         verifier_mode=verifier_mode.lower(),
+        tts_provider=getattr(run_config, "tts_provider", "openai") or "openai",
+        avatar_provider=getattr(run_config, "avatar_provider", "none") or "none",
+        presenter_layout=getattr(run_config, "presenter_layout", "full") or "full",
+        professor_profile=profile_path,
     )
 
     cost_tracker = CostTracker.get_instance()
@@ -905,8 +969,8 @@ def plan(input_pdf: str, out: str, brief_path: Optional[str], verbosity: str) ->
     click.echo(f"\nEdit {out}, then: pdf2manim convert {input_pdf} --plan {out}")
 
 
-def _plan_edits(base, ops_path, feedback, density, analogies, voice):
-    """Compile --ops / --say / --density into an edited script; print the plan.
+def _plan_edits(base, ops_path, feedback, density, analogies, voice, approve_bridges=False):
+    """Compile --ops / --say / --density / --approve-bridges into an edited script; print the plan.
 
     Returns (script, visual_fixes, applied_ops). Raises ClickException when
     nothing could be applied.
@@ -921,6 +985,13 @@ def _plan_edits(base, ops_path, feedback, density, analogies, voice):
         ops = parse_ops(_load_structured(ops_path))
     elif density:
         ops = [SetDensity(scope="global", level=density.lower(), analogies=analogies.lower())]
+    elif approve_bridges:
+        from src.schemas.edit_ops import PresenterOp
+
+        ops = [
+            PresenterOp(action="approve", beat_id=b.beat_id)
+            for b in base.script.beats if b.role == "bridge" and not b.locked
+        ]
     else:
         timeline = build_timeline(base.storyboard, base.delivery_report)
         plan = ProfessorInputInterpreter().interpret_feedback(feedback, base.script, timeline)

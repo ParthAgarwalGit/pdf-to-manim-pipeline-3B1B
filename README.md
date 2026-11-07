@@ -242,6 +242,25 @@ out, enforced, and listed as your omissions. After a video exists,
 depth and analogies without regenerating, and `--density rich` goes deeper on
 every concept.
 
+### Presenter Bridges
+
+```bash
+pdf2manim convert notes.pdf --tts-first --bridges propose            # propose, render nothing yet
+pdf2manim revise output/notes/<run> --approve-bridges                # approve all proposals
+pdf2manim convert notes.pdf --tts-first --bridges propose --approve-bridges \
+  --avatar heygen --tts-provider elevenlabs --profile professor.json --presenter-layout pip
+```
+
+Short on-camera moments (an opening hook, transitions between sections, a
+"why this matters" before a hard step, a recap) are proposed at most every
+90 s and never exceed 20% of the runtime. A bridge is narrated and rendered
+only after you approve its text. Without an avatar, the narration plays over
+a title card. With `--avatar heygen` and/or `--tts-provider elevenlabs`, your
+own likeness or voice is used. That requires a profile with your signed
+consent and the vendor's identity verification. Keys come from
+`HEYGEN_API_KEY` / `ELEVENLABS_API_KEY`. Every synthetic clip is labelled
+"AI-generated presenter" and credited at the end.
+
 ### Feedback in Plain Words
 
 ```bash

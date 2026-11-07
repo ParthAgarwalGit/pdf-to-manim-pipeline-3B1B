@@ -117,6 +117,15 @@ class PipelineConfig:
     max_gate_regenerations: int = 3
     # Whisper transcript vs script (paid); off by default.
     enable_asr_check: bool = False
+    # Presenter bridges (Part E). "propose" inserts bridge beats that render
+    # only once approved (locked); approve_bridges approves all proposals.
+    presenter_bridges: str = "off"
+    presenter_layout: str = "full"          # full | pip
+    avatar_provider: str = "none"           # none | heygen
+    tts_provider: str = "openai"            # openai | elevenlabs (voice clone)
+    professor_profile: Optional[str] = None  # consent record (JSON) for clones
+    max_presenter_seconds: float = 180.0
+    approve_bridges: bool = False
 
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -126,6 +135,7 @@ class PipelineConfig:
             audience=self.audience,
             granularity=self.granularity,
             target_minutes=self.target_minutes,
+            presenter_bridges=self.presenter_bridges,
         )
 
 
@@ -212,7 +222,7 @@ class Orchestrator:
         self.scene_controller_agent = SceneControllerAgent()
         self.manim_code_validator_agent = ManimCodeValidatorAgent()
         self.video_renderer_agent = VideoRendererAgent()
-        self.tts_agent = TTSAgent(strict=strict)
+        self.tts_agent = TTSAgent(strict=strict, provider=self._make_tts_provider())
         self.audio_video_composer_agent = AudioVideoComposerAgent()
         self.video_quality_reviewer_agent = VideoQualityReviewerAgent()
         self.persistence_agent = PersistenceAgent(base_output_dir=self.config.base_output_dir)
@@ -221,6 +231,143 @@ class Orchestrator:
         # Setup logging
         self._setup_logging()
     
+    # ── presenter providers (consent-gated) ─────────────────────────────
+
+    def _profile(self):
+        from src.schemas.professor_profile import ProfessorProfile
+
+        path = self.config.professor_profile
+        return ProfessorProfile.load(path) if path else None
+
+    def _make_tts_provider(self):
+        """None (OpenAI TTS) or the professor's consented voice clone."""
+        if str(self.config.tts_provider).lower() != "elevenlabs":
+            return None
+        import os
+        from src.agents.tts_agent import ElevenLabsTTSProvider
+        from src.schemas.professor_profile import require_consent
+
+        identity = require_consent(self._profile(), "voice", "elevenlabs")
+        return ElevenLabsTTSProvider(os.getenv("ELEVENLABS_API_KEY", ""), identity.id)
+
+    def _make_avatar_provider(self):
+        from src.agents.presenter_agent import HeyGenAvatarProvider, NoAvatarProvider
+
+        if str(self.config.avatar_provider).lower() != "heygen":
+            return NoAvatarProvider(), ""
+        import os
+        from src.schemas.professor_profile import require_consent
+
+        identity = require_consent(self._profile(), "avatar", "heygen")
+        return HeyGenAvatarProvider(os.getenv("HEYGEN_API_KEY", ""), identity.id), identity.id
+
+    def _presenter_settings(self) -> Dict[str, Any]:
+        from src.agents.presenter_agent import presenter_settings
+
+        avatar_id = ""
+        if str(self.config.avatar_provider).lower() == "heygen":
+            profile = self._profile()
+            avatar_id = getattr(getattr(profile, "avatar", None), "id", "") if profile else ""
+        return presenter_settings(
+            str(self.config.avatar_provider).lower(), avatar_id,
+            self.config.presenter_layout, self.config.tts_voice,
+        )
+
+    def _approve_bridges(self, storyboard) -> None:
+        """--approve-bridges: the professor approves every proposed bridge."""
+        if not self.config.approve_bridges:
+            return
+        for scene in getattr(storyboard, "scenes", []) or []:
+            if getattr(scene, "is_presenter", False):
+                for beat in scene.source_beats:
+                    beat.locked = True
+
+    def _run_presenter_stage(self, storyboard, video_output, tts_output):
+        """Render approved bridges as presenter clips, in scene order.
+
+        Unapproved bridges are proposals and are skipped. Presenter seconds are
+        metered and capped by ``max_presenter_seconds``. Videos with a
+        synthetic presenter or voice end with a credits card. Never fatal.
+        """
+        from src.agents.presenter_agent import PresenterAgent
+        from src.agents.video_renderer import SceneRenderResult
+        from src.utils.cost_tracker import CostTracker
+
+        presenter_scenes = [
+            s for s in getattr(storyboard, "scenes", []) or [] if getattr(s, "is_presenter", False)
+        ]
+        report: Dict[str, Any] = {"rendered": [], "proposals": [], "skipped": []}
+        if video_output is None or not presenter_scenes:
+            return video_output
+        provider, _avatar_id = self._make_avatar_provider()
+        agent = PresenterAgent(provider, self.config.render_quality, self.config.presenter_layout)
+        audio = {
+            r.scene_id: r for r in tts_output or []
+            if isinstance(r, TTSOutput) and r.audio_file_path
+        }
+        results = {r.scene_id: r for r in getattr(video_output, "scene_results", []) or []}
+        used = 0.0
+        order = [s.scene_id for s in storyboard.scenes]
+        media_dir = Path(self._run_output_dir) / "media" / "presenter"
+        for scene in presenter_scenes:
+            if not scene.presenter_approved:
+                report["proposals"].append(scene.scene_id)
+                continue
+            if scene.scene_id in results and results[scene.scene_id].success:
+                continue  # reused from the parent run
+            narration = audio.get(scene.scene_id)
+            if narration is None:
+                report["skipped"].append({"scene_id": scene.scene_id, "reason": "no narration audio"})
+                continue
+            seconds = float(narration.duration_seconds or 0.0)
+            if used + seconds > self.config.max_presenter_seconds:
+                report["skipped"].append({"scene_id": scene.scene_id, "reason": "max_presenter_seconds"})
+                continue
+            index = order.index(scene.scene_id)
+            previous = next(
+                (results[sid].video_path for sid in reversed(order[:index])
+                 if sid in results and results[sid].success and results[sid].video_path),
+                None,
+            )
+            try:
+                path = agent.render(scene.scene_id, scene.narration, narration.audio_file_path,
+                                    seconds, str(media_dir), previous_video=previous)
+            except Exception as exc:
+                logger.warning("Presenter clip for %s failed: %s", scene.scene_id, exc)
+                report["skipped"].append({"scene_id": scene.scene_id, "reason": str(exc)[:200]})
+                continue
+            used += seconds
+            results[scene.scene_id] = SceneRenderResult(scene.scene_id, True, path, None, seconds)
+            report["rendered"].append(scene.scene_id)
+            try:
+                CostTracker.get_instance().track_call(
+                    provider=provider.name, model="presenter-seconds",
+                    input_tokens=int(round(seconds)), output_tokens=0, call_type="presenter",
+                )
+            except Exception as exc:  # pragma: no cover — accounting never breaks a run
+                logger.warning("Presenter seconds not metered: %s", exc)
+
+        ordered = [results[sid] for sid in order if sid in results]
+        synthetic = provider.name != "none" or self.tts_agent.provider is not None
+        if report["rendered"] and synthetic:
+            profile = self._profile()
+            name = getattr(profile, "name", "the professor")
+            lines = []
+            if provider.name != "none":
+                lines.append(f"Presenter: AI-generated avatar of {name}, used with consent.")
+            if self.tts_agent.provider is not None:
+                lines.append(f"Narration: AI voice of {name}, used with consent.")
+            try:
+                credits = agent.credits(lines, str(media_dir))
+                ordered.append(SceneRenderResult("credits", True, credits, None, 4.0))
+            except Exception as exc:
+                logger.warning("Credits card failed: %s", exc)
+        video_output.scene_results = ordered
+        if hasattr(video_output, "total_duration"):
+            video_output.total_duration = sum(r.duration_seconds for r in ordered if r.success)
+        self._quality_reports["presenter"] = {**report, "seconds": round(used, 2)}
+        return video_output
+
     def _setup_logging(self) -> None:
         """Setup structured logging for the pipeline."""
         # Configure root logger
@@ -341,6 +488,7 @@ class Orchestrator:
             # Step 6: JSON Sanitization
             sanitized_storyboard = self._run_json_sanitizer(storyboard, self.structured_logger)
             self._check_length_directive(sanitized_storyboard)
+            self._approve_bridges(sanitized_storyboard)
 
             # ── dry_run gate ─────────────────────────────────────
             if self.config.dry_run:
@@ -457,6 +605,9 @@ class Orchestrator:
                 video_output = self._salvage_failed_renders(
                     video_output, sanitized_storyboard,
                 )
+
+            # Presenter bridges (approved ones) join the rendered scenes.
+            video_output = self._run_presenter_stage(sanitized_storyboard, video_output, tts_output)
 
             # Step 10: Audio-Video Composition (requires both render and TTS)
             composition_output = None
@@ -579,6 +730,11 @@ class Orchestrator:
             self.config.audience = g.audience
         if g.verbosity:
             self.config.verbosity = g.verbosity
+        p = directives.presenter
+        if p.bridges:
+            self.config.presenter_bridges = "propose" if p.bridges == "on" else "off"
+        if p.layout:
+            self.config.presenter_layout = p.layout
         self._quality_reports["brief_interpretation"] = directives.model_dump(mode="json", by_alias=True)
 
     def _begin_concept_plan(self, plan) -> None:
@@ -716,7 +872,9 @@ class Orchestrator:
             REVISION_FILENAME,
         )
         from src.utils.cost_tracker import CostTracker
-        from src.utils.fingerprints import scene_narration_fingerprint, visual_fingerprint
+        from src.utils.fingerprints import scene_narration_fingerprint, scene_visual_fingerprint
+
+        presenter_settings = self._presenter_settings()
 
         start = time.time()
         self._quality_reports = {}
@@ -756,13 +914,14 @@ class Orchestrator:
                     )
                 ):
                     reuse_audio[scene.scene_id] = record
+                presenter = getattr(scene, "is_presenter", False)
                 if (
-                    base.artifact(record.code_path)
+                    (presenter or base.artifact(record.code_path))  # presenter clips have no code
                     and base.artifact(record.video_path)
-                    and record.visual_fp == visual_fingerprint(
-                        scene, self.config.render_quality, self.config.tts_first,
+                    and record.visual_fp == scene_visual_fingerprint(
+                        scene, self.config.render_quality, self.config.tts_first, presenter_settings,
                     )
-                    and (not self.config.tts_first or scene.scene_id in reuse_audio)
+                    and (not (self.config.tts_first or presenter) or scene.scene_id in reuse_audio)
                 ):
                     reuse_video[scene.scene_id] = record
             # Visual feedback: the scene holding a fixed beat gets new code
@@ -799,6 +958,7 @@ class Orchestrator:
             regenerate = [
                 s.scene_id for s in storyboard.scenes
                 if s.scene_id not in reuse_video and s.scene_id not in retime_only
+                and not (s.is_presenter and not s.presenter_approved)  # proposals cost nothing
             ]
             self._change_log = change_log(storyboard, regenerate, list(retime_only), reuse_video)
             narrate = [s for s in storyboard.scenes if s.scene_id not in reuse_audio]
@@ -861,6 +1021,8 @@ class Orchestrator:
                 if self.config.enable_tts and not self.config.tts_first and narrate:
                     subset = storyboard.model_copy(update={"scenes": narrate})
                     tts_output += self._run_tts_generation_logged(subset, manifest, self.structured_logger)
+
+                video_output = self._run_presenter_stage(storyboard, video_output, tts_output)
 
                 composition_output = None
                 if self.config.enable_render and self.config.enable_tts:
@@ -973,6 +1135,8 @@ class Orchestrator:
         failed = list(getattr(getattr(scene_output, "report", None), "failed_scenes", []) or [])
         code_objects = []
         for scene in storyboard.scenes:
+            if scene.is_presenter:
+                continue  # presenter clips have no Manim code
             record = reuse_video.get(scene.scene_id)
             retime = retime_only.get(scene.scene_id)
             if record is not None:
@@ -990,7 +1154,8 @@ class Orchestrator:
             elif scene.scene_id in fresh:
                 code_objects.append(fresh[scene.scene_id])
         report = SceneProcessingReport(
-            total_scenes=len(storyboard.scenes),
+            # Presenter scenes have no Manim code; the presenter stage renders them.
+            total_scenes=sum(1 for s in storyboard.scenes if not s.is_presenter),
             successful_scenes=len(code_objects),
             failed_scenes=failed,
             output_directory=self._run_output_dir,
@@ -1816,6 +1981,8 @@ class Orchestrator:
         timing_report: List[Dict[str, Any]] = []
         for scene in getattr(storyboard, "scenes", []) or []:
             measured = durations.get(scene.scene_id)
+            if getattr(scene, "is_presenter", False) and not scene.presenter_approved:
+                continue  # an unapproved bridge proposal is never narrated
             if measured is None:
                 if self.config.strict:
                     raise PipelineAbortError(
@@ -2024,6 +2191,8 @@ class Orchestrator:
             for scene in storyboard.scenes:
                 scene_id = getattr(scene, 'scene_id', None)
                 narration = getattr(scene, 'narration', None)
+                if getattr(scene, "is_presenter", False) and not scene.presenter_approved:
+                    continue  # bridge proposals cost nothing until approved
                 if scene_id and narration and narration.strip():
                     # The lexicon changes how words are said, never the text.
                     entry = {"scene_id": scene_id, "narration": apply_lexicon(narration, lexicon)}
@@ -2544,6 +2713,9 @@ class Orchestrator:
             render_quality=self.config.render_quality,
             tts_voice=self.config.tts_voice,
             tts_first=self.config.tts_first,
+            tts_provider=self.config.tts_provider,
+            avatar_provider=self.config.avatar_provider,
+            presenter_layout=self.config.presenter_layout,
         )
 
         self._register_runtime_artifact(
@@ -2667,6 +2839,7 @@ class Orchestrator:
                 reused_video=reuse.get("video"),
                 reused_audio=reuse.get("audio"),
                 lexicon=getattr(getattr(self, "_lesson_script", None), "pronunciations", None),
+                presenter_settings=self._presenter_settings(),
             )
 
         self._populate_cost_summary(manifest)
@@ -2712,6 +2885,7 @@ class Orchestrator:
             "timing_track": "timing_track.json",
             "brief_interpretation": "brief_interpretation.json",
             "concept_plan": "concept_plan.json",
+            "presenter": "presenter.json",
             "professor_omissions": "professor_omissions.json",
             "directives": "directive_checks.json",
         }

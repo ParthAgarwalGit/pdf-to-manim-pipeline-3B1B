@@ -69,6 +69,27 @@ def narration_fingerprint(
     return _digest(payload)
 
 
+def scene_visual_fingerprint(
+    scene: Any,
+    render_quality: str,
+    tts_first: bool,
+    presenter_settings: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Visual fingerprint of any scene: a presenter clip depends on its text,
+    approval and presenter settings (avatar, layout, voice); a Manim scene
+    on its plan (``visual_fingerprint``)."""
+    if getattr(scene, "scene_type", "manim") == "presenter":
+        return _digest({
+            "v": FINGERPRINT_VERSION,
+            "presenter": True,
+            "narration": scene.narration,
+            "approved": bool(getattr(scene, "presenter_approved", False)),
+            "settings": presenter_settings or {},
+            "quality": render_quality,
+        })
+    return visual_fingerprint(scene, render_quality, tts_first)
+
+
 def scene_narration_fingerprint(scene: Any, voice: str, lexicon: Optional[Dict[str, str]] = None) -> str:
     """Narration fingerprint of a storyboard scene, with only the pauses and
     lexicon entries that actually affect its audio."""

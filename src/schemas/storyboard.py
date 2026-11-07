@@ -60,6 +60,10 @@ class Configuration(BaseModel):
         default_factory=list,
         description="Binding notation directives for code generation, e.g. 'Write j, not i.'",
     )
+    presenter_bridges: str = Field(
+        default="off",
+        description="'propose' inserts presenter bridge beats (await approval); 'off' none",
+    )
 
     @field_validator('verbosity')
     @classmethod
@@ -560,6 +564,20 @@ class Scene(BaseModel):
         description="Timing track: beat_id -> [start, end] seconds within the "
                     "scene's narration audio (per-beat TTS)."
     )
+    scene_type: str = Field(
+        default="manim",
+        description="'manim' (generated animation) or 'presenter' (a bridge "
+                    "beat spoken by the professor's presenter, no Manim code)."
+    )
+
+    @property
+    def is_presenter(self) -> bool:
+        return self.scene_type == "presenter"
+
+    @property
+    def presenter_approved(self) -> bool:
+        """Bridge text is rendered only once the professor approved (locked) it."""
+        return self.is_presenter and bool(self.source_beats) and all(b.locked for b in self.source_beats)
 
     @field_validator('scene_id')
     @classmethod

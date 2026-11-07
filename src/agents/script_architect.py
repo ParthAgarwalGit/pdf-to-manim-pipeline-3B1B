@@ -580,6 +580,13 @@ class ScriptArchitectAgent(Agent):
                     video_script, directives,
                 )
 
+            # Presenter bridges are proposals: unlocked beats the professor
+            # must approve before anything is rendered or narrated.
+            if getattr(config, "presenter_bridges", "off") == "propose":
+                from src.agents.bridge_planner import BridgePlannerAgent
+
+                video_script = BridgePlannerAgent().propose(video_script)
+
             # The orchestrator persists this as lesson_script.json — the
             # professor-editable source a revision run starts from.
             self.last_video_script = video_script
@@ -636,6 +643,11 @@ class ScriptArchitectAgent(Agent):
         scene_index = 0
         while scene_index < len(scenes):
             scene = scenes[scene_index]
+            if getattr(scene, "scene_type", "manim") == "presenter":
+                # Presenter scenes have no Manim plan; the visual thread
+                # (carried objects) continues across them.
+                scene_index += 1
+                continue
             if scene.scene_id in keep_ids:
                 carried_objects = self._carried_objects_from_intent(scene.visual_intent)
                 scene_index += 1
@@ -1894,6 +1906,13 @@ Return JSON in this exact shape:
             cur: List[Beat] = []
             cur_dur = 0.0
             for beat in script.beats:
+                if getattr(beat, "role", "core") == "bridge":
+                    # A presenter bridge is always its own (non-Manim) scene.
+                    if cur:
+                        packed.append(cur)
+                    packed.append([beat])
+                    cur, cur_dur = [], 0.0
+                    continue
                 bd = beat_duration(beat)
                 beat_segment = getattr(beat, "source_segment_id", "")
                 cur_segment_ids = {
@@ -2007,6 +2026,11 @@ Return JSON in this exact shape:
                 dependencies=[f"scene_{idx:03d}"] if idx > 0 else [],
                 source_beats=chunk_beats,
                 source_segment_ids=source_segment_ids,
+                scene_type=(
+                    "presenter"
+                    if len(chunk_beats) == 1 and getattr(chunk_beats[0], "role", "") == "bridge"
+                    else "manim"
+                ),
             ))
 
         return scenes

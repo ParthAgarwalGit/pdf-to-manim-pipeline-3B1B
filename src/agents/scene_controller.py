@@ -115,10 +115,13 @@ class SceneControllerAgent(Agent):
 
         # Extract scene array
         scenes = storyboard.scenes
-        total_scenes = (
-            len(scenes) if only_scene_ids is None
-            else sum(1 for s in scenes if s.scene_id in only_scene_ids)
-        )
+        def wanted(s) -> bool:
+            # Presenter scenes are rendered by the presenter stage, not Manim.
+            return getattr(s, "scene_type", "manim") != "presenter" and (
+                only_scene_ids is None or s.scene_id in only_scene_ids
+            )
+
+        total_scenes = sum(1 for s in scenes if wanted(s))
 
         # Initialize shared context
         shared_context = self._initialize_context(storyboard)
@@ -129,7 +132,9 @@ class SceneControllerAgent(Agent):
 
         # Iterate over scenes in deterministic order (Requirements 10.2, 10.3)
         for scene_index, scene in enumerate(scenes):
-            if only_scene_ids is not None and scene.scene_id not in only_scene_ids:
+            if getattr(scene, "scene_type", "manim") == "presenter":
+                continue
+            if not wanted(scene):
                 self._update_context(shared_context, scene, self._scene_to_spec(scene))
                 continue
             try:

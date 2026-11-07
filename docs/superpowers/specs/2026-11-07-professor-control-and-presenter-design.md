@@ -331,6 +331,29 @@ P2 is split in two. **P2a** (layers 2 and 3 of Part H) is built: `src/agents/del
   - Raising (`rich`) compiles to one `expand` per in-scope concept introduction, so it needs an LLM.
   - Exposed as `revise --density L --analogies on|off` and in ops files.
 
+### P5 as built (2026-11-07)
+
+- **Bridges** (`src/agents/bridge_planner.py`, `convert --bridges propose`):
+  - Placement: an opening hook, segment transitions, a "why this matters" before derivations, and a recap. The spacing is enforced (at least 90 s of narration between bridges, at most 20 % of runtime).
+  - Text comes from one LLM call, or templates without a key.
+  - Proposals are `role=bridge`, unlocked beats. Each becomes its own `scene_type="presenter"` scene, with no Manim plan or code.
+  - An unapproved proposal is never narrated, rendered or counted against "ready"; the delivery report notes it. Approve with `convert --approve-bridges`, `revise --approve-bridges`, or `presenter` ops (insert/edit lock the bridge).
+- **Providers:**
+  - `TTSAgent(provider=...)`: OpenAI by default, or `ElevenLabsTTSProvider` for the professor's voice clone (`--tts-provider elevenlabs`), one voice for the whole video.
+  - `AvatarProvider` (`src/agents/presenter_agent.py`): `none` (narration over a branded title card) or `HeyGenAvatarProvider` (upload, generate, poll, download). The HeyGen client is exercised only with mocked HTTP here, not against the live service.
+- **Presenter stage** (`Orchestrator._run_presenter_stage`):
+  - Renders approved bridges at Manim's resolution, fps and pix_fmt for the narration's exact length, in scene order.
+  - Layouts: `full`, or `pip` (the avatar, or a text box, over the dimmed last frame of the previous scene).
+  - Cards are drawn with Pillow, so there is no ffmpeg drawtext/font dependency.
+  - Presenter seconds are metered in the CostTracker and capped by `--max-presenter-seconds`.
+  - Revisions reuse presenter clips by fingerprint (text, approval, avatar, layout, voice).
+- **Gate:** presenter clips get the timing, narration and loudness checks but not the motion-per-beat or blank-frame checks. The credits card is counted in the whole-video checks.
+- **Consent** (`src/schemas/professor_profile.py`, `--profile`):
+  - A clone needs a signed consent statement and a vendor-verified identity for that provider, checked before any vendor call (`ConsentError`).
+  - Vendor keys come only from the environment (`ELEVENLABS_API_KEY`, `HEYGEN_API_KEY`).
+  - Clips with a synthetic likeness carry an on-screen "AI-generated presenter" label, and the video ends with a credits card naming the avatar or voice and its consent.
+- **Out of scope, as planned:** the `local` lip-sync provider and a rigged 3D avatar.
+
 ## Testing
 
 - All new behaviour sits behind `PipelineConfig` flags that default to off. A flag-off regression test asserts byte-identical storyboard and manifest output.

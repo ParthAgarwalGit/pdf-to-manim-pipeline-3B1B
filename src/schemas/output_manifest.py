@@ -75,6 +75,9 @@ class RunConfig(BaseModel):
         default=False,
         description="Whether measured narration set scene timing before codegen"
     )
+    tts_provider: str = Field(default="openai", description="openai | elevenlabs (voice clone)")
+    avatar_provider: str = Field(default="none", description="none | heygen")
+    presenter_layout: str = Field(default="full", description="full | pip")
 
 
 class SceneRecord(BaseModel):

@@ -24,6 +24,7 @@ from src.utils.fingerprints import (
     beat_fingerprint,
     beats_fingerprint,
     scene_narration_fingerprint,
+    scene_visual_fingerprint,
     visual_fingerprint,
 )
 
@@ -200,6 +201,7 @@ def build_scene_records(
     reused_video: Optional[Dict[str, str]] = None,
     reused_audio: Optional[Dict[str, str]] = None,
     lexicon: Optional[Dict[str, str]] = None,
+    presenter_settings: Optional[Dict[str, Any]] = None,
 ) -> List[SceneRecord]:
     """One record per scene: its fingerprints and where its artifacts are."""
     output_dir = Path(output_dir)
@@ -228,7 +230,7 @@ def build_scene_records(
             beat_ids=[b.beat_id for b in scene.source_beats],
             beats_fp=beats_fingerprint(scene.source_beats),
             narration_fp=scene_narration_fingerprint(scene, voice, lexicon),
-            visual_fp=visual_fingerprint(scene, render_quality, tts_first),
+            visual_fp=scene_visual_fingerprint(scene, render_quality, tts_first, presenter_settings),
             code_path=code_paths.get(sid),
             video_path=_relative(Path(render.video_path), output_dir) if render else None,
             video_duration_seconds=getattr(render, "duration_seconds", None) if render else None,
