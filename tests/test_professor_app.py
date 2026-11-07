@@ -188,6 +188,7 @@ class TestCliHandOffs:
 
 
 def test_app_builds_with_studio_and_quick_convert_tabs():
+    pytest.importorskip("gradio")  # the `demo` extra; CI installs only `dev`
     import app
 
     demo = app.build_demo()
