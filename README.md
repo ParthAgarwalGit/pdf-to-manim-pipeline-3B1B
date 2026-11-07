@@ -325,8 +325,20 @@ render/encode path: [docs/amd-deployment.md](docs/amd-deployment.md).
 
 ## Web Demo
 
-A minimal Gradio app (`app.py`) lets you upload a PDF and watch the generated
-vignettes in the browser — this is the hosted "Application URL":
+The Gradio app (`app.py`) has two tabs:
+
+- **Professor studio** (the end-to-end flow): upload the PDF and type a
+  brief, press *Read back my brief* to see how it was understood, then
+  *Generate video*. You get the video, the delivery report (Ready / Needs
+  review, with timestamps) and any presenter bridges awaiting approval. Type
+  feedback ("at 2:13 the label overlaps"), press *Review my feedback* to see
+  the interpreted edits, the diff and the estimate, then *Apply changes*. Each
+  revision becomes the current video. What you confirmed is applied exactly:
+  the read-back via `convert --directives`, and the reviewed edits via
+  `revise --edits`.
+- **Quick convert**: the original one-click conversion.
+
+This is the hosted "Application URL":
 
 ```bash
 pip install -e ".[demo]"

@@ -245,6 +245,12 @@ def pdf2manim():
     help='Concept plan (from `pdf2manim plan`): per-concept depth and analogy choices'
 )
 @click.option(
+    '--directives', 'directives_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Already-confirmed brief interpretation (JSON), applied without re-interpreting'
+)
+@click.option(
     '--bridges',
     type=click.Choice(['off', 'propose'], case_sensitive=False),
     default='off',
@@ -308,6 +314,7 @@ def convert(
     tts_provider: str = 'openai',
     profile_path: Optional[str] = None,
     max_presenter_seconds: float = 180.0,
+    directives_path: Optional[str] = None,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -399,7 +406,13 @@ def convert(
 
         # Professor brief: interpret, read back, confirm — before any spend.
         directives = None
-        if brief_path:
+        if directives_path:
+            from src.schemas.directives import ProfessorDirectives
+
+            directives = ProfessorDirectives.model_validate_json(
+                Path(directives_path).read_text(encoding="utf-8")
+            )
+        elif brief_path:
             from src.agents.professor_input_interpreter import ProfessorInputInterpreter
 
             brief_text = Path(brief_path).read_text(encoding="utf-8")
@@ -772,6 +785,12 @@ def cost(input_pdf: str) -> None:
     default=None,
     help='Professor profile with consent (needed when the run used an avatar or voice clone)'
 )
+@click.option(
+    '--edits', 'edits_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Approved edit bundle (JSON: script, visual_fixes, ops) applied exactly as reviewed'
+)
 def revise(
     run_dir: str,
     script_path: Optional[str],
@@ -789,6 +808,7 @@ def revise(
     assume_yes: bool = False,
     approve_bridges: bool = False,
     profile_path: Optional[str] = None,
+    edits_path: Optional[str] = None,
 ) -> None:
     """
     Rebuild a finished run from an edited lesson script, edit ops or feedback.
@@ -815,13 +835,23 @@ def revise(
     )
 
     setup_logging("medium")
-    if sum(bool(x) for x in (script_path, ops_path, feedback, density, approve_bridges)) > 1:
-        raise click.ClickException("Use only one of --script, --ops, --say, --density or --approve-bridges.")
+    if sum(bool(x) for x in (script_path, ops_path, feedback, density, approve_bridges, edits_path)) > 1:
+        raise click.ClickException(
+            "Use only one of --script, --ops, --say, --density, --approve-bridges or --edits."
+        )
     visual_fixes: dict = {}
     ops_applied: list = []
     try:
         base = load_base_run(Path(run_dir))
-        if ops_path or feedback or density or approve_bridges:
+        if edits_path:
+            from src.schemas.video_script import VideoScript
+
+            bundle = json.loads(Path(edits_path).read_text(encoding="utf-8"))
+            script = VideoScript.model_validate(bundle["script"])
+            visual_fixes = dict(bundle.get("visual_fixes") or {})
+            ops_applied = list(bundle.get("ops") or [])
+            script_file = Path(edits_path)
+        elif ops_path or feedback or density or approve_bridges:
             script, visual_fixes, ops_applied = _plan_edits(
                 base, ops_path, feedback, density, analogies, voice, approve_bridges,
             )

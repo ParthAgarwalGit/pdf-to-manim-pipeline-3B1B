@@ -354,6 +354,20 @@ P2 is split in two. **P2a** (layers 2 and 3 of Part H) is built: `src/agents/del
   - Clips with a synthetic likeness carry an on-screen "AI-generated presenter" label, and the video ends with a credits card naming the avatar or voice and its consent.
 - **Out of scope, as planned:** the `local` lip-sync provider and a rigged 3D avatar.
 
+### P6 as built (2026-11-07)
+
+- **Professor studio** (`src/web/professor_app.py`, first tab of `app.py`). It follows the Part F/G/H flow:
+  1. PDF + brief.
+  2. *Read back my brief* (`read_back_brief`).
+  3. *Generate video* (narration-first, optional bridge proposals).
+  4. The video, the delivery report and the pending bridges, with *Approve presenter bridges*.
+  5. Feedback → *Review my feedback* (interpretation, diff, estimate) → *Apply changes*. The revision becomes the current run, so feedback can iterate.
+- **Isolation and fidelity:** rendering steps shell out to the CLI, as the original demo did, so a pipeline error is a message, not a crashed server. What the professor confirmed is passed through exactly, via two new CLI inputs:
+  - `convert --directives FILE`: the confirmed read-back, never re-interpreted;
+  - `revise --edits FILE`: the reviewed edit bundle (script, visual fixes, ops), applied verbatim.
+- **Verified:** the handlers are tested without a browser (injectable command runner, real revision runs for the feedback review). The page was loaded in a browser and the read-back exercised live.
+- **Not built:** the per-beat review tab (beats grouped by segment, with per-beat Cut/Rewrite/Deeper buttons). Free-text feedback and `revise --ops` cover the same edits.
+
 ## Testing
 
 - All new behaviour sits behind `PipelineConfig` flags that default to off. A flag-off regression test asserts byte-identical storyboard and manifest output.

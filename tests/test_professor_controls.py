@@ -215,6 +215,7 @@ class TestBriefInterpretation:
         assert any("struggle with phasors" in n for n in d.notes)  # never dropped
         readback = d.readback()
         assert "Leave out section(s): 4.3" in readback and "Never use the clock analogy." in readback
+        assert "Use the professor's analogy: the rotating-arm picture" in readback
 
     def test_llm_reading_is_validated(self):
         llm = FakeLLM({"scope": {"skip_sections": ["2"]}, "global": {"target_minutes": 5}, "notes": ["Be kind."]})

@@ -84,7 +84,10 @@ class ProfessorDirectives(BaseModel):
                     + ("briefly." if c.depth == "brief" else "in depth, with an extra worked step or example.")
                 )
             if c.analogy_brief:
-                lines.append(f"For {c.concept}, use the professor's analogy: {c.analogy_brief}")
+                lines.append(
+                    (f"For {c.concept}, use" if c.concept else "Use")
+                    + f" the professor's analogy: {c.analogy_brief}"
+                )
             for avoided in c.avoid_analogies:
                 lines.append(f"Never use the {avoided} analogy" + (f" for {c.concept}." if c.concept else "."))
             if c.notes:
