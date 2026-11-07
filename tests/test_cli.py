@@ -4,7 +4,6 @@ from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
 from src.cli import pdf2manim
-from src.orchestrator.pipeline import PipelineConfig
 
 
 def _cost_tracker_cls():

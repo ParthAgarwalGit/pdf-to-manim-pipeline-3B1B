@@ -1,10 +1,8 @@
 """P4: concept plan (outline step) and density control."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from click.testing import CliRunner
 
 from src.agents.concept_planner import ConceptPlannerAgent, merge_directives, skip_directives
@@ -50,7 +48,7 @@ class TestConceptPlan:
         ]
 
     def test_llm_planner_lists_concepts_per_segment(self):
-        llm = lambda prompt: {"segments": [
+        llm = lambda prompt: {"segments": [  # noqa: E731
             {"segment_id": "seg_001", "concepts": ["eigenvector", "eigenvalue"]},
             {"segment_id": "nope", "concepts": ["ignored"]},
         ]}

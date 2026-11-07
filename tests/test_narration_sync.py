@@ -1,7 +1,6 @@
 """P2b: beat-level timing track, render-time sync, beat alignment, regeneration."""
 
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

@@ -186,10 +186,10 @@ Do NOT omit PDF content.  Do NOT replace it with unrelated content.
 
 class AnimationGeneratorInput(AgentInput):
     """Input for Animation Code Generator Agent.
-    
+
     This is an alias for SceneProcessingInput for clarity.
     """
-    
+
     def __init__(
         self,
         scene_processing_input: SceneProcessingInput,
@@ -201,23 +201,23 @@ class AnimationGeneratorInput(AgentInput):
 
 class AnimationGeneratorOutput(AgentOutput):
     """Output from Animation Code Generator Agent.
-    
+
     Attributes:
         animation_code: Generated AnimationCodeObject
     """
-    
+
     def __init__(self, animation_code: AnimationCodeObject):
         self.animation_code = animation_code
 
 
 class AnimationGeneratorError(AgentOutput):
     """Error output when code generation fails.
-    
+
     Attributes:
         scene_id: Scene identifier
         error: Error message
     """
-    
+
     def __init__(self, scene_id: str, error: str):
         self.scene_id = scene_id
         self.error = error
@@ -225,16 +225,16 @@ class AnimationGeneratorError(AgentOutput):
 
 class AnimationCodeGeneratorAgent(Agent):
     """Agent responsible for generating executable Manim animation code.
-    
+
     The Animation Code Generator acts as a scene compiler:
     - It receives an engine-aware storyboard contract
     - Maps canonical object families onto concrete Manim primitives
     - Generates Scene.construct() code with explicit Mobject lifecycle
     - Validates generated code syntax before persistence
-    
+
     Without a Gemini API key this uses a deterministic mock implementation.
     """
-    
+
     # Visual-first pacing floor. This is a VISUALIZATION tool, not a narrated
     # lecture: scene length is driven by how much visual work is on screen,
     # not by how many words of narration exist. We only guarantee a minimum
@@ -259,16 +259,16 @@ class AnimationCodeGeneratorAgent(Agent):
                     "GEMINI_API_KEY is required in --strict mode for AnimationCodeGenerator"
                 )
             self.client = None
-    
+
     def execute(self, input_data: AnimationGeneratorInput) -> AgentOutput:
         """Execute animation code generation.
-        
+
         Args:
             input_data: AnimationGeneratorInput with scene processing input
-            
+
         Returns:
             AnimationGeneratorOutput with generated code OR AnimationGeneratorError
-            
+
         Raises:
             AgentExecutionError: For unrecoverable failures
         """
@@ -278,7 +278,7 @@ class AnimationCodeGeneratorAgent(Agent):
                 "Input must be AnimationGeneratorInput",
                 {"input_type": type(input_data).__name__}
             )
-        
+
         scene_input = input_data.scene_processing_input
         scene_spec = scene_input.scene_spec
         context = scene_input.context
@@ -292,14 +292,14 @@ class AnimationCodeGeneratorAgent(Agent):
                         scene_spec, context,
                         review_feedback=review_feedback,
                     )
-                    
+
                     # Validate syntax
                     self._validate_syntax(code)
                     code = self._apply_sync_contract(code, scene_spec)
-                    
+
                     # Format code
                     formatted_code = self._format_code(code, scene_spec, context)
-                    
+
                     # Create animation code object
                     animation_code = AnimationCodeObject(
                         scene_id=scene_spec.scene_id,
@@ -310,28 +310,28 @@ class AnimationCodeGeneratorAgent(Agent):
                         duration_estimate=scene_spec.duration_estimate,
                         generation_timestamp=datetime.now()
                     )
-                    
+
                     return AnimationGeneratorOutput(animation_code=animation_code)
-                    
-                except SyntaxError as e:
+
+                except SyntaxError:
                     if attempt < self.max_retries - 1:
                         # Retry with syntax error feedback
                         continue
                     else:
                         raise
-        
+
         except Exception as e:
             return AnimationGeneratorError(
                 scene_id=scene_spec.scene_id,
                 error=str(e)
             )
-    
+
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is AnimationGeneratorInput.
-        
+
         Args:
             input_data: Input to validate
-            
+
         Returns:
             True if valid, False otherwise
         """
@@ -340,10 +340,10 @@ class AnimationCodeGeneratorAgent(Agent):
         if not isinstance(input_data.scene_processing_input, SceneProcessingInput):
             return False
         return True
-    
+
     def get_retry_policy(self) -> RetryPolicy:
         """Return retry policy for Animation Code Generator.
-        
+
         Returns:
             RetryPolicy with exponential backoff for transient failures
         """
@@ -354,7 +354,7 @@ class AnimationCodeGeneratorAgent(Agent):
             max_delay_seconds=30.0,
             retryable_errors=["SYNTAX_ERROR", "API_TIMEOUT", "TRANSIENT_FAILURE"]
         )
-    
+
     def _generate_code(
         self,
         scene_spec: Any,
@@ -855,10 +855,10 @@ with your manually-computed running total.
         # Remove ALL import lines — imports are added by _format_code so we
         # don't want LLM-generated duplicates.
         lines = clean.split("\n")
-        lines = [l for l in lines
-                 if not l.strip().startswith("from manim import")
-                 and not l.strip().startswith("import manim")
-                 and not l.strip().startswith("from src.utils.")]
+        lines = [ln for ln in lines
+                 if not ln.strip().startswith("from manim import")
+                 and not ln.strip().startswith("import manim")
+                 and not ln.strip().startswith("from src.utils.")]
         clean = "\n".join(lines).strip()
 
         # ── Case A: full class already present ────────────────────
@@ -893,27 +893,27 @@ with your manually-computed running total.
             f"    def construct(self):\n"
             f"{indented_body}"
         )
-    
+
     def _generate_mathematical_objects(
         self,
         math_objects: List[Dict[str, Any]],
         context: SharedContext
     ) -> str:
         """Generate code for mathematical objects.
-        
+
         Args:
             math_objects: List of mathematical object specifications
             context: Shared context with visual style
-            
+
         Returns:
             Generated code string
         """
         if not math_objects:
             return "        # No mathematical objects"
-        
+
         code_lines = []
         colors = context.visual_style.colors
-        
+
         for i, obj in enumerate(math_objects):
             if hasattr(obj, "model_dump"):
                 obj_data = obj.model_dump()
@@ -934,7 +934,7 @@ with your manually-computed running total.
             if hasattr(style, "model_dump"):
                 style = style.model_dump()
             color = style.get("color") or colors.get("primary") or "BLUE"
-            
+
             var_name = self._object_var_name(obj_data, i)
             notation_key = obj_data.get("notation_key")
             notation_key_repr = repr(notation_key) if notation_key else "None"
@@ -1026,29 +1026,29 @@ with your manually-computed running total.
                 code_lines.append(
                     f'        {var_name} = create_character_for_role("{character_role}")'
                 )
-        
+
         return "\n".join(code_lines)
-    
+
     def _generate_transformations(
         self,
         transformations: List[Dict[str, Any]],
         context: SharedContext
     ) -> str:
         """Generate code for transformations.
-        
+
         Args:
             transformations: List of transformation specifications
             context: Shared context with animation speed
-            
+
         Returns:
             Generated code string
         """
         if not transformations:
             return "        # No transformations"
-        
+
         code_lines = []
         animation_speed = context.visual_style.animation_speed
-        
+
         for trans in transformations:
             if hasattr(trans, "model_dump"):
                 trans_data = trans.model_dump()
@@ -1065,7 +1065,7 @@ with your manually-computed running total.
             trans_type = trans_data.get("transformation_type", "fade_in")
             target = trans_data.get("target_object", "obj_0")
             timing = trans_data.get("timing", 0.0)
-            
+
             # Map target_object reference to variable name
             # Simplified: assume target_object is like "equation_0" -> "obj_0"
             if "_" in target:
@@ -1076,44 +1076,44 @@ with your manually-computed running total.
                     var_name = "obj_0"
             else:
                 var_name = "obj_0"
-            
+
             # Generate transformation code
             if trans_type == "fade_in":
                 code_lines.append(f'        self.play(FadeIn({var_name}), run_time={1.0/animation_speed})')
-            
+
             elif trans_type == "fade_out":
                 code_lines.append(f'        self.play(FadeOut({var_name}), run_time={1.0/animation_speed})')
-            
+
             elif trans_type == "write":
                 code_lines.append(f'        self.play(Write({var_name}), run_time={2.0/animation_speed})')
-            
+
             elif trans_type == "morph":
                 # Simplified morph (would need target object)
                 code_lines.append(f'        self.play(Transform({var_name}, {var_name}.copy()), run_time={1.5/animation_speed})')
-            
+
             elif trans_type == "highlight":
                 code_lines.append(f'        self.play(Indicate({var_name}), run_time={0.5/animation_speed})')
-            
+
             elif trans_type == "move":
                 code_lines.append(f'        self.play({var_name}.animate.shift(UP), run_time={1.0/animation_speed})')
-            
+
             elif trans_type == "scale":
                 params = trans_data.get("parameters", {})
                 scale_factor = params.get("scale_factor", 1.5)
                 code_lines.append(f'        self.play({var_name}.animate.scale({scale_factor}), run_time={1.0/animation_speed})')
-            
+
             # Add wait for timing
             if timing > 0:
                 code_lines.append(f'        self.wait({timing})')
-        
+
         return "\n".join(code_lines)
-    
+
     def _validate_syntax(self, code: str) -> None:
         """Validate Python syntax using AST parser.
-        
+
         Args:
             code: Python code string to validate
-            
+
         Raises:
             SyntaxError: If code has syntax errors
         """
@@ -1121,7 +1121,7 @@ with your manually-computed running total.
             ast.parse(code)
         except SyntaxError as e:
             raise SyntaxError(f"Generated code has syntax error: {e}")
-    
+
     def _format_code(
         self,
         code: str,
@@ -1129,12 +1129,12 @@ with your manually-computed running total.
         context: SharedContext
     ) -> str:
         """Format code with header comment and consistent style.
-        
+
         Args:
             code: Generated code string
             scene_spec: Scene specification
             context: Shared context
-            
+
         Returns:
             Formatted code string
         """
@@ -1147,15 +1147,15 @@ Generated: {datetime.now().isoformat()}
 """
 
 '''
-        
+
         # Add imports
         imports = "\n".join(self._get_imports())
-        
+
         # Combine
         formatted = f"{header}{imports}\n\n{code}"
-        
+
         return formatted
-    
+
     def _get_imports(self) -> List[str]:
         """Get required import statements.
 
@@ -1236,36 +1236,36 @@ Generated: {datetime.now().isoformat()}
         """
         raw = obj_data.get("object_id") or f"obj_{index}"
         return re.sub(r"[^a-zA-Z0-9_]", "_", raw)
-    
+
     def _get_class_name(self, scene_id: str) -> str:
         """Generate valid Python class name from scene_id.
-        
+
         Args:
             scene_id: Scene identifier
-            
+
         Returns:
             Valid Python class name
         """
         # Replace non-alphanumeric characters with underscores
         class_name = re.sub(r'[^a-zA-Z0-9_]', '_', scene_id)
-        
+
         # Ensure it starts with a letter or underscore
         if class_name and class_name[0].isdigit():
             class_name = f"Scene_{class_name}"
         elif not class_name:
             class_name = "Scene_default"
-        
+
         # Capitalize first letter
         class_name = class_name[0].upper() + class_name[1:] if len(class_name) > 1 else class_name.upper()
-        
+
         return class_name
-    
+
     def _escape_latex(self, latex: str) -> str:
         """Escape LaTeX string for Python raw string literal.
-        
+
         Args:
             latex: LaTeX string
-            
+
         Returns:
             Escaped LaTeX string safe for r"..." literals
         """

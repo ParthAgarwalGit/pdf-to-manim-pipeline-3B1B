@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 Runner = Callable[[List[str]], subprocess.CompletedProcess]
@@ -265,7 +265,7 @@ def build_studio(gr) -> None:
 
     readback_btn.click(read_back_brief, [brief], [readback, directives_state])
     generate_btn.click(
-        lambda f, d, q, v, b, l: generate(f, d, q, v, b, l),
+        lambda f, d, q, v, b, lay: generate(f, d, q, v, b, lay),
         [pdf, directives_state, quality, voice, bridges, layout],
         [video, report, proposals, log, run_state],
     )

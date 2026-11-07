@@ -7,10 +7,8 @@ Tests cover:
 - Error handling for malformed payloads
 """
 
-import json
 from datetime import datetime, timezone
 
-import pytest
 
 from src.agents.ingestion import (
     CloudStorageEvent,
@@ -23,13 +21,13 @@ from src.schemas.file_reference import FileReference
 
 class TestIngestAgent:
     """Test suite for IngestAgent"""
-    
+
     def setup_method(self):
         """Set up test fixtures"""
         self.agent = IngestAgent()
-    
+
     # Test S3 event parsing
-    
+
     def test_s3_event_parsing_success(self):
         """Test successful parsing of valid S3 event notification"""
         # Arrange: Create a valid S3 event payload
@@ -52,30 +50,30 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act: Execute the agent
         result = self.agent.execute(input_data)
-        
+
         # Assert: Verify successful output
         assert isinstance(result, IngestionOutput)
         assert isinstance(result.file_reference, FileReference)
-        
+
         # Verify extracted metadata
         file_ref = result.file_reference
         assert file_ref.file_path == 's3://my-pdf-bucket/uploads/academic_paper.pdf'
         assert file_ref.filename == 'academic_paper.pdf'
         assert file_ref.size_bytes == 1048576
         assert file_ref.upload_timestamp == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
-        
+
         # Verify additional metadata
         assert file_ref.metadata['bucket'] == 'my-pdf-bucket'
         assert file_ref.metadata['object_key'] == 'uploads/academic_paper.pdf'
         assert file_ref.metadata['event_name'] == 'ObjectCreated:Put'
         assert file_ref.metadata['region'] == 'us-east-1'
         assert file_ref.metadata['etag'] == 'abc123def456'
-    
+
     def test_s3_event_with_nested_path(self):
         """Test S3 event with deeply nested object key"""
         # Arrange: S3 event with nested path
@@ -96,17 +94,17 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Filename should be extracted correctly
         assert isinstance(result, IngestionOutput)
         assert result.file_reference.filename == 'paper.pdf'
         assert result.file_reference.file_path == 's3://my-bucket/users/john/documents/2024/paper.pdf'
-    
+
     def test_s3_event_without_optional_fields(self):
         """Test S3 event missing optional fields (etag, region)"""
         # Arrange: Minimal S3 event
@@ -126,21 +124,21 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Should still succeed
         assert isinstance(result, IngestionOutput)
         assert result.file_reference.filename == 'document.pdf'
         assert 'etag' not in result.file_reference.metadata
         assert result.file_reference.metadata['region'] == 'Unknown'
         assert result.file_reference.metadata['event_name'] == 'Unknown'
-    
+
     # Test GCS event parsing
-    
+
     def test_gcs_event_parsing_success(self):
         """Test successful parsing of valid GCS event notification"""
         # Arrange: Create a valid GCS event payload
@@ -152,12 +150,12 @@ class TestIngestAgent:
             'contentType': 'application/pdf',
             'generation': '1234567890'
         }
-        
+
         input_data = CloudStorageEvent(event_payload=gcs_event, event_source='gcs')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionOutput)
         file_ref = result.file_reference
@@ -165,15 +163,15 @@ class TestIngestAgent:
         assert file_ref.filename == 'research_paper.pdf'
         assert file_ref.size_bytes == 2097152
         assert file_ref.upload_timestamp == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
-        
+
         # Verify GCS-specific metadata
         assert file_ref.metadata['bucket'] == 'my-gcs-bucket'
         assert file_ref.metadata['object_name'] == 'uploads/research_paper.pdf'
         assert file_ref.metadata['content_type'] == 'application/pdf'
         assert file_ref.metadata['generation'] == '1234567890'
-    
+
     # Test Azure event parsing
-    
+
     def test_azure_event_parsing_success(self):
         """Test successful parsing of valid Azure Blob Storage event"""
         # Arrange: Create a valid Azure event payload
@@ -186,12 +184,12 @@ class TestIngestAgent:
                 'contentType': 'application/pdf'
             }
         }
-        
+
         input_data = CloudStorageEvent(event_payload=azure_event, event_source='azure')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionOutput)
         file_ref = result.file_reference
@@ -199,15 +197,15 @@ class TestIngestAgent:
         assert file_ref.filename == 'thesis.pdf'
         assert file_ref.size_bytes == 3145728
         assert file_ref.upload_timestamp == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
-        
+
         # Verify Azure-specific metadata
         assert file_ref.metadata['container'] == 'pdfs'
         assert file_ref.metadata['blob_name'] == 'thesis.pdf'
         assert file_ref.metadata['content_type'] == 'application/pdf'
         assert file_ref.metadata['event_type'] == 'Microsoft.Storage.BlobCreated'
-    
+
     # Test metadata extraction accuracy
-    
+
     def test_metadata_extraction_preserves_all_fields(self):
         """Test that all available metadata fields are extracted"""
         # Arrange: S3 event with all optional fields
@@ -230,12 +228,12 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: All metadata fields should be present
         metadata = result.file_reference.metadata
         assert 'bucket' in metadata
@@ -245,7 +243,7 @@ class TestIngestAgent:
         assert 'etag' in metadata
         assert metadata['event_name'] == 'ObjectCreated:CompleteMultipartUpload'
         assert metadata['region'] == 'eu-west-1'
-    
+
     def test_timestamp_parsing_accuracy(self):
         """Test that timestamps are parsed correctly from different formats"""
         # Arrange: Test with different timestamp formats
@@ -260,18 +258,18 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Timestamp should be parsed correctly
         expected_time = datetime(2024, 3, 20, 15, 45, 30, 123000, tzinfo=timezone.utc)
         assert result.file_reference.upload_timestamp == expected_time
-    
+
     # Test FileReference object construction
-    
+
     def test_file_reference_construction_with_valid_data(self):
         """Test that FileReference objects are constructed correctly"""
         # Arrange
@@ -286,12 +284,12 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: FileReference should have all required fields
         file_ref = result.file_reference
         assert hasattr(file_ref, 'file_path')
@@ -299,34 +297,34 @@ class TestIngestAgent:
         assert hasattr(file_ref, 'size_bytes')
         assert hasattr(file_ref, 'upload_timestamp')
         assert hasattr(file_ref, 'metadata')
-        
+
         # Verify types
         assert isinstance(file_ref.file_path, str)
         assert isinstance(file_ref.filename, str)
         assert isinstance(file_ref.size_bytes, int)
         assert isinstance(file_ref.upload_timestamp, datetime)
         assert isinstance(file_ref.metadata, dict)
-    
+
     # Test error handling for malformed payloads
-    
+
     def test_malformed_s3_payload_missing_records(self):
         """Test error handling when S3 event is missing Records field"""
         # Arrange: Malformed S3 event
         malformed_event = {
             'NotRecords': []  # Wrong field name
         }
-        
+
         input_data = CloudStorageEvent(event_payload=malformed_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Should return IngestionError
         assert isinstance(result, IngestionError)
         assert result.error_code == 'MALFORMED_PAYLOAD'
         assert 'Records' in result.reason
         assert result.event_payload_sample is not None
-    
+
     def test_malformed_s3_payload_missing_bucket(self):
         """Test error handling when S3 event is missing bucket information"""
         # Arrange
@@ -341,17 +339,17 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=malformed_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionError)
         assert result.error_code == 'MALFORMED_PAYLOAD'
         assert 'bucket' in result.reason.lower()
-    
+
     def test_malformed_s3_payload_missing_object_key(self):
         """Test error handling when S3 event is missing object key"""
         # Arrange
@@ -367,17 +365,17 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=malformed_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionError)
         assert result.error_code == 'MALFORMED_PAYLOAD'
         assert 'key' in result.reason.lower()
-    
+
     def test_malformed_gcs_payload_missing_bucket(self):
         """Test error handling for malformed GCS event"""
         # Arrange
@@ -387,16 +385,16 @@ class TestIngestAgent:
             'timeCreated': '2024-01-15T10:30:00.000Z'
             # Missing 'bucket' field
         }
-        
+
         input_data = CloudStorageEvent(event_payload=malformed_event, event_source='gcs')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionError)
         assert result.error_code == 'MALFORMED_PAYLOAD'
-    
+
     def test_malformed_azure_payload_missing_data(self):
         """Test error handling for malformed Azure event"""
         # Arrange
@@ -405,16 +403,16 @@ class TestIngestAgent:
             'eventType': 'Microsoft.Storage.BlobCreated'
             # Missing 'data' field
         }
-        
+
         input_data = CloudStorageEvent(event_payload=malformed_event, event_source='azure')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionError)
         assert result.error_code == 'MALFORMED_PAYLOAD'
-    
+
     def test_invalid_payload_data_negative_size(self):
         """Test error handling when file size is negative"""
         # Arrange: Event with negative file size
@@ -429,44 +427,44 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=invalid_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Pydantic validation should catch negative size
         # The FileReference schema has ge=0 constraint, so this will fail at schema level
         assert isinstance(result, IngestionError)
         assert result.error_code == 'INVALID_PAYLOAD_DATA'
         assert 'validation error' in result.reason.lower()
-    
+
     def test_unsupported_event_source(self):
         """Test error handling for unsupported event source"""
         # Arrange
         event = {'some': 'data'}
         input_data = CloudStorageEvent(event_payload=event, event_source='dropbox')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert
         assert isinstance(result, IngestionError)
         assert result.error_code == 'UNSUPPORTED_EVENT_SOURCE'
         assert 'dropbox' in result.reason
-    
+
     def test_invalid_input_type(self):
         """Test error handling when input is not CloudStorageEvent"""
         # Arrange: Invalid input type
         invalid_input = "not a CloudStorageEvent"
-        
+
         # Act
         result = self.agent.execute(invalid_input)
-        
+
         # Assert
         assert isinstance(result, IngestionError)
         assert result.error_code == 'INVALID_INPUT'
-    
+
     def test_event_payload_sample_truncation(self):
         """Test that error payload samples are truncated to reasonable length"""
         # Arrange: Create a very large payload
@@ -485,29 +483,29 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=large_payload, event_source='unsupported')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Payload sample should be truncated
         assert isinstance(result, IngestionError)
         assert len(result.event_payload_sample) <= 200
-    
+
     # Test input validation
-    
+
     def test_validate_input_with_valid_cloud_storage_event(self):
         """Test input validation with valid CloudStorageEvent"""
         # Arrange
         valid_input = CloudStorageEvent(event_payload={'test': 'data'}, event_source='s3')
-        
+
         # Act
         is_valid = self.agent.validate_input(valid_input)
-        
+
         # Assert
         assert is_valid is True
-    
+
     def test_validate_input_with_invalid_type(self):
         """Test input validation with invalid input type"""
         # Arrange
@@ -518,27 +516,27 @@ class TestIngestAgent:
             {'dict': 'object'},
             []
         ]
-        
+
         # Act & Assert
         for invalid_input in invalid_inputs:
             is_valid = self.agent.validate_input(invalid_input)
             assert is_valid is False
-    
+
     def test_validate_input_missing_event_payload(self):
         """Test input validation when event_payload is missing"""
         # Arrange: Create object without event_payload
         class InvalidEvent:
             def __init__(self):
                 self.event_source = 's3'
-        
+
         invalid_input = InvalidEvent()
-        
+
         # Act
         is_valid = self.agent.validate_input(invalid_input)
-        
+
         # Assert
         assert is_valid is False
-    
+
     def test_validate_input_invalid_event_payload_type(self):
         """Test input validation when event_payload is not a dict"""
         # Arrange
@@ -546,22 +544,22 @@ class TestIngestAgent:
             def __init__(self):
                 self.event_payload = "not a dict"
                 self.event_source = 's3'
-        
+
         invalid_input = InvalidEvent()
-        
+
         # Act
         is_valid = self.agent.validate_input(invalid_input)
-        
+
         # Assert
         assert is_valid is False
-    
+
     # Test retry policy
-    
+
     def test_get_retry_policy(self):
         """Test that retry policy is configured correctly"""
         # Act
         policy = self.agent.get_retry_policy()
-        
+
         # Assert
         assert policy.max_attempts == 3
         assert policy.backoff_strategy.value == 'exponential'
@@ -570,18 +568,18 @@ class TestIngestAgent:
         assert len(policy.retryable_errors) > 0
         assert 'EVENT_SYSTEM_UNAVAILABLE' in policy.retryable_errors
         assert 'NETWORK_TIMEOUT' in policy.retryable_errors
-    
+
     def test_retry_policy_does_not_include_malformed_payload(self):
         """Test that malformed payload errors are not retryable"""
         # Act
         policy = self.agent.get_retry_policy()
-        
+
         # Assert: Malformed payloads should not be retried
         assert 'MALFORMED_PAYLOAD' not in policy.retryable_errors
         assert 'INVALID_PAYLOAD_DATA' not in policy.retryable_errors
-    
+
     # Integration-style tests
-    
+
     def test_end_to_end_s3_ingestion(self):
         """Test complete S3 ingestion flow from event to FileReference"""
         # Arrange: Realistic S3 event
@@ -607,16 +605,16 @@ class TestIngestAgent:
                 }
             ]
         }
-        
+
         input_data = CloudStorageEvent(event_payload=s3_event, event_source='s3')
-        
+
         # Act
         result = self.agent.execute(input_data)
-        
+
         # Assert: Complete validation
         assert isinstance(result, IngestionOutput)
         file_ref = result.file_reference
-        
+
         # Verify all fields are correctly populated
         assert file_ref.file_path == 's3://academic-papers-bucket/uploads/2024/quantum_mechanics.pdf'
         assert file_ref.filename == 'quantum_mechanics.pdf'
@@ -625,7 +623,7 @@ class TestIngestAgent:
         assert file_ref.metadata['bucket'] == 'academic-papers-bucket'
         assert file_ref.metadata['event_name'] == 'ObjectCreated:Put'
         assert file_ref.metadata['region'] == 'us-west-2'
-        
+
         # Verify FileReference can be serialized (important for passing to next agent)
         file_ref_dict = file_ref.model_dump()
         assert 'file_path' in file_ref_dict

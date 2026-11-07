@@ -11,7 +11,6 @@ Tests cover:
 """
 
 import os
-from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 import pytest
@@ -382,7 +381,6 @@ class TestStructuredLoggingWrapper:
     events so failures show up in pipeline.log."""
 
     def test_run_tts_generation_logged_emits_start_and_complete(self, tmp_path):
-        from unittest.mock import MagicMock
         from src.orchestrator.pipeline import Orchestrator, PipelineConfig
 
         orch = Orchestrator(config=PipelineConfig(enable_tts=True, enable_render=False))
@@ -397,8 +395,8 @@ class TestStructuredLoggingWrapper:
 
         # Build a fake storyboard with two scenes
         storyboard = MagicMock()
-        scene1 = MagicMock(); scene1.scene_id = "s1"; scene1.narration = "n1"
-        scene2 = MagicMock(); scene2.scene_id = "s2"; scene2.narration = "n2"
+        scene1 = MagicMock(scene_id="s1", narration="n1")
+        scene2 = MagicMock(scene_id="s2", narration="n2")
         storyboard.scenes = [scene1, scene2]
 
         # Fake manifest with output dir
@@ -408,7 +406,7 @@ class TestStructuredLoggingWrapper:
         # Spy on the structured logger
         spy_logger = MagicMock()
 
-        results = orch._run_tts_generation_logged(storyboard, manifest, spy_logger)
+        orch._run_tts_generation_logged(storyboard, manifest, spy_logger)
 
         spy_logger.log_agent_start.assert_called_once()
         spy_logger.log_agent_complete.assert_called_once()

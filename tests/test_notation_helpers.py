@@ -4,7 +4,7 @@ import pytest
 
 manim = pytest.importorskip("manim")  # skip entire module when Manim not installed
 
-from src.utils.notation_helpers import (
+from src.utils.notation_helpers import (  # noqa: E402
     create_notation,
     create_notation_transform_target,
     create_text_label,

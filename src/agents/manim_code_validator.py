@@ -16,14 +16,13 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from src.agents.base import (
     Agent,
     AgentExecutionError,
     AgentInput,
     AgentOutput,
-    BackoffStrategy,
     RetryPolicy,
 )
 from src.schemas.animation_code import AnimationCodeObject

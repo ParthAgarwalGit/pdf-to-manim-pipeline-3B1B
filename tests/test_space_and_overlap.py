@@ -84,7 +84,6 @@ class TestOverlapNudge:
         assert b.bbox.x == bx  # untouched
 
     def test_result_stays_in_safe_area(self):
-        a = _obj("a", 6.0, 0.0),
         objs = [_obj("a", 6.0, 0.0), _obj("b", 6.3, 0.0)]
         _resolve_bbox_overlaps(objs)
         for o in objs:

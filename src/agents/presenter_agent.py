@@ -26,7 +26,7 @@ import textwrap
 import time
 import urllib.request
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from src.utils.ffmpeg_finder import get_ffmpeg
 

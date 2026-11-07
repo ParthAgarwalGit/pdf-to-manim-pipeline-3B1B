@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import openai
@@ -44,7 +45,7 @@ from src.schemas.storyboard import (
     VisualIntent,
 )
 from src.utils.fingerprints import beat_fingerprint, beats_fingerprint
-from src.utils.manim_engine_contract import build_visual_intent_contract_prompt, CANONICAL_RENDER_HINTS, normalize_render_hint
+from src.utils.manim_engine_contract import build_visual_intent_contract_prompt
 from src.utils.manim_primitives import catalog_for_prompt
 from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 
@@ -318,8 +319,6 @@ def _resolve_bbox_overlaps(objs: List[Any], iterations: int = 4) -> None:
             return
 
 
-from functools import lru_cache
-
 
 @lru_cache(maxsize=1)
 def _visual_intent_static_prompt() -> str:
@@ -389,7 +388,7 @@ def _validate_items(items: Any, model: Any) -> list:
 
 class ScriptArchitectInput(AgentInput):
     """Input for Script/Storyboard Architect Agent"""
-    
+
     def __init__(
         self,
         ocr_output: OCROutput,
@@ -435,7 +434,7 @@ class ScriptArchitectAgent(Agent):
     Determinism: scene ids are sequential (scene_001, scene_002, ...). The
     chunker is fully deterministic given the same VideoScript.
     """
-    
+
     # Configuration constants
     # Visual-first pacing (ADR-005): scenes are short, dense vignettes — one
     # focused visual idea each — not lecture-length segments. MIN matches the
@@ -472,12 +471,12 @@ class ScriptArchitectAgent(Agent):
         "balanced": 150,
         "fine": 90,
     }
-    
+
     # Default configuration values
     DEFAULT_VERBOSITY = "medium"
     DEFAULT_DEPTH = "intermediate"
     DEFAULT_AUDIENCE = "undergraduate"
-    
+
     def __init__(self, strict: bool = False):
         """Initialize the Script/Storyboard Architect Agent.
 
@@ -515,7 +514,7 @@ class ScriptArchitectAgent(Agent):
                 self.anthropic_client = anthropic.Anthropic()
             except Exception as exc:  # pragma: no cover — optional dependency / init
                 logger.warning("Anthropic client unavailable for unified script: %s", exc)
-    
+
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute storyboard generation via the unified-script + chunker flow.
 
@@ -1211,7 +1210,7 @@ class ScriptArchitectAgent(Agent):
         back to ``_generate_fallback_visual_intent`` so the pipeline never
         ships a blank scene (F6 mitigation).
         """
-        from src.schemas.storyboard import EmphasisPoint, SceneState, VisualBeat
+        from src.schemas.storyboard import SceneState, VisualBeat
 
         if not isinstance(data, dict):
             return self._generate_fallback_visual_intent(fallback_narration)
@@ -1395,7 +1394,7 @@ class ScriptArchitectAgent(Agent):
             scene.scene_index = index
             scene.scene_id = f"scene_{index + 1:03d}"
             scene.dependencies = [f"scene_{index:03d}"] if index > 0 else []
-    
+
     def _generate_video_script(
         self,
         ocr_output: OCROutput,
@@ -1895,7 +1894,7 @@ Return JSON in this exact shape:
         Source beats are stored on ``Scene.source_beats`` as a real Pydantic
         field so they survive ``model_dump()`` round-trips (F5 mitigation).
         """
-        from src.schemas.video_script import Beat, VideoScript
+        from src.schemas.video_script import Beat
 
         def beat_duration(b) -> float:
             return len(b.narration.split()) / self.WORDS_PER_SECOND
@@ -2222,31 +2221,31 @@ Return JSON in this exact shape:
             scene_state_out=SceneState(active_object_ids=active_object_ids),
             emphasis_points=[],
         )
-    
+
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is a ScriptArchitectInput object
-        
+
         Args:
             input_data: Input object to validate
-            
+
         Returns:
             True if input is valid, False otherwise
         """
         if not isinstance(input_data, ScriptArchitectInput):
             return False
-        
+
         # Validate OCR output and configuration are present
         if not hasattr(input_data, 'ocr_output') or not hasattr(input_data, 'configuration'):
             return False
-        
+
         return isinstance(input_data.ocr_output, OCROutput) and isinstance(input_data.configuration, Configuration)
-    
+
     def get_retry_policy(self) -> RetryPolicy:
         """Return retry policy for Script/Storyboard Architect Agent
-        
+
         LLM calls may fail due to invalid JSON generation or API issues.
         Use retry with schema enforcement for JSON issues.
-        
+
         Returns:
             RetryPolicy with limited retries
         """

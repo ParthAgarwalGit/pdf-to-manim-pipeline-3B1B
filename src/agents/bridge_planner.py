@@ -8,7 +8,7 @@ the professor approves (locks) the text.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from src.agents.script_editor import LLM, default_llm
 from src.schemas.video_script import Beat, VideoScript

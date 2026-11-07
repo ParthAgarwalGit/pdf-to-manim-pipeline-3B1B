@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe

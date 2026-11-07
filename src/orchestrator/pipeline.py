@@ -30,9 +30,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
-from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy, StepConstraints
+from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, StepConstraints
 from src.orchestrator.retry_policy import calculate_backoff_delay, is_retryable_error
 from src.orchestrator.logger import StructuredJSONLogger
 from src.agents.ingestion import CloudStorageEvent, IngestAgent, IngestionError, IngestionOutput
@@ -40,12 +40,12 @@ from src.agents.validation import ValidationAgent, ValidationError
 from src.agents.vision_ocr import VisionOCRAgent
 from src.agents.document_segmenter import DocumentSegmenterAgent, DocumentSegmenterInput
 from src.agents.script_architect import ScriptArchitectAgent, ScriptArchitectInput
-from src.agents.storyboard_grader import StoryboardGraderAgent, StoryboardGraderFailure, StoryboardGraderInput, StoryboardGraderOutput
+from src.agents.storyboard_grader import StoryboardGraderAgent, StoryboardGraderInput, StoryboardGraderOutput
 from src.agents.json_sanitizer import JSONSanitizerAgent, JSONSanitizerInput, SanitizationError
 from src.agents.scene_controller import SceneControllerAgent, SceneControllerInput, SceneControllerOutput
 from src.agents.manim_code_validator import ManimCodeValidatorAgent, ManimValidatorFailure, ManimValidatorInput, ManimValidatorOutput
 from src.agents.video_renderer import VideoRendererAgent, VideoRendererInput, VideoRendererOutput, VideoRendererFailure
-from src.agents.tts_agent import TTSAgent, TTSInput, TTSOutput, TTSError
+from src.agents.tts_agent import TTSAgent, TTSOutput, TTSError
 from src.agents.audio_video_composer import (
     AudioVideoComposerAgent, AudioVideoComposerInput, AudioVideoComposerOutput,
     AudioVideoComposerFailure, SceneMediaPair,
@@ -163,14 +163,14 @@ class _WarningCaptureHandler(logging.FileHandler):
 
 class PipelineAbortError(Exception):
     """Exception raised when pipeline must abort due to non-retryable error.
-    
+
     Attributes:
         stage: Pipeline stage where abort occurred
         error_code: Machine-readable error code
         message: Human-readable error message
         context: Additional context about the failure
     """
-    
+
     def __init__(self, stage: str, error_code: str, message: str, context: Optional[Dict[str, Any]] = None):
         self.stage = stage
         self.error_code = error_code
@@ -192,7 +192,7 @@ class Orchestrator:
     audio-video composition all use per-scene error recovery — failed
     scenes are logged and skipped.
     """
-    
+
     def __init__(
         self,
         config: Optional[PipelineConfig] = None,
@@ -230,7 +230,7 @@ class Orchestrator:
 
         # Setup logging
         self._setup_logging()
-    
+
     # ── presenter providers (consent-gated) ─────────────────────────────
 
     def _profile(self):
@@ -373,25 +373,25 @@ class Orchestrator:
         # Configure root logger
         log_level = logging.INFO
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        
+
         # Clear any existing handlers
         logger.handlers.clear()
-        
+
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(log_level)
         console_handler.setFormatter(logging.Formatter(log_format))
         logger.addHandler(console_handler)
-        
+
         # File handler (if specified)
         if self.log_file:
             file_handler = logging.FileHandler(self.log_file)
             file_handler.setLevel(log_level)
             file_handler.setFormatter(logging.Formatter(log_format))
             logger.addHandler(file_handler)
-        
+
         logger.setLevel(log_level)
-    
+
     def run_pipeline(
         self,
         pdf_file_path: str,
@@ -408,10 +408,10 @@ class Orchestrator:
                 (binding; checked after scripting and reported on delivery)
             concept_plan: ConceptPlan with per-concept depth/analogy choices
                 (``pdf2manim plan``); skipped concepts are enforced and logged
-            
+
         Returns:
             OutputManifest with all generated files and metadata
-            
+
         Raises:
             PipelineAbortError: If pipeline must abort due to non-retryable error
             AgentExecutionError: If an agent encounters an unrecoverable failure
@@ -439,7 +439,7 @@ class Orchestrator:
         # We'll initialize the structured logger after we know the output directory
         # For now, use None (console logging only)
         temp_logger = StructuredJSONLogger(output_directory=None)
-        
+
         try:
             # Log pipeline start
             temp_logger.log_pipeline_start(
@@ -450,7 +450,7 @@ class Orchestrator:
                     "audience": self.config.audience
                 }
             )
-            
+
             # Fail fast: verifier repair runs after all codegen spend, so a
             # missing key must abort before any paid stage, not after.
             if str(self.config.verifier_mode or "off").lower() == "repair":
@@ -458,10 +458,10 @@ class Orchestrator:
 
             # Step 1: Ingestion
             file_ref = self._run_ingestion(pdf_file_path, event_source, temp_logger)
-            
+
             # Step 2: Validation
             validated_ref = self._run_validation(file_ref, temp_logger)
-            
+
             # Now we know the pdf stem — derive the single canonical output directory.
             # run_id was already fixed at the top of this method; we just combine it
             # with the pdf stem.  Every downstream stage uses self._run_output_dir.
@@ -662,14 +662,14 @@ class Orchestrator:
                 effective_success / manifest.total_scenes
                 if manifest.total_scenes > 0 else 1.0
             )
-            
+
             self.structured_logger.log_pipeline_complete(
                 duration_seconds=pipeline_duration,
                 output_directory=manifest.output_directory,
                 status=manifest.status,
                 scene_success_rate=scene_success_rate
             )
-            
+
             logger.info(
                 f"Pipeline completed successfully in {pipeline_duration:.2f}s",
                 extra={
@@ -679,9 +679,9 @@ class Orchestrator:
                     "status": manifest.status
                 }
             )
-            
+
             return manifest
-            
+
         except PipelineAbortError as e:
             # Log pipeline error
             if self.structured_logger:
@@ -699,7 +699,7 @@ class Orchestrator:
                     error_type=type(e).__name__,
                     error_message=str(e)
                 )
-            
+
             logger.error(
                 f"Pipeline failed with unexpected error: {str(e)}",
                 extra={
@@ -1201,15 +1201,15 @@ class Orchestrator:
         structured_logger: StructuredJSONLogger
     ) -> FileReference:
         """Run Ingestion Agent with retry logic.
-        
+
         Args:
             pdf_file_path: Path to PDF file
             event_source: Cloud storage event source
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             FileReference object
-            
+
         Raises:
             PipelineAbortError: If ingestion fails after retries
         """
@@ -1221,9 +1221,9 @@ class Orchestrator:
             # For cloud storage, assume event_payload is constructed externally
             # This is a simplified version for demonstration
             event_payload = self._create_synthetic_event(pdf_file_path, event_source)
-        
+
         event = CloudStorageEvent(event_payload=event_payload, event_source=event_source)
-        
+
         # Execute with retry
         result = self._execute_with_retry(
             agent=self.ingestion_agent,
@@ -1231,7 +1231,7 @@ class Orchestrator:
             stage_name="Ingestion",
             structured_logger=structured_logger
         )
-        
+
         # Check for ingestion error
         if isinstance(result, IngestionError):
             raise PipelineAbortError(
@@ -1240,31 +1240,31 @@ class Orchestrator:
                 message=result.reason,
                 context={"payload_sample": result.event_payload_sample}
             )
-        
+
         # Extract FileReference from IngestionOutput
         if isinstance(result, IngestionOutput):
             return result.file_reference
-        
+
         raise PipelineAbortError(
             stage="Ingestion",
             error_code="UNEXPECTED_OUTPUT",
             message=f"Unexpected output type from Ingestion Agent: {type(result).__name__}"
         )
-    
+
     def _run_validation(
         self,
         file_ref: FileReference,
         structured_logger: StructuredJSONLogger
     ) -> FileReference:
         """Run Validation Agent (no retry - deterministic).
-        
+
         Args:
             file_ref: FileReference from Ingestion Agent
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             Validated FileReference
-            
+
         Raises:
             PipelineAbortError: If validation fails
         """
@@ -1274,7 +1274,7 @@ class Orchestrator:
             stage_name="Validation",
             structured_logger=structured_logger
         )
-        
+
         # Check for validation error
         if isinstance(result, ValidationError):
             raise PipelineAbortError(
@@ -1283,21 +1283,21 @@ class Orchestrator:
                 message=result.reason,
                 context={"file_path": result.file_path}
             )
-        
+
         # Validation succeeded, return validated FileReference
         return result
-    
+
     def _run_vision_ocr(
         self,
         file_ref: FileReference,
         structured_logger: StructuredJSONLogger
     ):
         """Run Vision+OCR Agent with retry logic.
-        
+
         Args:
             file_ref: Validated FileReference
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             OCROutput object
         """
@@ -1307,7 +1307,7 @@ class Orchestrator:
             stage_name="Vision+OCR",
             structured_logger=structured_logger
         )
-        
+
         return result
 
     def _run_document_segmenter(
@@ -1345,7 +1345,7 @@ class Orchestrator:
             structured_logger=structured_logger,
         )
         return result.segments
-    
+
     def _run_script_architect(
         self,
         ocr_output,
@@ -1353,11 +1353,11 @@ class Orchestrator:
         source_segments=None,
     ):
         """Run Script Architect Agent with retry logic.
-        
+
         Args:
             ocr_output: OCROutput from Vision+OCR Agent
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             StoryboardJSON object (as dict for sanitizer)
         """
@@ -1464,21 +1464,21 @@ class Orchestrator:
             "final_status": "accepted_below_threshold",
         }
         return latest_storyboard
-    
+
     def _run_json_sanitizer(
         self,
         storyboard,
         structured_logger: StructuredJSONLogger
     ):
         """Run JSON Sanitizer Agent (no retry - deterministic).
-        
+
         Args:
             storyboard: StoryboardJSON object (or dict)
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             Sanitized StoryboardJSON object
-            
+
         Raises:
             PipelineAbortError: If sanitization fails
         """
@@ -1487,7 +1487,7 @@ class Orchestrator:
             storyboard_dict = storyboard.model_dump()
         else:
             storyboard_dict = storyboard
-        
+
         input_data = JSONSanitizerInput(storyboard_dict=storyboard_dict)
         input_data.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=15)
 
@@ -1497,7 +1497,7 @@ class Orchestrator:
             stage_name="JSONSanitizer",
             structured_logger=structured_logger
         )
-        
+
         # Check for sanitization error
         if isinstance(result, SanitizationError):
             error_details = "\n".join([
@@ -1513,10 +1513,10 @@ class Orchestrator:
                     "attempted_corrections": len(result.attempted_corrections)
                 }
             )
-        
+
         # Extract sanitized storyboard
         return result.storyboard
-    
+
     def _run_scene_controller(
         self,
         storyboard,
@@ -1629,7 +1629,7 @@ class Orchestrator:
             "final_status": final_status,
         }
         return latest_result
-    
+
     def _run_video_renderer(
         self,
         manifest: OutputManifest,
@@ -2961,7 +2961,7 @@ class Orchestrator:
         manifest_path = output_dir / "manifest.json"
         self._register_runtime_artifact(manifest, manifest_path, "manifest")
         manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
-    
+
     def _execute_agent(
         self,
         agent: Agent,
@@ -2970,29 +2970,29 @@ class Orchestrator:
         structured_logger: StructuredJSONLogger
     ) -> AgentOutput:
         """Execute an agent without retry logic.
-        
+
         Args:
             agent: Agent to execute
             input_data: Input for the agent
             stage_name: Name of the pipeline stage (for logging)
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             Agent output
-            
+
         Raises:
             AgentExecutionError: If agent execution fails
         """
         # Log agent start
         input_summary = self._summarize_input(input_data)
         structured_logger.log_agent_start(stage_name, input_summary)
-        
+
         start_time = time.time()
-        
+
         try:
             # Execute agent
             result = agent.execute(input_data)
-            
+
             # Log agent completion
             duration_ms = (time.time() - start_time) * 1000
             output_summary = self._summarize_output(result)
@@ -3002,9 +3002,9 @@ class Orchestrator:
                 output_summary,
                 status="SUCCESS"
             )
-            
+
             return result
-            
+
         except Exception as e:
             # Log agent failure
             duration_ms = (time.time() - start_time) * 1000
@@ -3018,7 +3018,7 @@ class Orchestrator:
                 duration_ms=duration_ms
             )
             raise
-    
+
     def _execute_with_retry(
         self,
         agent: Agent,
@@ -3027,33 +3027,33 @@ class Orchestrator:
         structured_logger: StructuredJSONLogger
     ) -> AgentOutput:
         """Execute an agent with retry logic based on its retry policy.
-        
+
         Args:
             agent: Agent to execute
             input_data: Input for the agent
             stage_name: Name of the pipeline stage (for logging)
             structured_logger: Logger for structured JSON logging
-            
+
         Returns:
             Agent output
-            
+
         Raises:
             AgentExecutionError: If agent execution fails after all retries
         """
         retry_policy = agent.get_retry_policy()
         last_error = None
         input_summary = self._summarize_input(input_data)
-        
+
         for attempt in range(retry_policy.max_attempts):
             try:
                 # Log agent start
                 structured_logger.log_agent_start(stage_name, input_summary, attempt)
-                
+
                 start_time = time.time()
-                
+
                 # Execute agent
                 result = agent.execute(input_data)
-                
+
                 # Log agent completion
                 duration_ms = (time.time() - start_time) * 1000
                 output_summary = self._summarize_output(result)
@@ -3064,19 +3064,19 @@ class Orchestrator:
                     status="SUCCESS",
                     retry_attempt=attempt
                 )
-                
+
                 return result
-                
+
             except AgentExecutionError as e:
                 last_error = e
                 duration_ms = (time.time() - start_time) * 1000
-                
+
                 # Check if error is retryable
                 is_retryable = (
                     is_retryable_error(e, retry_policy)
                     and attempt < retry_policy.max_attempts - 1
                 )
-                
+
                 # Log failure
                 structured_logger.log_agent_failure(
                     stage_name,
@@ -3086,11 +3086,11 @@ class Orchestrator:
                     retry_attempt=attempt,
                     duration_ms=duration_ms
                 )
-                
+
                 if not is_retryable:
                     # Non-retryable error or max attempts reached
                     raise
-                
+
                 # Calculate backoff delay
                 delay = calculate_backoff_delay(
                     attempt,
@@ -3098,16 +3098,16 @@ class Orchestrator:
                     retry_policy.base_delay_seconds,
                     retry_policy.max_delay_seconds
                 )
-                
+
                 logger.info(f"Retrying {stage_name} after {delay:.2f}s delay (attempt {attempt + 2}/{retry_policy.max_attempts})")
                 time.sleep(delay)
-                
+
             except Exception as e:
                 # Unexpected error
                 last_error = e
                 duration_ms = (time.time() - start_time) * 1000
                 error_code = getattr(e, 'error_code', 'UNEXPECTED_ERROR')
-                
+
                 structured_logger.log_agent_failure(
                     stage_name,
                     str(e),
@@ -3116,18 +3116,18 @@ class Orchestrator:
                     retry_attempt=attempt,
                     duration_ms=duration_ms
                 )
-                
+
                 # Wrap in AgentExecutionError and raise
                 raise AgentExecutionError(
                     error_code="UNEXPECTED_ERROR",
                     message=f"Unexpected error in {stage_name}: {str(e)}",
                     context={"error_type": type(e).__name__}
                 )
-        
+
         # All retries exhausted
         raise last_error
-    
-    
+
+
     def _summarize_input(self, input_data: AgentInput) -> str:
         """Generate a brief summary of input data for logging."""
         if isinstance(input_data, FileReference):
@@ -3136,29 +3136,27 @@ class Orchestrator:
             return f"{input_data.__class__.__name__}"
         else:
             return str(type(input_data).__name__)
-    
+
     def _summarize_output(self, output_data: AgentOutput) -> str:
         """Generate a brief summary of output data for logging."""
         if hasattr(output_data, '__class__'):
             return f"{output_data.__class__.__name__}"
         else:
             return str(type(output_data).__name__)
-    
+
     def _create_local_file_event(self, file_path: str) -> Dict[str, Any]:
         """Create a synthetic event for local file processing.
-        
+
         Args:
             file_path: Path to local file
-            
+
         Returns:
             Event payload dictionary
         """
         import os
-        
-        file_path_obj = Path(file_path)
-        filename = file_path_obj.name
+
         file_size = os.path.getsize(file_path)
-        
+
         # Create synthetic S3-like event
         return {
             'Records': [{
@@ -3173,18 +3171,18 @@ class Orchestrator:
                 }
             }]
         }
-    
+
     def _create_synthetic_event(
         self,
         file_path: str,
         event_source: str
     ) -> Dict[str, Any]:
         """Create a synthetic event for cloud storage processing.
-        
+
         Args:
             file_path: Path to file (cloud storage URL)
             event_source: Event source type
-            
+
         Returns:
             Event payload dictionary
         """

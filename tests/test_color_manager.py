@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from src.utils.color_manager import ColorManager
 from src.utils.manim_engine_contract import COLOR_CYCLE

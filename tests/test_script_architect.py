@@ -2,13 +2,11 @@
 
 import json
 import pytest
-from datetime import datetime
 
 from src.agents.base import AgentExecutionError
 from src.agents.script_architect import ScriptArchitectAgent, ScriptArchitectInput
 from src.schemas.ocr_output import (
     BoundingBox,
-    Diagram,
     MathExpression,
     OCROutput,
     Page,
@@ -30,7 +28,7 @@ class TestScriptArchitectAgent:
         set the key explicitly via monkeypatch.setenv."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         return ScriptArchitectAgent()
-    
+
     @pytest.fixture
     def sample_ocr_output(self):
         """Create sample OCR output for testing"""
@@ -88,7 +86,7 @@ class TestScriptArchitectAgent:
                 )
             ]
         )
-    
+
     @pytest.fixture
     def default_config(self):
         """Create default configuration"""
@@ -97,7 +95,7 @@ class TestScriptArchitectAgent:
             depth="intermediate",
             audience="undergraduate"
         )
-    
+
     @pytest.fixture
     def low_verbosity_config(self):
         """Create low verbosity configuration"""
@@ -106,7 +104,7 @@ class TestScriptArchitectAgent:
             depth="intermediate",
             audience="undergraduate"
         )
-    
+
     @pytest.fixture
     def high_verbosity_config(self):
         """Create high verbosity configuration"""
@@ -115,7 +113,7 @@ class TestScriptArchitectAgent:
             depth="advanced",
             audience="graduate"
         )
-    
+
     @pytest.fixture
     def introductory_config(self):
         """Create introductory depth configuration"""
@@ -124,7 +122,7 @@ class TestScriptArchitectAgent:
             depth="introductory",
             audience="high-school"
         )
-    
+
     def test_agent_initialization(self, agent):
         """Test agent initializes correctly"""
         assert agent is not None
@@ -133,48 +131,48 @@ class TestScriptArchitectAgent:
         assert agent.MIN_SCENE_DURATION == 8.0
         assert agent.MAX_SCENE_DURATION == 45.0
         assert agent.TARGET_SCENE_DURATION == 25.0
-    
+
     def test_validate_input_valid(self, agent, sample_ocr_output, default_config):
         """Test input validation with valid input"""
         input_data = ScriptArchitectInput(sample_ocr_output, default_config)
         assert agent.validate_input(input_data) is True
-    
+
     def test_validate_input_invalid_type(self, agent):
         """Test input validation with invalid type"""
         assert agent.validate_input("invalid") is False
         assert agent.validate_input(None) is False
         assert agent.validate_input(123) is False
-    
+
     def test_validate_input_missing_attributes(self, agent):
         """Test input validation with missing attributes"""
         class InvalidInput:
             pass
-        
+
         assert agent.validate_input(InvalidInput()) is False
-    
+
     def test_get_retry_policy(self, agent):
         """Test retry policy configuration"""
         policy = agent.get_retry_policy()
         assert policy.max_attempts == 3
         assert "INVALID_JSON" in policy.retryable_errors
         assert "SCHEMA_VIOLATION" in policy.retryable_errors
-    
+
     def test_execute_basic(self, agent, sample_ocr_output, default_config):
         """Test basic storyboard generation"""
         input_data = ScriptArchitectInput(sample_ocr_output, default_config)
         result = agent.execute(input_data)
-        
+
         assert isinstance(result, StoryboardJSON)
         assert result.pdf_metadata.filename == "test_document.pdf"
         assert result.pdf_metadata.page_count == 2
         assert result.configuration.verbosity == "medium"
         assert len(result.scenes) > 0
-    
+
     def test_execute_invalid_input(self, agent):
         """Test execution with invalid input raises error"""
         with pytest.raises(AgentExecutionError) as exc_info:
             agent.execute("invalid")
-        
+
         assert exc_info.value.error_code == "INVALID_INPUT"
 
     # NOTE: tests for the deleted per-concept extractor / topological sort /
@@ -188,39 +186,39 @@ class TestScriptArchitectAgent:
         """Test that all scene IDs are unique"""
         input_data = ScriptArchitectInput(sample_ocr_output, default_config)
         result = agent.execute(input_data)
-        
+
         scene_ids = [scene.scene_id for scene in result.scenes]
         assert len(scene_ids) == len(set(scene_ids))  # All IDs should be unique
-    
+
     def test_scene_index_sequential(self, agent, sample_ocr_output, default_config):
         """Test that scene indices are sequential"""
         input_data = ScriptArchitectInput(sample_ocr_output, default_config)
         result = agent.execute(input_data)
-        
+
         for i, scene in enumerate(result.scenes):
             assert scene.scene_index == i
-    
+
     def test_conceptual_continuity(self, agent, sample_ocr_output, default_config):
         """Test that scenes maintain conceptual continuity through dependencies"""
         input_data = ScriptArchitectInput(sample_ocr_output, default_config)
         result = agent.execute(input_data)
-        
+
         # First scene should have no dependencies
         if len(result.scenes) > 0:
             assert len(result.scenes[0].dependencies) == 0
-        
+
         # Subsequent scenes should reference previous scenes
         for i in range(1, len(result.scenes)):
             assert len(result.scenes[i].dependencies) > 0
             # Should depend on previous scene
             assert f"scene_{i:03d}" in result.scenes[i].dependencies
-    
+
     def test_configuration_defaults(self, agent, sample_ocr_output):
         """Test that default configuration values are used correctly"""
         assert agent.DEFAULT_VERBOSITY == "medium"
         assert agent.DEFAULT_DEPTH == "intermediate"
         assert agent.DEFAULT_AUDIENCE == "undergraduate"
-    
+
     def test_multiple_pages_processing(self, agent, default_config):
         """Test processing of multi-page documents"""
         multi_page_ocr = OCROutput(
@@ -246,10 +244,10 @@ class TestScriptArchitectAgent:
                 for i in range(1, 6)
             ]
         )
-        
+
         input_data = ScriptArchitectInput(multi_page_ocr, default_config)
         result = agent.execute(input_data)
-        
+
         assert isinstance(result, StoryboardJSON)
         assert result.pdf_metadata.page_count == 5
         assert len(result.scenes) > 0
@@ -257,7 +255,7 @@ class TestScriptArchitectAgent:
 
 class TestScriptArchitectInput:
     """Test suite for ScriptArchitectInput"""
-    
+
     def test_input_initialization(self):
         """Test ScriptArchitectInput initialization"""
         from src.schemas.source_segment import SourceSegment
@@ -282,9 +280,9 @@ class TestScriptArchitectInput:
             depth="intermediate",
             audience="undergraduate"
         )
-        
+
         input_data = ScriptArchitectInput(ocr_output, config)
-        
+
         assert input_data.ocr_output == ocr_output
         assert input_data.configuration == config
         assert input_data.segments == []

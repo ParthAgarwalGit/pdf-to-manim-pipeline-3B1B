@@ -20,7 +20,6 @@ from src.agents.audio_video_composer import (
 from src.agents.delivery_gate import DeliveryGate, SceneMedia, _Probes, format_timestamp
 from src.agents.tts_agent import TTSOutput
 from src.agents.video_renderer import SceneRenderResult, VideoRendererAgent
-from src.schemas.delivery_report import CheckResult
 from src.utils import media_probe
 from src.utils.ffmpeg_finder import get_ffmpeg
 from src.utils.media_probe import Loudness, MediaInfo, StreamInfo

@@ -19,14 +19,14 @@ from src.utils.manim_engine_contract import (
 
 class PDFMetadataStoryboard(BaseModel):
     """Metadata about the source PDF (simplified for storyboard)."""
-    
+
     filename: str = Field(..., description="Name of the PDF file")
     page_count: int = Field(..., ge=1, description="Total number of pages in the PDF")
 
 
 class Configuration(BaseModel):
     """Configuration parameters for storyboard generation."""
-    
+
     verbosity: str = Field(
         ...,
         description="Narration verbosity level (low|medium|high)"
@@ -73,7 +73,7 @@ class Configuration(BaseModel):
         if v not in allowed:
             raise ValueError(f"verbosity must be one of {allowed}, got '{v}'")
         return v
-    
+
     @field_validator('depth')
     @classmethod
     def validate_depth(cls, v: str) -> str:
@@ -82,7 +82,7 @@ class Configuration(BaseModel):
         if v not in allowed:
             raise ValueError(f"depth must be one of {allowed}, got '{v}'")
         return v
-    
+
     @field_validator('audience')
     @classmethod
     def validate_audience(cls, v: str) -> str:
@@ -104,7 +104,7 @@ class Configuration(BaseModel):
 
 class ConceptHierarchy(BaseModel):
     """Concept in the pedagogical hierarchy."""
-    
+
     concept_id: str = Field(..., description="Unique identifier for the concept")
     concept_name: str = Field(..., description="Human-readable name of the concept")
     dependencies: List[str] = Field(
@@ -342,7 +342,7 @@ class Transformation(BaseModel):
         ge=0.0,
         description="Seconds from scene start when transformation begins"
     )
-    
+
     @field_validator('transformation_type')
     @classmethod
     def validate_transformation_type(cls, v: str) -> str:
@@ -422,7 +422,7 @@ class Transformation(BaseModel):
 
 class EmphasisPoint(BaseModel):
     """Point in time where specific content should be emphasized."""
-    
+
     timestamp: float = Field(
         ...,
         ge=0.0,
@@ -490,7 +490,7 @@ class VisualBeat(BaseModel):
 
 class VisualIntent(BaseModel):
     """Visual intent specification for a scene."""
-    
+
     mathematical_objects: List[MathematicalObject] = Field(
         ...,
         description="Mathematical objects to create and animate"

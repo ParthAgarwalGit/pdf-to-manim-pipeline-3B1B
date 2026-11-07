@@ -78,7 +78,9 @@ class TestGenerate:
         assert studio.generate(None, "")[1] == "Upload a PDF to begin."
         pdf = tmp_path / "notes.pdf"
         pdf.write_bytes(b"%PDF-1.4")
-        failing = lambda args: subprocess.CompletedProcess(args, 1, stdout="boom", stderr="trace")
+        def failing(args):
+            return subprocess.CompletedProcess(args, 1, stdout="boom", stderr="trace")
+
         video, report, _, log, state = studio.generate(str(pdf), "", runner=failing, work_root=tmp_path / "w")
         assert video is None and "No run was produced" in report and "boom" in log and state == ""
 

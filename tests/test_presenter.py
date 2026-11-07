@@ -20,7 +20,6 @@ from src.schemas.professor_profile import ConsentError, ProfessorProfile, requir
 from src.schemas.storyboard import Configuration, PDFMetadataStoryboard, StoryboardJSON
 from src.schemas.video_script import Beat, VideoScript
 from src.utils import media_probe
-from src.utils.cost_tracker import CostTracker
 from src.utils.ffmpeg_finder import get_ffmpeg
 from tests.test_revision import _base_run, _beat, _orchestrator
 
@@ -71,7 +70,7 @@ class TestBridgePlacement:
         assert len({b.beat_id for b in script.beats}) == len(script.beats)
 
     def test_llm_writes_the_bridge_text(self):
-        llm = lambda prompt: {"bridges": [{"slot": 0, "text": "Here's why this matters to you."}]}
+        llm = lambda prompt: {"bridges": [{"slot": 0, "text": "Here's why this matters to you."}]}  # noqa: E731
         script = BridgePlannerAgent(llm=llm).propose(_long_script(1, 2))
         assert script.beats[0].narration == "Here's why this matters to you."
 

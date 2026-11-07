@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.agents.directive_compliance import (
-    apply_scope, enforce_script_directives, length_check, notation_check, script_violations,
+    apply_scope, enforce_script_directives, length_check, notation_check,
 )
 from src.agents.professor_input_interpreter import (
     ProfessorInputInterpreter, beat_at, build_timeline,
@@ -22,7 +22,7 @@ from src.schemas.edit_ops import (
 )
 from src.schemas.source_segment import SourceSegment
 from src.schemas.video_script import Analogy, Beat, VideoScript
-from tests.test_revision import _base_run, _beat, _orchestrator, _script
+from tests.test_revision import _base_run, _orchestrator, _script
 
 
 def _lesson() -> VideoScript:

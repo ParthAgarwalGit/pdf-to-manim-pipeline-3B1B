@@ -502,7 +502,7 @@ class VideoQualityReviewerAgent(Agent):
         code_by_scene: Dict[str, AnimationCodeObject],
     ) -> List[VideoQualityFinding]:
         """Flag run_time / wait violations against the 3B1B timing contract."""
-        from src.utils.manim_engine_contract import TIMING_CONTRACT, WAIT_CONTRACT
+        from src.utils.manim_engine_contract import TIMING_CONTRACT
 
         findings: List[VideoQualityFinding] = []
         run_time_re = re.compile(r"run_time\s*=\s*([\d.]+)")
@@ -539,7 +539,6 @@ class VideoQualityReviewerAgent(Agent):
             # Check for missing wait() between consecutive self.play() calls
             play_positions = [m.start() for m in play_re.finditer(source)]
             wait_positions = [m.start() for m in wait_re.finditer(source)]
-            min_wait = WAIT_CONTRACT.get("between_animations", 0.5)
 
             for i in range(len(play_positions) - 1):
                 start = play_positions[i]

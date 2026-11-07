@@ -1,7 +1,7 @@
 import pytest
 manim = pytest.importorskip("manim")
 
-from src.utils.coordinate_system_helpers import (
+from src.utils.coordinate_system_helpers import (  # noqa: E402
     attach_axis_labels,
     create_coordinate_system,
     plot_function_on_system,

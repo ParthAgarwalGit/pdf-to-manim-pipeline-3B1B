@@ -431,8 +431,6 @@ def convert(
 
         orchestrator = Orchestrator(config=pipeline_config)
 
-        # Get PDF filename for logging
-        pdf_path = Path(input_pdf)
         event_source = 'local'  # We're using local files in CLI mode
 
         # Execute pipeline
@@ -831,7 +829,7 @@ def revise(
         pdf2manim revise RUN_DIR --density essential --analogies off
     """
     from src.orchestrator.revision import (
-        LESSON_SCRIPT_FILENAME, estimate_revision, load_base_run, load_lesson_script,
+        LESSON_SCRIPT_FILENAME, load_base_run, load_lesson_script,
     )
 
     setup_logging("medium")
