@@ -36,11 +36,15 @@ class SceneControllerInput(AgentInput):
         output_directory: str,
         animation_generator: Optional[Any] = None,
         scene_feedback: Optional[Dict[str, List[str]]] = None,
+        only_scene_ids: Optional[List[str]] = None,
     ):
         self.storyboard = storyboard
         self.output_directory = output_directory
         self.animation_generator = animation_generator
         self.scene_feedback = scene_feedback or {}
+        # Revision runs generate code only for these scenes; the others still
+        # feed the shared context so later scenes see what came before.
+        self.only_scene_ids = None if only_scene_ids is None else set(only_scene_ids)
 
 
 class SceneControllerOutput(AgentOutput):
@@ -107,10 +111,14 @@ class SceneControllerAgent(Agent):
         output_directory = input_data.output_directory
         animation_generator = input_data.animation_generator
         scene_feedback = input_data.scene_feedback or {}
+        only_scene_ids = getattr(input_data, "only_scene_ids", None)
 
         # Extract scene array
         scenes = storyboard.scenes
-        total_scenes = len(scenes)
+        total_scenes = (
+            len(scenes) if only_scene_ids is None
+            else sum(1 for s in scenes if s.scene_id in only_scene_ids)
+        )
 
         # Initialize shared context
         shared_context = self._initialize_context(storyboard)
@@ -121,6 +129,9 @@ class SceneControllerAgent(Agent):
 
         # Iterate over scenes in deterministic order (Requirements 10.2, 10.3)
         for scene_index, scene in enumerate(scenes):
+            if only_scene_ids is not None and scene.scene_id not in only_scene_ids:
+                self._update_context(shared_context, scene, self._scene_to_spec(scene))
+                continue
             try:
                 scene_spec = self._scene_to_spec(scene)
 

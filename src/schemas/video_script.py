@@ -14,14 +14,38 @@ Design notes:
 - `references_prior_beats` are validated lazily: unknown / forward refs are
   dropped with a WARNING rather than raising, because the script is still
   usable with bad refs (F7 mitigation).
+- Typed-beat fields (`role`, `analogy_id`, `depth`, `author`, `locked`) all
+  default, so storyboards written before they existed still load. They let
+  professor edits target "the pizza analogy" or "optional depth" instead of
+  raw beat ids (docs/superpowers/specs/2026-11-07-professor-control-and-presenter-design.md).
 """
 
 import logging
-from typing import List
+from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
+
+BeatRole = Literal["core", "analogy", "example", "derivation", "intuition", "recap", "bridge"]
+MAX_BEAT_DEPTH = 3
+
+
+class Analogy(BaseModel):
+    """An analogy shared by its introduction beat and every callback beat."""
+
+    analogy_id: str = Field(..., description="Stable id, e.g. 'analogy_water_pipes'")
+    label: str = Field(default="", description="Short name, e.g. 'water flowing through pipes'")
+    target_concepts: List[str] = Field(default_factory=list)
+    mapping: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Analogy term -> concept, e.g. {'water pressure': 'voltage'}",
+    )
+    origin: Literal["generated", "professor"] = "generated"
+    professor_brief: str = Field(
+        default="",
+        description="The professor's own description, kept verbatim.",
+    )
 
 
 class Beat(BaseModel):
@@ -55,6 +79,35 @@ class Beat(BaseModel):
         default="",
         description="SourceSegment id this beat explains, if generated from segmented OCR."
     )
+    role: BeatRole = Field(
+        default="core",
+        description="What the beat does; edit ops and density filters key off it."
+    )
+    analogy_id: Optional[str] = Field(
+        default=None,
+        description="Analogy this beat introduces or calls back (VideoScript.analogies)."
+    )
+    depth: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_BEAT_DEPTH,
+        description="0 = essential to the argument; higher = optional elaboration."
+    )
+    author: Literal["generated", "professor"] = Field(
+        default="generated",
+        description="Provenance of the beat text."
+    )
+    locked: bool = Field(
+        default=False,
+        description="Professor-approved text: no LLM pass may rewrite it."
+    )
+
+    @field_validator("analogy_id", mode="before")
+    @classmethod
+    def _blank_analogy_is_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class VideoScript(BaseModel):
@@ -67,6 +120,10 @@ class VideoScript(BaseModel):
 
     beats: List[Beat] = Field(..., min_length=1)
     title: str = Field(default="", description="Optional title for the video")
+    analogies: List[Analogy] = Field(
+        default_factory=list,
+        description="Analogies used by beats (Beat.analogy_id)."
+    )
 
     @model_validator(mode="after")
     def _validate_beats(self) -> "VideoScript":
@@ -76,6 +133,23 @@ class VideoScript(BaseModel):
             if b.beat_id in seen_ids:
                 raise ValueError(f"duplicate beat_id: {b.beat_id}")
             seen_ids.add(b.beat_id)
+
+        analogy_ids = set()
+        for analogy in self.analogies:
+            if analogy.analogy_id in analogy_ids:
+                raise ValueError(f"duplicate analogy_id: {analogy.analogy_id}")
+            analogy_ids.add(analogy.analogy_id)
+        # A beat may name an analogy the LLM forgot to declare. Keep the
+        # grouping (edits target analogies by id) and declare a stub for it.
+        for b in self.beats:
+            if b.analogy_id and b.analogy_id not in analogy_ids:
+                logger.warning(
+                    "Beat %s uses undeclared analogy %s; adding a stub declaration.",
+                    b.beat_id, b.analogy_id,
+                )
+                label = b.analogy_id.removeprefix("analogy_").replace("_", " ")
+                self.analogies.append(Analogy(analogy_id=b.analogy_id, label=label))
+                analogy_ids.add(b.analogy_id)
 
         # Drop bad back-references (forward or unknown) with a WARNING.
         # F7 mitigation: keep the script usable if the LLM hallucinates ids.

@@ -39,6 +39,7 @@ class OutputFile(BaseModel):
             'scene_audio',
             'composed_video',
             'final_video',
+            'lesson_script',
         }
         if v not in allowed_types:
             raise ValueError(
@@ -69,6 +70,36 @@ class RunConfig(BaseModel):
     tts_voice: str = Field(
         ...,
         description="TTS voice selection"
+    )
+    tts_first: bool = Field(
+        default=False,
+        description="Whether measured narration set scene timing before codegen"
+    )
+
+
+class SceneRecord(BaseModel):
+    """Per-scene fingerprints and artifacts; a revision run reuses them.
+
+    Paths are relative to the run's output_directory.
+    """
+
+    scene_id: str
+    beat_ids: List[str] = Field(default_factory=list)
+    beats_fp: str = Field(..., description="Fingerprint of the scene's source beats")
+    narration_fp: str = Field(..., description="Fingerprint of narration text + voice")
+    visual_fp: str = Field(..., description="Fingerprint of visual plan + timing + quality")
+    code_path: Optional[str] = None
+    video_path: Optional[str] = None
+    video_duration_seconds: Optional[float] = None
+    audio_path: Optional[str] = None
+    audio_duration_seconds: Optional[float] = None
+    reused_video_from: Optional[str] = Field(
+        default=None,
+        description="Parent-run scene_id whose code and render this scene reused",
+    )
+    reused_audio_from: Optional[str] = Field(
+        default=None,
+        description="Parent-run scene_id whose narration audio this scene reused",
     )
 
 
@@ -182,7 +213,11 @@ class OutputManifest(BaseModel):
         description="scene_ids that generated code but failed to render and "
                     "could not be salvaged — missing from the final video"
     )
-    
+    scenes: List[SceneRecord] = Field(
+        default_factory=list,
+        description="Per-scene fingerprints and artifact paths, in video order"
+    )
+
     @field_validator('status')
     @classmethod
     def validate_status(cls, v: str) -> str:

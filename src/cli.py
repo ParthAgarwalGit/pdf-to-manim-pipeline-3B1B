@@ -8,9 +8,11 @@ options for verbosity, content depth, target audience, and output formats.
 Usage:
     pdf2manim convert input.pdf --output-dir ./videos --depth intermediate
     pdf2manim cost input.pdf
+    pdf2manim revise output/input/<run_id> [--script edited_lesson_script.json]
     pdf2manim --version
 """
 
+import json
 import logging
 import os
 import sys
@@ -586,6 +588,139 @@ def cost(input_pdf: str) -> None:
             bold=True
         ))
         sys.exit(1)
+
+
+@pdf2manim.command()
+@click.argument('run_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option(
+    '--script', 'script_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Edited lesson script (default: RUN_DIR/lesson_script.json)'
+)
+@click.option(
+    '-q', '--quality',
+    type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
+    default=None,
+    help="Video quality (default: the run's own)"
+)
+@click.option(
+    '--voice',
+    type=click.Choice(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'], case_sensitive=False),
+    default=None,
+    help="TTS voice (default: the run's own)"
+)
+@click.option('--skip-tts', is_flag=True, default=False, help='Skip TTS generation')
+@click.option('--skip-render', is_flag=True, default=False, help='Skip Manim video rendering')
+@click.option(
+    '--dry-run',
+    is_flag=True,
+    default=False,
+    help='Plan only: write revision.json showing which scenes would be rebuilt'
+)
+@click.option(
+    '--strict',
+    is_flag=True,
+    default=False,
+    help='Fail immediately when API keys are missing instead of falling back to mocks'
+)
+@click.option(
+    '--verifier-mode',
+    type=click.Choice(['off', 'shadow', 'repair'], case_sensitive=False),
+    default='off',
+    envvar='VERIFIER_MODE',
+    help='Raw-Manim preview verifier mode'
+)
+def revise(
+    run_dir: str,
+    script_path: Optional[str],
+    quality: Optional[str],
+    voice: Optional[str],
+    skip_tts: bool,
+    skip_render: bool,
+    dry_run: bool,
+    strict: bool,
+    verifier_mode: str,
+) -> None:
+    """
+    Rebuild a finished run from its edited lesson script.
+
+    Edit RUN_DIR/lesson_script.json (or a copy passed with --script) and run
+    this. Only scenes whose beats changed are re-planned and regenerated; the
+    others reuse the run's code, renders and narration. The result is a new
+    run in RUN_DIR/rev_NNN with a revision.json; RUN_DIR itself is untouched.
+
+    Examples:
+
+        pdf2manim revise output/notes/2026-11-07T10-00-00
+
+        pdf2manim revise output/notes/2026-11-07T10-00-00 --script edits.json --dry-run
+    """
+    from src.orchestrator.revision import LESSON_SCRIPT_FILENAME, load_base_run, load_lesson_script
+
+    setup_logging("medium")
+    try:
+        base = load_base_run(Path(run_dir))
+        script_file = Path(script_path) if script_path else Path(run_dir) / LESSON_SCRIPT_FILENAME
+        if not script_file.is_file():
+            raise click.ClickException(f"No lesson script at {script_file}; pass --script.")
+        script = load_lesson_script(script_file)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(f"Cannot revise {run_dir}: {e}")
+
+    # Keep the parent run's voice, quality and timing mode unless overridden:
+    # changing any of them invalidates every scene's reusable artifacts.
+    run_config = base.run_config
+    pipeline_config = PipelineConfig(
+        base_output_dir=str(Path(run_dir).parent),
+        strict=strict,
+        enable_tts=not skip_tts,
+        enable_render=not skip_render,
+        dry_run=dry_run,
+        tts_voice=(voice or getattr(run_config, "tts_voice", None) or "alloy").lower(),
+        render_quality=(quality or getattr(run_config, "render_quality", None) or "medium").lower(),
+        tts_first=bool(getattr(run_config, "tts_first", False)),
+        verifier_mode=verifier_mode.lower(),
+    )
+
+    cost_tracker = CostTracker.get_instance()
+    cost_tracker.reset()
+    click.echo(click.style(f"Revising {run_dir} from {script_file}", fg="cyan", bold=True))
+    try:
+        manifest = Orchestrator(config=pipeline_config).run_revision(run_dir, script)
+    except PipelineAbortError as e:
+        click.echo(click.style(f"Revision aborted at stage '{e.stage}'", fg="red", bold=True))
+        click.echo(f"Error Code: {e.error_code}")
+        click.echo(f"Message: {e.message}")
+        sys.exit(1)
+
+    output_path = Path(manifest.output_directory)
+    report = json.loads((output_path / "revision.json").read_text(encoding="utf-8"))
+    scenes = report["scenes"]
+    beats = report["beats"]
+    click.echo()
+    click.echo(click.style("Revision Summary:", bold=True))
+    click.echo(f"  Output Directory: {output_path}")
+    click.echo(
+        f"  Beats:            {len(beats['changed'])} changed, "
+        f"{len(beats['added'])} added, {len(beats['removed'])} removed"
+    )
+    click.echo(
+        f"  Scenes:           {scenes['total']} total, "
+        f"{len(scenes['regenerated'])} regenerated, "
+        f"{len(scenes['reused_video'])} renders reused, "
+        f"{len(scenes['reused_audio'])} narrations reused"
+    )
+    click.echo(f"  Status:           {manifest.status}")
+    click.echo(f"  Cost:             ${report['cost_usd']:.4f} USD")
+    if manifest.final_video_path:
+        click.echo(f"  Final video:      {output_path / manifest.final_video_path}")
+    if manifest.status in {"FAILURE", "CRITICAL_FAILURE"}:
+        raise click.ClickException(
+            f"Revision finished with status {manifest.status}; inspect the saved reports."
+        )
 
 
 def main() -> None:

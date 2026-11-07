@@ -178,6 +178,24 @@ only one writable output directory.
 pdf2manim cost document.pdf
 ```
 
+### Revise a Finished Video
+
+Every run saves `lesson_script.json`: the narration as beats, each tagged with
+a role (`core`, `analogy`, `example`, ...), a depth, and the analogy it belongs
+to. Edit the beats (reword, add, delete), then rebuild:
+
+```bash
+pdf2manim revise output/document/2026-11-07T10-00-00
+pdf2manim revise output/document/2026-11-07T10-00-00 --script my_edits.json --dry-run
+```
+
+Only scenes whose beats changed are re-planned, regenerated, rendered and
+narrated; the rest reuse the run's code, renders and audio (matched by
+fingerprints stored in `manifest.json`). The result is a new run in
+`<run>/rev_NNN/` with a `revision.json` describing what changed and what it
+cost. The original run is never modified. `--dry-run` writes the plan without
+spending anything; `--voice` or `--quality` re-narrates or re-renders.
+
 ## Docker & AMD Developer Cloud
 
 The pipeline is containerized so the full workload runs on an AMD Developer
@@ -283,14 +301,16 @@ output/{pdf_filename}/{timestamp}/
 ├── scene_*.py              # Generated Manim code (one vignette per file)
 ├── narration_script.txt    # Narration with scene markers
 ├── storyboard.json         # Scene specifications with visual plans
+├── lesson_script.json      # Editable narration beats + analogies (input to `revise`)
 ├── processing_report.json  # Success/failure summary
 ├── storyboard_review.json  # Storyboard quality review (coverage, pedagogy)
 ├── scene_code_review.json  # Code validation review (incl. security gate)
 ├── video_review.json       # Final media review (incl. frame-level visual QA)
 ├── tts.json                # TTS batch outcome
-├── manifest.json           # File listing + cost summary
+├── manifest.json           # File listing, cost summary, per-scene fingerprints
 ├── audio/                  # Per-scene narration .mp3
-└── pipeline.log            # Structured execution logs
+├── pipeline.log            # Structured execution logs
+└── rev_002/                # A revision (same layout + revision.json)
 ```
 
 ## Architecture Decision Records

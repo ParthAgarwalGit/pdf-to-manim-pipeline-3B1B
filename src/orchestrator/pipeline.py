@@ -258,6 +258,8 @@ class Orchestrator:
         logger.info(f"Starting pipeline for PDF: {pdf_file_path}")
         pipeline_start_time = time.time()
         self._quality_reports = {}
+        self._lesson_script = None
+        self._scene_reuse = {}
 
         # ── Run identity ─────────────────────────────────────────────
         # Generate run_id ONCE here, before any stage executes.
@@ -305,28 +307,20 @@ class Orchestrator:
                 Path(self.config.base_output_dir) / pdf_filename / self.config.run_id
             )
             logger.info(f"Output directory: {self._run_output_dir}")
+            self._attach_run_logging()
 
-            # Initialize structured logger pointing at the canonical output dir
-            self.structured_logger = StructuredJSONLogger(
-                output_directory=self._run_output_dir
-            )
-
-            # Capture WARNING+ records from every src.* logger into the run's
-            # warnings.log so post-run triage never depends on console scrollback.
-            self._warning_handler = _WarningCaptureHandler(
-                str(Path(self._run_output_dir) / "warnings.log")
-            )
-            logging.getLogger("src").addHandler(self._warning_handler)
-            
             # Step 3: Vision+OCR
             ocr_output = self._run_vision_ocr(validated_ref, self.structured_logger)
 
             # Step 4: Document Segmentation
             source_segments = self._run_document_segmenter(ocr_output, self.structured_logger)
-            
+
             # Step 5: Script/Storyboard Architect
             storyboard = self._run_script_architect(ocr_output, self.structured_logger, source_segments)
-            
+            # Title and analogies for lesson_script.json; its beats are taken
+            # from the final storyboard so the two can never disagree.
+            self._lesson_script = getattr(self.script_architect_agent, "last_video_script", None)
+
             # Step 6: JSON Sanitization
             sanitized_storyboard = self._run_json_sanitizer(storyboard, self.structured_logger)
 
@@ -341,12 +335,14 @@ class Orchestrator:
                     validated_ref,
                     self.structured_logger
                 )
+                self._write_lesson_script(manifest, sanitized_storyboard)
                 manifest = self._finalize_manifest(
                     manifest,
                     video_output=None,
                     tts_output=None,
                     composition_output=None,
                     video_review_output=None,
+                    storyboard=sanitized_storyboard,
                 )
                 pipeline_duration = time.time() - pipeline_start_time
                 scene_success_rate = (
@@ -397,6 +393,7 @@ class Orchestrator:
                 validated_ref,
                 self.structured_logger
             )
+            self._write_lesson_script(manifest, sanitized_storyboard)
 
             # Steps 8+9: Video Rendering and TTS — parallel fan-out.
             # Both only need outputs from Persistence (step 7) so they are
@@ -473,6 +470,7 @@ class Orchestrator:
                 tts_output,
                 composition_output,
                 video_review_output,
+                storyboard=sanitized_storyboard,
             )
 
             # Log pipeline completion. The rate means DELIVERED scenes (in the
@@ -536,16 +534,297 @@ class Orchestrator:
             )
             raise
         finally:
-            # Detach the warnings capture so handlers don't pile up across runs
-            handler = getattr(self, "_warning_handler", None)
-            if handler is not None:
-                logging.getLogger("src").removeHandler(handler)
-                handler.close()
-            # Close structured logger
-            if self.structured_logger:
-                self.structured_logger.close()
+            self._detach_run_logging()
             temp_logger.close()
-    
+
+    def _attach_run_logging(self) -> None:
+        """Point the structured log and warnings.log at the run directory."""
+        self.structured_logger = StructuredJSONLogger(
+            output_directory=self._run_output_dir
+        )
+        # Capture WARNING+ records from every src.* logger into the run's
+        # warnings.log so post-run triage never depends on console scrollback.
+        self._warning_handler = _WarningCaptureHandler(
+            str(Path(self._run_output_dir) / "warnings.log")
+        )
+        logging.getLogger("src").addHandler(self._warning_handler)
+
+    def _detach_run_logging(self) -> None:
+        # Detach the warnings capture so handlers don't pile up across runs
+        handler = getattr(self, "_warning_handler", None)
+        if handler is not None:
+            logging.getLogger("src").removeHandler(handler)
+            handler.close()
+            self._warning_handler = None
+        # Close structured logger
+        if self.structured_logger:
+            self.structured_logger.close()
+
+    def run_revision(self, base_run_dir: str, script) -> OutputManifest:
+        """Rebuild a finished run from an edited lesson script.
+
+        The base run is never modified: the revision is a complete new run in
+        ``<run>/rev_NNN`` plus ``revision.json``, and can itself be revised.
+        Scenes whose beats are unchanged keep the parent's visual plan; their
+        audio is reused when narration and voice match, and their code and
+        render when the visual fingerprint matches. Everything else is
+        re-planned, regenerated, rendered and narrated, and the final video is
+        always re-composed. With ``dry_run`` it stops after planning, so
+        ``revision.json`` shows what a real run would rebuild.
+
+        Args:
+            base_run_dir: Output directory of the run to revise.
+            script: The edited lesson script (a VideoScript).
+        """
+        from types import SimpleNamespace
+        from src.orchestrator.revision import (
+            beat_diff,
+            load_base_run,
+            next_revision_dir,
+            write_revision_report,
+            REVISION_FILENAME,
+        )
+        from src.utils.cost_tracker import CostTracker
+        from src.utils.fingerprints import narration_fingerprint, visual_fingerprint
+
+        start = time.time()
+        self._quality_reports = {}
+        self._scene_reuse = {}
+        cost_before = CostTracker.get_instance().get_total_cost()
+
+        base = load_base_run(Path(base_run_dir))
+        rev_dir = next_revision_dir(base.run_dir)
+        rev_dir.mkdir(parents=True)
+        self._run_output_dir = str(rev_dir)
+        logger.info(f"Revising {base.run_dir} -> {rev_dir}")
+        self._attach_run_logging()
+        try:
+            planned, reuse_plan = self.script_architect_agent.revise_storyboard(
+                base.storyboard, script,
+            )
+            storyboard = self._run_json_sanitizer(planned, self.structured_logger)
+            self._lesson_script = script
+            file_ref = SimpleNamespace(filename=storyboard.pdf_metadata.filename)
+
+            # What carries over. Audio is decided first: under narration-first
+            # timing a new recording re-times the plan, so the scene's code
+            # and render cannot be reused either.
+            reuse_audio: Dict[str, Any] = {}
+            reuse_video: Dict[str, Any] = {}
+            for scene in storyboard.scenes:
+                record = base.records.get(reuse_plan.get(scene.scene_id, ""))
+                if record is None:
+                    continue
+                if (
+                    base.artifact(record.audio_path)
+                    and record.narration_fp == narration_fingerprint(scene.narration, self.config.tts_voice)
+                ):
+                    reuse_audio[scene.scene_id] = record
+                if (
+                    base.artifact(record.code_path)
+                    and base.artifact(record.video_path)
+                    and record.visual_fp == visual_fingerprint(
+                        scene, self.config.render_quality, self.config.tts_first,
+                    )
+                    and (not self.config.tts_first or scene.scene_id in reuse_audio)
+                ):
+                    reuse_video[scene.scene_id] = record
+            self._scene_reuse = {
+                "video": {sid: r.scene_id for sid, r in reuse_video.items()},
+                "audio": {sid: r.scene_id for sid, r in reuse_audio.items()},
+            }
+            regenerate = [s.scene_id for s in storyboard.scenes if s.scene_id not in reuse_video]
+            narrate = [s for s in storyboard.scenes if s.scene_id not in reuse_audio]
+            logger.info(
+                "Revision plan: %d scenes; reusing %d plan(s), %d render(s), %d narration(s)",
+                len(storyboard.scenes), len(reuse_plan), len(reuse_video), len(reuse_audio),
+            )
+
+            if self.config.dry_run:
+                manifest = self._run_persistence(None, storyboard, None, file_ref, self.structured_logger)
+                self._write_lesson_script(manifest, storyboard)
+                video_output = tts_output = composition_output = video_review_output = None
+            else:
+                tts_output = self._carry_over_audio(base, reuse_audio)
+                if self.config.tts_first and narrate:
+                    if not self.config.enable_tts:
+                        raise PipelineAbortError(
+                            "TTSFirst",
+                            "TTS_FIRST_REQUIRES_TTS",
+                            "Narration-first timing cannot be used with TTS disabled.",
+                        )
+                    subset = storyboard.model_copy(update={"scenes": narrate})
+                    fresh_audio = self._run_tts_first(subset, self.structured_logger)
+                    self._apply_tts_timing(subset, fresh_audio)
+                    tts_output += fresh_audio
+
+                if regenerate:
+                    scene_output = self._run_scene_controller(
+                        storyboard, file_ref, self.structured_logger, only_scene_ids=regenerate,
+                    )
+                    scene_output = self._run_raw_manim_verifier(scene_output, storyboard)
+                else:
+                    scene_output = None
+                scene_output = self._merge_scene_output(storyboard, scene_output, base, reuse_video)
+
+                manifest = self._run_persistence(scene_output, storyboard, None, file_ref, self.structured_logger)
+                self._write_lesson_script(manifest, storyboard)
+
+                video_output = None
+                if self.config.enable_render:
+                    scene_files = [
+                        str(rev_dir / f"scene_{sid}.py")
+                        for sid in regenerate
+                        if (rev_dir / f"scene_{sid}.py").is_file()
+                    ]
+                    fresh_renders = (
+                        self._run_video_renderer(manifest, self.structured_logger, scene_files=scene_files)
+                        if scene_files else None
+                    )
+                    video_output = self._merge_render_results(
+                        storyboard, self._carry_over_renders(base, reuse_video), fresh_renders,
+                    )
+                    video_output = self._salvage_failed_renders(video_output, storyboard)
+
+                if self.config.enable_tts and not self.config.tts_first and narrate:
+                    subset = storyboard.model_copy(update={"scenes": narrate})
+                    tts_output += self._run_tts_generation_logged(subset, manifest, self.structured_logger)
+
+                composition_output = None
+                if self.config.enable_render and self.config.enable_tts:
+                    composition_output = self._run_audio_video_composition(
+                        video_output, tts_output, manifest, self.structured_logger,
+                    )
+                video_review_output = None
+                if self.config.enable_render:
+                    video_review_output = self._run_final_video_review(
+                        storyboard, scene_output, manifest, video_output,
+                        tts_output, composition_output, self.structured_logger,
+                    )
+
+            manifest = self._finalize_manifest(
+                manifest, video_output, tts_output, composition_output,
+                video_review_output, storyboard=storyboard,
+            )
+            report_path = rev_dir / REVISION_FILENAME
+            write_revision_report(report_path, {
+                "parent_run": str(base.run_dir),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "dry_run": self.config.dry_run,
+                "beats": beat_diff(base.script, script),
+                "scenes": {
+                    "total": len(storyboard.scenes),
+                    "reused_plan": dict(reuse_plan),
+                    "reused_video": self._scene_reuse["video"],
+                    "reused_audio": self._scene_reuse["audio"],
+                    "regenerated": regenerate,
+                },
+                "cost_usd": round(CostTracker.get_instance().get_total_cost() - cost_before, 4),
+                "duration_seconds": round(time.time() - start, 2),
+            })
+            self._register_runtime_artifact(manifest, report_path, "report")
+            self._write_manifest_to_disk(manifest)
+            logger.info(
+                f"Revision completed in {time.time() - start:.2f}s: "
+                f"{len(regenerate)} scene(s) regenerated -> {rev_dir}"
+            )
+            return manifest
+        finally:
+            self._detach_run_logging()
+
+    def _carry_over_audio(self, base, reuse_audio: Dict[str, Any]) -> List[Any]:
+        """Copy reused narration into this run under the scenes' new ids."""
+        import shutil
+
+        audio_dir = Path(self._run_output_dir) / "audio"
+        results: List[Any] = []
+        for scene_id, record in reuse_audio.items():
+            # Same layout TTSAgent.process_all_scenes writes.
+            target = audio_dir / scene_id / f"{scene_id}.mp3"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(base.artifact(record.audio_path), target)
+            results.append(TTSOutput(
+                audio_file_path=str(target),
+                duration_seconds=float(record.audio_duration_seconds or 0.0),
+                scene_id=scene_id,
+                cost_usd=0.0,
+            ))
+        return results
+
+    def _carry_over_renders(self, base, reuse_video: Dict[str, Any]) -> Dict[str, Any]:
+        """Copy reused scene renders into this run; returns scene_id -> result."""
+        import shutil
+        from src.agents.video_renderer import SceneRenderResult
+
+        media_dir = Path(self._run_output_dir) / "media" / "reused"
+        results: Dict[str, Any] = {}
+        for scene_id, record in reuse_video.items():
+            media_dir.mkdir(parents=True, exist_ok=True)
+            target = media_dir / f"scene_{scene_id}.mp4"
+            shutil.copy2(base.artifact(record.video_path), target)
+            results[scene_id] = SceneRenderResult(
+                scene_id=scene_id,
+                success=True,
+                video_path=str(target),
+                duration_seconds=float(record.video_duration_seconds or 0.0),
+            )
+        return results
+
+    def _merge_scene_output(self, storyboard, scene_output, base, reuse_video: Dict[str, Any]):
+        """Combine fresh code with the reused scenes' code, in video order."""
+        from types import SimpleNamespace
+        from src.orchestrator.revision import code_object_from_file
+        from src.schemas.scene_processing import SceneProcessingReport
+
+        fresh = {c.scene_id: c for c in getattr(scene_output, "animation_code_objects", []) or []}
+        failed = list(getattr(getattr(scene_output, "report", None), "failed_scenes", []) or [])
+        code_objects = []
+        for scene in storyboard.scenes:
+            record = reuse_video.get(scene.scene_id)
+            if record is not None:
+                code_objects.append(code_object_from_file(base.artifact(record.code_path), scene))
+            elif scene.scene_id in fresh:
+                code_objects.append(fresh[scene.scene_id])
+        report = SceneProcessingReport(
+            total_scenes=len(storyboard.scenes),
+            successful_scenes=len(code_objects),
+            failed_scenes=failed,
+            output_directory=self._run_output_dir,
+        )
+        return SimpleNamespace(report=report, animation_code_objects=code_objects)
+
+    def _merge_render_results(self, storyboard, carried: Dict[str, Any], fresh_output):
+        """Order carried and fresh renders by scene and rebuild the silent concat."""
+        import shutil
+
+        fresh = {r.scene_id: r for r in getattr(fresh_output, "scene_results", []) or []}
+        results = []
+        for scene in storyboard.scenes:
+            result = carried.get(scene.scene_id) or fresh.get(scene.scene_id)
+            if result is not None:
+                results.append(result)
+        rendered = [r.video_path for r in results if r.success and r.video_path]
+        if not rendered:
+            return VideoRendererFailure(
+                scene_results=results,
+                error=getattr(fresh_output, "error", None) or "No scene rendered",
+            )
+        final_path = str(Path(self._run_output_dir) / "final_output.mp4")
+        try:
+            if len(rendered) == 1:
+                shutil.copy2(rendered[0], final_path)
+            else:
+                self.video_renderer_agent._concatenate_videos(rendered, final_path)
+        except Exception as exc:
+            # The narrated video is composed from per-scene files; only the
+            # silent preview concat is lost.
+            logger.warning("Silent concat of revised scenes failed: %s", exc)
+        return VideoRendererOutput(
+            final_video_path=final_path,
+            scene_results=results,
+            total_duration=sum(r.duration_seconds for r in results if r.success),
+        )
+
     def _run_ingestion(
         self,
         pdf_file_path: str,
@@ -862,15 +1141,18 @@ class Orchestrator:
         self,
         storyboard,
         file_ref: FileReference,
-        structured_logger: StructuredJSONLogger
+        structured_logger: StructuredJSONLogger,
+        only_scene_ids: Optional[List[str]] = None,
     ):
         """Run Scene Controller Agent with retry logic.
-        
+
         Args:
             storyboard: Sanitized StoryboardJSON object
             file_ref: FileReference for output directory naming
             structured_logger: Logger for structured JSON logging
-            
+            only_scene_ids: Generate code for these scenes only (revision
+                runs); None means every scene.
+
         Returns:
             SceneControllerOutput object
         """
@@ -893,6 +1175,7 @@ class Orchestrator:
                 output_directory=output_dir,
                 animation_generator=animation_generator,
                 scene_feedback=scene_feedback,
+                only_scene_ids=only_scene_ids,
             )
             input_data.constraints = StepConstraints(budget_tokens=32000, timeout_seconds=600)
 
@@ -967,7 +1250,8 @@ class Orchestrator:
     def _run_video_renderer(
         self,
         manifest: OutputManifest,
-        structured_logger: StructuredJSONLogger
+        structured_logger: StructuredJSONLogger,
+        scene_files: Optional[List[str]] = None,
     ):
         """Run Video Renderer Agent with per-scene error recovery.
 
@@ -978,14 +1262,17 @@ class Orchestrator:
         Args:
             manifest: OutputManifest from Persistence Agent (knows file paths)
             structured_logger: Logger for structured JSON logging
+            scene_files: Render exactly these files (revision runs);
+                None means every scene file in the manifest.
 
         Returns:
             VideoRendererOutput on success, VideoRendererFailure on total failure
         """
         # Collect scene .py file paths from the manifest
         output_dir = manifest.output_directory
-        scene_files = []
-        if hasattr(manifest, 'files'):
+        explicit_files = scene_files is not None
+        scene_files = list(scene_files or [])
+        if not explicit_files and hasattr(manifest, 'files'):
             for f in manifest.files:
                 # OutputFile.path is relative to output_directory
                 rel_path = getattr(f, 'path', '') or ''
@@ -998,7 +1285,7 @@ class Orchestrator:
                         scene_files.append(abs_path)
 
         # Fallback: glob the output directory for scene_*.py files
-        if not scene_files:
+        if not scene_files and not explicit_files:
             output_path = Path(output_dir)
             if output_path.exists():
                 scene_files = sorted(str(p) for p in output_path.glob("scene_*.py"))
@@ -1903,8 +2190,13 @@ class Orchestrator:
         tts_output,
         composition_output,
         video_review_output,
+        storyboard=None,
     ) -> OutputManifest:
-        """Add runtime media artifacts and quality reports to the final manifest."""
+        """Add runtime media artifacts and quality reports to the final manifest.
+
+        With ``storyboard``, also records each scene's fingerprints and
+        artifact paths so a later revision run can reuse them.
+        """
         from src.schemas.output_manifest import RunConfig
 
         # Record effective runtime configuration
@@ -1914,6 +2206,7 @@ class Orchestrator:
             enable_tts=self.config.enable_tts,
             render_quality=self.config.render_quality,
             tts_voice=self.config.tts_voice,
+            tts_first=self.config.tts_first,
         )
 
         self._register_runtime_artifact(
@@ -2007,6 +2300,23 @@ class Orchestrator:
             else:
                 manifest.status = "FAILURE"
 
+        if storyboard is not None and getattr(storyboard, "scenes", None):
+            from src.orchestrator.revision import build_scene_records
+
+            reuse = getattr(self, "_scene_reuse", None) or {}
+            manifest.scenes = build_scene_records(
+                storyboard,
+                Path(manifest.output_directory),
+                manifest.files,
+                render_results,
+                tts_output or [],
+                voice=self.config.tts_voice,
+                render_quality=self.config.render_quality,
+                tts_first=self.config.tts_first,
+                reused_video=reuse.get("video"),
+                reused_audio=reuse.get("audio"),
+            )
+
         self._populate_cost_summary(manifest)
         self._persist_quality_reports(manifest)
         self._write_manifest_to_disk(manifest)
@@ -2053,6 +2363,30 @@ class Orchestrator:
             report_path = output_dir / filename
             self._write_json_report(report_path, self._quality_reports[report_key])
             self._register_runtime_artifact(manifest, report_path, "report")
+
+    def _write_lesson_script(self, manifest: OutputManifest, storyboard) -> None:
+        """Persist lesson_script.json, the professor-editable source of truth.
+
+        Beats come from the final storyboard; title and analogies from the
+        script the planner (or a revision) produced. Never fatal: a run
+        without it simply cannot be revised from an edited script.
+        """
+        from src.orchestrator.revision import LESSON_SCRIPT_FILENAME, lesson_script_from_storyboard
+
+        source = getattr(self, "_lesson_script", None)
+        try:
+            script = lesson_script_from_storyboard(
+                storyboard,
+                title=getattr(source, "title", "") or "",
+                analogies=getattr(source, "analogies", None) or [],
+            )
+            if script is None:
+                return
+            path = Path(manifest.output_directory) / LESSON_SCRIPT_FILENAME
+            path.write_text(script.model_dump_json(indent=2), encoding="utf-8")
+            self._register_runtime_artifact(manifest, path, "lesson_script")
+        except Exception as exc:  # pragma: no cover — persistence of an extra artifact
+            logger.warning("lesson_script.json not written: %s", exc)
 
     def _write_json_report(self, file_path: Path, payload: Dict[str, Any]) -> None:
         """Write a JSON report using the pipeline output directory."""

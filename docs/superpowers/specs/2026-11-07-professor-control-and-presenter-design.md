@@ -259,6 +259,17 @@ The gate has three layers.
 
 The quality gate (P2) comes before the editing features because every revision is only as trustworthy as the gate that checks it.
 
+### P1 as built (2026-11-07)
+
+P1 landed with these refinements to Parts A and B:
+
+- **Not flag-gated.** `lesson_script.json`, the typed-beat tags and the per-scene records are written on every run. A professor's feedback arrives after an ordinary run, so that run must already be revisable. Every new field has a default, so older storyboards and manifests still load.
+- **Revision input.** Until the P3 ops exist, `run_revision(base_run_dir, script)` takes the edited lesson script itself. The CLI is `pdf2manim revise RUN_DIR [--script FILE] [--dry-run]`. Runs made before P1 can be revised too: their script and scene records are derived from the storyboard and the conventional artifact paths.
+- **Fingerprints** (`src/utils/fingerprints.py`, stored as `manifest.scenes`): `beats_fp` decides plan reuse, `narration_fp` audio reuse and `visual_fp` code+render reuse. Tags and provenance (`role`, `depth`, `analogy_id`, `author`, `locked`) are excluded, so re-tagging a beat rebuilds nothing. Under `--tts-first` a new recording re-times the plan, so it also forces a new render. `presenter_fp` arrives with P5.
+- **Reuse granularity.** A segment run whose beats are unchanged keeps its scenes verbatim. A changed run is re-chunked on its own, and any re-chunked scene whose beats still match a base scene reuses it. Continuity across the boundary of a changed run is not re-planned.
+- **OCR is not needed.** A revision re-plans from the lesson script and the base storyboard only.
+- **Not yet enforced.** `locked` is recorded but nothing rewrites beats in P1. Enforcement comes with the P3 editor.
+
 ## Testing
 
 - All new behaviour sits behind `PipelineConfig` flags that default to off. A flag-off regression test asserts byte-identical storyboard and manifest output.
