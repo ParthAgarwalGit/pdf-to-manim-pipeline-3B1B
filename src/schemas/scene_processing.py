@@ -116,6 +116,10 @@ class SharedContext(BaseModel):
                     "what the viewer has already seen, which concepts have been taught, "
                     "and which objects carry over visually"
     )
+    notation_rules: List[str] = Field(
+        default_factory=list,
+        description="Professor notation directives (binding), e.g. 'Write j, not i.'"
+    )
 
 
 class SceneSpec(BaseModel):

@@ -118,6 +118,7 @@ class TTSInput(AgentInput):
         quality: str = "standard",
         voice: str = "alloy",
         beats: Optional[List[Tuple[str, str]]] = None,
+        pauses: Optional[Dict[str, float]] = None,
     ):
         self.narration = narration
         self.scene_id = scene_id
@@ -127,6 +128,7 @@ class TTSInput(AgentInput):
         # (beat_id, text) in order. When given, each beat is synthesized
         # separately so the output carries a beat-level timing track.
         self.beats = beats or None
+        self.pauses = pauses or {}  # beat_id -> seconds of silence after it
 
 
 @dataclass
@@ -283,6 +285,7 @@ class TTSAgent(Agent):
                             output_dir=input_data.output_dir,
                             model=model,
                             voice=input_data.voice,
+                            pauses=input_data.pauses,
                         )
                     else:
                         audio_file_path = self._generate_audio(
@@ -437,6 +440,7 @@ class TTSAgent(Agent):
                 quality=quality,
                 voice=voice,
                 beats=scene.get("beats"),
+                pauses=scene.get("pauses"),
             )
 
             output = self.execute(tts_input)

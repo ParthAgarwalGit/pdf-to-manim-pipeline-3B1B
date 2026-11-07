@@ -234,7 +234,10 @@ class SceneControllerAgent(Agent):
         return SharedContext(
             concept_definitions={},
             visual_style=visual_style,
-            variable_bindings={}
+            variable_bindings={},
+            notation_rules=list(
+                getattr(getattr(storyboard, "configuration", None), "notation_rules", None) or []
+            ),
         )
     
     def _scene_to_spec(self, scene: Scene) -> SceneSpec:

@@ -507,7 +507,7 @@ class TestReviseCommand:
         script_file.write_text(edited.model_dump_json(), encoding="utf-8")
         captured = {}
 
-        def fake_run_revision(self, base_run_dir, script):
+        def fake_run_revision(self, base_run_dir, script, **kwargs):
             captured["config"], captured["script"] = self.config, script
             rev = Path(base_run_dir) / "rev_002"
             rev.mkdir()

@@ -248,13 +248,16 @@ class Orchestrator:
     def run_pipeline(
         self,
         pdf_file_path: str,
-        event_source: str = 's3'
+        event_source: str = 's3',
+        directives=None,
     ) -> OutputManifest:
         """Run the complete PDF-to-Manim pipeline.
-        
+
         Args:
             pdf_file_path: Path to PDF file (local or cloud storage URL)
             event_source: Cloud storage event source ('s3', 'gcs', 'azure', or 'local')
+            directives: ProfessorDirectives compiled from the professor's brief
+                (binding; checked after scripting and reported on delivery)
             
         Returns:
             OutputManifest with all generated files and metadata
@@ -268,6 +271,7 @@ class Orchestrator:
         self._quality_reports = {}
         self._lesson_script = None
         self._scene_reuse = {}
+        self._begin_directives(directives)
 
         # ── Run identity ─────────────────────────────────────────────
         # Generate run_id ONCE here, before any stage executes.
@@ -322,6 +326,7 @@ class Orchestrator:
 
             # Step 4: Document Segmentation
             source_segments = self._run_document_segmenter(ocr_output, self.structured_logger)
+            source_segments = self._apply_scope_directives(source_segments)
 
             # Step 5: Script/Storyboard Architect
             storyboard = self._run_script_architect(ocr_output, self.structured_logger, source_segments)
@@ -331,6 +336,7 @@ class Orchestrator:
 
             # Step 6: JSON Sanitization
             sanitized_storyboard = self._run_json_sanitizer(storyboard, self.structured_logger)
+            self._check_length_directive(sanitized_storyboard)
 
             # ── dry_run gate ─────────────────────────────────────
             if self.config.dry_run:
@@ -391,6 +397,7 @@ class Orchestrator:
                 scene_output,
                 sanitized_storyboard,
             )
+            self._check_notation_directive(scene_output)
 
             # Step 7: Persistence — write .py scene files, storyboard, narration to disk
             #         (MUST happen before video rendering so Manim has files to render)
@@ -552,6 +559,59 @@ class Orchestrator:
             self._detach_run_logging()
             temp_logger.close()
 
+    # ── professor directives (brief) ────────────────────────────────────
+
+    def _begin_directives(self, directives) -> None:
+        """Adopt a brief's directives for this run; global ones set config."""
+        self._directives = directives
+        self._directive_checks = []
+        self._script_directive_checks = []
+        if directives is None:
+            return
+        g = directives.global_
+        if g.target_minutes:
+            self.config.target_minutes = g.target_minutes
+        if g.audience:
+            self.config.audience = g.audience
+        if g.verbosity:
+            self.config.verbosity = g.verbosity
+        self._quality_reports["brief_interpretation"] = directives.model_dump(mode="json", by_alias=True)
+
+    def _apply_scope_directives(self, segments):
+        from src.agents.directive_compliance import apply_scope
+
+        kept, omissions, checks = apply_scope(segments or [], getattr(self, "_directives", None))
+        if omissions:
+            logger.info("Brief scope: omitted %d segment(s) as the professor asked", len(omissions))
+            self._quality_reports["professor_omissions"] = omissions
+        self._directive_checks.extend(checks)
+        return kept
+
+    def _check_length_directive(self, storyboard) -> None:
+        from src.agents.directive_compliance import length_check
+
+        directives = getattr(self, "_directives", None)
+        if directives is None:
+            return
+        check = length_check(storyboard, directives.global_.target_minutes)
+        if check is not None:
+            self._directive_checks.append(check)
+
+    def _check_notation_directive(self, scene_output) -> None:
+        from src.agents.directive_compliance import notation_check
+
+        directives = getattr(self, "_directives", None)
+        if directives is None:
+            return
+        self._directive_checks.extend(
+            notation_check(getattr(scene_output, "animation_code_objects", []), directives)
+        )
+
+    def _all_directive_checks(self) -> list:
+        return list(getattr(self, "_script_directive_checks", None) or []) + list(
+            getattr(self, "_directive_checks", None) or []
+        )
+
     def _attach_run_logging(self) -> None:
         """Point the structured log and warnings.log at the run directory."""
         self.structured_logger = StructuredJSONLogger(
@@ -575,7 +635,13 @@ class Orchestrator:
         if self.structured_logger:
             self.structured_logger.close()
 
-    def run_revision(self, base_run_dir: str, script) -> OutputManifest:
+    def run_revision(
+        self,
+        base_run_dir: str,
+        script,
+        visual_fixes: Optional[Dict[str, str]] = None,
+        ops_applied: Optional[List[Dict[str, Any]]] = None,
+    ) -> OutputManifest:
         """Rebuild a finished run from an edited lesson script.
 
         The base run is never modified: the revision is a complete new run in
@@ -590,21 +656,28 @@ class Orchestrator:
         Args:
             base_run_dir: Output directory of the run to revise.
             script: The edited lesson script (a VideoScript).
+            visual_fixes: beat_id -> instruction. The scene holding that beat
+                gets new code with the instruction as feedback; its narration
+                and audio are kept (visual feedback, Part G).
+            ops_applied: The edit ops that produced ``script``, for the log.
         """
         from types import SimpleNamespace
         from src.orchestrator.revision import (
             beat_diff,
+            change_log,
             load_base_run,
             next_revision_dir,
             write_revision_report,
             REVISION_FILENAME,
         )
         from src.utils.cost_tracker import CostTracker
-        from src.utils.fingerprints import narration_fingerprint, visual_fingerprint
+        from src.utils.fingerprints import scene_narration_fingerprint, visual_fingerprint
 
         start = time.time()
         self._quality_reports = {}
         self._scene_reuse = {}
+        self._change_log = ""
+        self._begin_directives(None)
         cost_before = CostTracker.get_instance().get_total_cost()
 
         base = load_base_run(Path(base_run_dir))
@@ -632,7 +705,9 @@ class Orchestrator:
                     continue
                 if (
                     base.artifact(record.audio_path)
-                    and record.narration_fp == narration_fingerprint(scene.narration, self.config.tts_voice)
+                    and record.narration_fp == scene_narration_fingerprint(
+                        scene, self.config.tts_voice, getattr(script, "pronunciations", None),
+                    )
                 ):
                     reuse_audio[scene.scene_id] = record
                 if (
@@ -644,6 +719,18 @@ class Orchestrator:
                     and (not self.config.tts_first or scene.scene_id in reuse_audio)
                 ):
                     reuse_video[scene.scene_id] = record
+            # Visual feedback: the scene holding a fixed beat gets new code
+            # (instruction as feedback); its narration and audio stay.
+            fix_feedback: Dict[str, List[str]] = {}
+            for scene in storyboard.scenes:
+                notes = [
+                    f"The professor asked for this visual change: {instruction}"
+                    for beat_id, instruction in (visual_fixes or {}).items()
+                    if beat_id in {b.beat_id for b in scene.source_beats}
+                ]
+                if notes:
+                    fix_feedback[scene.scene_id] = notes
+                    reuse_video.pop(scene.scene_id, None)
             self._scene_reuse = {
                 "video": {sid: r.scene_id for sid, r in reuse_video.items()},
                 "audio": {sid: r.scene_id for sid, r in reuse_audio.items()},
@@ -659,6 +746,7 @@ class Orchestrator:
                         record is not None
                         and sid not in reuse_video
                         and sid not in reuse_audio
+                        and sid not in fix_feedback
                         and base.artifact(record.code_path)
                     ):
                         retime_only[sid] = record
@@ -666,6 +754,7 @@ class Orchestrator:
                 s.scene_id for s in storyboard.scenes
                 if s.scene_id not in reuse_video and s.scene_id not in retime_only
             ]
+            self._change_log = change_log(storyboard, regenerate, list(retime_only), reuse_video)
             narrate = [s for s in storyboard.scenes if s.scene_id not in reuse_audio]
             logger.info(
                 "Revision plan: %d scenes; reusing %d plan(s), %d render(s), %d narration(s); "
@@ -695,6 +784,7 @@ class Orchestrator:
                 if regenerate:
                     scene_output = self._run_scene_controller(
                         storyboard, file_ref, self.structured_logger, only_scene_ids=regenerate,
+                        initial_feedback=fix_feedback,
                     )
                     scene_output = self._run_raw_manim_verifier(scene_output, storyboard)
                 else:
@@ -759,7 +849,10 @@ class Orchestrator:
                     "reused_audio": self._scene_reuse["audio"],
                     "regenerated": regenerate,
                     "retimed": list(retime_only),
+                    "visual_fixes": sorted(fix_feedback),
                 },
+                "ops": list(ops_applied or []),
+                "change_log": self._change_log,
                 "cost_usd": round(CostTracker.get_instance().get_total_cost() - cost_before, 4),
                 "duration_seconds": round(time.time() - start, 2),
             })
@@ -1058,6 +1151,12 @@ class Orchestrator:
             StoryboardJSON object (as dict for sanitizer)
         """
         config = self.config.to_storyboard_config()
+        directives = getattr(self, "_directives", None)
+        if directives is not None:
+            from src.agents.directive_compliance import notation_rules
+
+            config.professor_notes = directives.script_instructions()
+            config.notation_rules = notation_rules(directives)
         source_segments = source_segments or self._run_document_segmenter(
             ocr_output,
             structured_logger,
@@ -1073,6 +1172,7 @@ class Orchestrator:
                 configuration=config,
                 segments=source_segments,
                 review_feedback=review_feedback,
+                directives=directives,
             )
             input_data.constraints = StepConstraints(budget_tokens=16000, timeout_seconds=180)
 
@@ -1081,6 +1181,9 @@ class Orchestrator:
                 input_data=input_data,
                 stage_name="ScriptArchitect",
                 structured_logger=structured_logger
+            )
+            self._script_directive_checks = list(
+                getattr(self.script_architect_agent, "last_compliance", None) or []
             )
 
             if not self.config.enable_quality_loops:
@@ -1208,6 +1311,7 @@ class Orchestrator:
         file_ref: FileReference,
         structured_logger: StructuredJSONLogger,
         only_scene_ids: Optional[List[str]] = None,
+        initial_feedback: Optional[Dict[str, List[str]]] = None,
     ):
         """Run Scene Controller Agent with retry logic.
 
@@ -1217,6 +1321,8 @@ class Orchestrator:
             structured_logger: Logger for structured JSON logging
             only_scene_ids: Generate code for these scenes only (revision
                 runs); None means every scene.
+            initial_feedback: scene_id -> feedback for the first attempt
+                (professor visual fixes in revision runs).
 
         Returns:
             SceneControllerOutput object
@@ -1229,7 +1335,7 @@ class Orchestrator:
         # Create input with animation generator
         from src.agents.animation_generator import AnimationCodeGeneratorAgent
         animation_generator = AnimationCodeGeneratorAgent(strict=self.config.strict)
-        scene_feedback: Dict[str, List[str]] = {}
+        scene_feedback: Dict[str, List[str]] = dict(initial_feedback or {})
         validation_attempts: List[Dict[str, Any]] = []
         max_attempts = max(1, self.config.max_quality_retries + 1)
         latest_result = None  # guaranteed to be assigned in first loop iteration (max_attempts >= 1)
@@ -1862,6 +1968,9 @@ class Orchestrator:
         Returns:
             List of TTSOutput and TTSError results
         """
+        from src.utils.fingerprints import apply_lexicon
+
+        lexicon = getattr(getattr(self, "_lesson_script", None), "pronunciations", None)
         # Extract scenes with narration from the storyboard
         scenes_to_tts = []
         if hasattr(storyboard, 'scenes'):
@@ -1869,12 +1978,16 @@ class Orchestrator:
                 scene_id = getattr(scene, 'scene_id', None)
                 narration = getattr(scene, 'narration', None)
                 if scene_id and narration and narration.strip():
-                    entry = {"scene_id": scene_id, "narration": narration}
+                    # The lexicon changes how words are said, never the text.
+                    entry = {"scene_id": scene_id, "narration": apply_lexicon(narration, lexicon)}
                     beats = list(getattr(scene, "source_beats", None) or [])
                     # Per-beat synthesis yields the beat timing track; only
                     # when the beats are exactly the scene's narration.
                     if beats and "\n\n".join(b.narration for b in beats) == narration:
-                        entry["beats"] = [(b.beat_id, b.narration) for b in beats]
+                        entry["beats"] = [(b.beat_id, apply_lexicon(b.narration, lexicon)) for b in beats]
+                        pauses = {b.beat_id: b.pause_after for b in beats if b.pause_after}
+                        if pauses:
+                            entry["pauses"] = pauses
                     scenes_to_tts.append(entry)
 
         if not scenes_to_tts:
@@ -2308,11 +2421,15 @@ class Orchestrator:
 
     def _record_delivery(self, manifest: OutputManifest, gate_result, video_review_output) -> None:
         """Turn the gate result plus blocking review findings into the delivery report."""
+        directive_checks = self._all_directive_checks()
+        if directive_checks:
+            self._quality_reports["directives"] = [c.model_dump(mode="json") for c in directive_checks]
         if gate_result is None:
             return
         report = gate_result.gate.report(
-            gate_result, getattr(video_review_output, "findings", None),
+            gate_result, getattr(video_review_output, "findings", None), directive_checks,
         )
+        report.change_log = getattr(self, "_change_log", "") or ""
         self._quality_reports["delivery"] = report.model_dump(mode="json")
         manifest.delivery_status = report.status
         log = logger.info if report.status == "ready" else logger.warning
@@ -2502,6 +2619,7 @@ class Orchestrator:
                 tts_first=self.config.tts_first,
                 reused_video=reuse.get("video"),
                 reused_audio=reuse.get("audio"),
+                lexicon=getattr(getattr(self, "_lesson_script", None), "pronunciations", None),
             )
 
         self._populate_cost_summary(manifest)
@@ -2545,6 +2663,9 @@ class Orchestrator:
             "manim_verifier": "manim_verifier.json",
             "delivery": "delivery_report.json",
             "timing_track": "timing_track.json",
+            "brief_interpretation": "brief_interpretation.json",
+            "professor_omissions": "professor_omissions.json",
+            "directives": "directive_checks.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:

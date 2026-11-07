@@ -396,20 +396,23 @@ class ScriptArchitectInput(AgentInput):
         configuration: Configuration,
         segments: Optional[List[SourceSegment]] = None,
         review_feedback: Optional[List[str]] = None,
+        directives: Optional[Any] = None,
     ):
         """Initialize input
-        
+
         Args:
             ocr_output: OCR output from Vision+OCR Agent
             configuration: Configuration parameters for storyboard generation
             segments: Ordered source segments covering the OCR output
             review_feedback: Optional critique to apply on a regeneration pass
+            directives: ProfessorDirectives from the brief, enforced on the script
         """
-        
+
         self.ocr_output = ocr_output
         self.configuration = configuration
         self.segments = segments or []
         self.review_feedback = review_feedback or []
+        self.directives = directives
 
 
 class ScriptArchitectAgent(Agent):
@@ -483,6 +486,7 @@ class ScriptArchitectAgent(Agent):
         self.retry_count = 0
         self.strict = strict
         self.last_video_script = None
+        self.last_compliance = []
         super().__init__()
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
@@ -562,6 +566,17 @@ class ScriptArchitectAgent(Agent):
                 f"Generated video script: {len(video_script.beats)} beats, "
                 f"{len(video_script.concept_ledger())} unique concepts"
             )
+            # Professor directives are binding: repair violations in the
+            # script (only the offending beats) before any visual is planned.
+            self.last_compliance = []
+            directives = getattr(script_input, "directives", None)
+            if directives is not None and not directives.is_empty():
+                from src.agents.directive_compliance import enforce_script_directives
+
+                video_script, self.last_compliance = enforce_script_directives(
+                    video_script, directives,
+                )
+
             # The orchestrator persists this as lesson_script.json — the
             # professor-editable source a revision run starts from.
             self.last_video_script = video_script
@@ -1482,7 +1497,7 @@ STYLE:
 - Verbosity ({config.verbosity}): {verbosity_line}
 - Tone: Friendly, intuitive, conversational.
 - Visual hint per beat: 1–2 sentences describing what is on screen.
-{review_block}
+{self._professor_block(config)}{review_block}
 
 Return JSON in this EXACT shape:
 {{
@@ -1769,7 +1784,7 @@ SOURCE SEGMENT:
 
 TEXT:
 {segment.text}
-{math_block}{already_block}{analogies_block}{review_block}
+{math_block}{already_block}{analogies_block}{self._professor_block(config)}{review_block}
 TASK: Explain THIS segment fully as part of a larger continuous video.
 Do not preview or re-explain other sections. If a concept was already covered,
 reference it by name without redefining it.
@@ -1810,6 +1825,18 @@ Return JSON in this exact shape:
   ]
 }}
 """
+
+    @staticmethod
+    def _professor_block(config) -> str:
+        """The professor's brief, compiled into binding script instructions."""
+        notes = list(getattr(config, "professor_notes", None) or [])
+        if not notes:
+            return ""
+        return (
+            "\nPROFESSOR INSTRUCTIONS (binding; they override the style defaults):\n"
+            + "\n".join(f"- {note}" for note in notes)
+            + "\n"
+        )
 
     def _target_beat_count(self, source_text: str) -> int:
         return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))

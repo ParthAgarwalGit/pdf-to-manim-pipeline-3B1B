@@ -513,8 +513,15 @@ class DeliveryGate:
             composition_output=composition_output,
         )
 
-    def report(self, result: GateResult, review_findings: Optional[List[Any]] = None) -> DeliveryReport:
-        """Fold in blocking review findings and decide ready vs needs review."""
+    def report(
+        self,
+        result: GateResult,
+        review_findings: Optional[List[Any]] = None,
+        directive_checks: Optional[List[CheckResult]] = None,
+    ) -> DeliveryReport:
+        """Fold in blocking review findings and the professor's directives,
+        then decide ready vs needs review."""
+        directive_checks = list(directive_checks or [])
         blocking: List[Dict[str, Any]] = []
         by_scene = {s.scene_id: s for s in result.scenes}
         for finding in review_findings or []:
@@ -541,6 +548,7 @@ class DeliveryGate:
             result.scenes
             and len(passed) == len(result.scenes)
             and all(c.passed is True for c in result.final_checks)
+            and all(c.passed is True for c in directive_checks)
             and not blocking
         )
         total = len(result.scenes)
@@ -564,6 +572,9 @@ class DeliveryGate:
             for check in result.final_checks:
                 if check.passed is not True:
                     lines.append(f"Whole video: {check.message}")
+            for check in directive_checks:
+                if check.passed is not True:
+                    lines.append(f"Your brief: {check.message}")
             for entry in blocking:
                 lines.append(f"Review: {entry['issue']}")
             summary = "\n".join(lines)
@@ -573,6 +584,7 @@ class DeliveryGate:
             scenes=result.scenes,
             final_checks=result.final_checks,
             review_findings=blocking,
+            directives=directive_checks,
             repair_rounds=result.repair_rounds,
             thresholds=self.thresholds,
         )

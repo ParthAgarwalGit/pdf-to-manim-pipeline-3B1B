@@ -101,6 +101,12 @@ class Beat(BaseModel):
         default=False,
         description="Professor-approved text: no LLM pass may rewrite it."
     )
+    pause_after: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=10.0,
+        description="Seconds of silence after this beat (professor pacing edit)."
+    )
 
     @field_validator("analogy_id", mode="before")
     @classmethod
@@ -123,6 +129,11 @@ class VideoScript(BaseModel):
     analogies: List[Analogy] = Field(
         default_factory=list,
         description="Analogies used by beats (Beat.analogy_id)."
+    )
+    pronunciations: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Pronunciation lexicon for TTS: word -> how to say it "
+                    "(e.g. {'Euler': 'Oiler'}). The text on screen is unchanged."
     )
 
     @model_validator(mode="after")

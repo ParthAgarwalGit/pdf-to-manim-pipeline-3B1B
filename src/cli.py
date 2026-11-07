@@ -226,6 +226,18 @@ def pdf2manim():
     envvar='VERIFIER_MAX_REPAIRS',
     help='Maximum visual repair attempts per scene (default: 1)'
 )
+@click.option(
+    '--brief', 'brief_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Professor's brief (free text): scope, depth, analogies, notation, length"
+)
+@click.option(
+    '--yes', 'assume_yes',
+    is_flag=True,
+    default=False,
+    help='Do not ask to confirm the brief interpretation'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -243,6 +255,8 @@ def convert(
     tts_first: bool,
     verifier_mode: str,
     verifier_max_repairs: int,
+    brief_path: Optional[str] = None,
+    assume_yes: bool = False,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -325,6 +339,20 @@ def convert(
         cost_tracker = CostTracker.get_instance()
         cost_tracker.reset()
 
+        # Professor brief: interpret, read back, confirm — before any spend.
+        directives = None
+        if brief_path:
+            from src.agents.professor_input_interpreter import ProfessorInputInterpreter
+
+            brief_text = Path(brief_path).read_text(encoding="utf-8")
+            directives = ProfessorInputInterpreter().interpret_brief(brief_text)
+            click.echo(click.style("Here's how I understood your brief:", bold=True))
+            for line in directives.readback() or ["(nothing specific; the brief is passed on as notes)"]:
+                click.echo(f"  - {line}")
+            click.echo()
+            if not assume_yes and not click.confirm("Generate the video with these instructions?", default=True):
+                raise click.ClickException("Cancelled. Edit the brief and run again.")
+
         # Run the pipeline
         click.echo(click.style("Starting pipeline...", fg="yellow"))
         click.echo()
@@ -347,7 +375,8 @@ def convert(
                 # For now, we'll run the pipeline and show completion
                 manifest = orchestrator.run_pipeline(
                     pdf_file_path=input_pdf,
-                    event_source=event_source
+                    event_source=event_source,
+                    directives=directives,
                 )
                 bar.update(7)
 
@@ -652,6 +681,30 @@ def cost(input_pdf: str) -> None:
     envvar='VERIFIER_MODE',
     help='Raw-Manim preview verifier mode'
 )
+@click.option(
+    '--ops', 'ops_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Edit ops (YAML or JSON list) to apply to the run\'s lesson script'
+)
+@click.option(
+    '--say', 'feedback',
+    default=None,
+    help='Feedback in plain words, e.g. "At 2:13 the label overlaps. Drop the pizza analogy."'
+)
+@click.option(
+    '--density',
+    type=click.Choice(['essential', 'standard', 'rich'], case_sensitive=False),
+    default=None,
+    help='Raise or lower concept density for the whole video'
+)
+@click.option(
+    '--analogies',
+    type=click.Choice(['on', 'off'], case_sensitive=False),
+    default='on',
+    help='With --density: keep or cut analogy beats (default: on)'
+)
+@click.option('--yes', 'assume_yes', is_flag=True, default=False, help='Do not ask to confirm the edits')
 def revise(
     run_dir: str,
     script_path: Optional[str],
@@ -662,30 +715,55 @@ def revise(
     dry_run: bool,
     strict: bool,
     verifier_mode: str,
+    ops_path: Optional[str] = None,
+    feedback: Optional[str] = None,
+    density: Optional[str] = None,
+    analogies: str = 'on',
+    assume_yes: bool = False,
 ) -> None:
     """
-    Rebuild a finished run from its edited lesson script.
+    Rebuild a finished run from an edited lesson script, edit ops or feedback.
 
-    Edit RUN_DIR/lesson_script.json (or a copy passed with --script) and run
-    this. Only scenes whose beats changed are re-planned and regenerated; the
-    others reuse the run's code, renders and narration. The result is a new
-    run in RUN_DIR/rev_NNN with a revision.json; RUN_DIR itself is untouched.
+    Three ways to say what to change: edit RUN_DIR/lesson_script.json (or a
+    copy passed with --script); pass edit ops with --ops; or describe the
+    change in plain words with --say. Only scenes whose content changed are
+    regenerated; narration-only edits (pauses, pronunciation) re-record audio,
+    visual feedback regenerates code but keeps audio. The result is a new run
+    in RUN_DIR/rev_NNN with a revision.json; RUN_DIR itself is untouched.
 
     Examples:
 
         pdf2manim revise output/notes/2026-11-07T10-00-00
 
-        pdf2manim revise output/notes/2026-11-07T10-00-00 --script edits.json --dry-run
+        pdf2manim revise RUN_DIR --say "At 1:05 the label overlaps the curve."
+
+        pdf2manim revise RUN_DIR --ops edits.yaml --dry-run
+
+        pdf2manim revise RUN_DIR --density essential --analogies off
     """
-    from src.orchestrator.revision import LESSON_SCRIPT_FILENAME, load_base_run, load_lesson_script
+    from src.orchestrator.revision import (
+        LESSON_SCRIPT_FILENAME, estimate_revision, load_base_run, load_lesson_script,
+    )
 
     setup_logging("medium")
+    if sum(bool(x) for x in (script_path, ops_path, feedback, density)) > 1:
+        raise click.ClickException("Use only one of --script, --ops, --say or --density.")
+    visual_fixes: dict = {}
+    ops_applied: list = []
     try:
         base = load_base_run(Path(run_dir))
-        script_file = Path(script_path) if script_path else Path(run_dir) / LESSON_SCRIPT_FILENAME
-        if not script_file.is_file():
-            raise click.ClickException(f"No lesson script at {script_file}; pass --script.")
-        script = load_lesson_script(script_file)
+        if ops_path or feedback or density:
+            script, visual_fixes, ops_applied = _plan_edits(
+                base, ops_path, feedback, density, analogies, voice,
+            )
+            script_file = Path(ops_path) if ops_path else "feedback"
+            if not dry_run and not assume_yes and not click.confirm("Render these changes?", default=True):
+                raise click.ClickException("Cancelled; nothing was changed.")
+        else:
+            script_file = Path(script_path) if script_path else Path(run_dir) / LESSON_SCRIPT_FILENAME
+            if not script_file.is_file():
+                raise click.ClickException(f"No lesson script at {script_file}; pass --script.")
+            script = load_lesson_script(script_file)
     except click.ClickException:
         raise
     except Exception as e:
@@ -710,7 +788,9 @@ def revise(
     cost_tracker.reset()
     click.echo(click.style(f"Revising {run_dir} from {script_file}", fg="cyan", bold=True))
     try:
-        manifest = Orchestrator(config=pipeline_config).run_revision(run_dir, script)
+        manifest = Orchestrator(config=pipeline_config).run_revision(
+            run_dir, script, visual_fixes=visual_fixes, ops_applied=ops_applied,
+        )
     except PipelineAbortError as e:
         click.echo(click.style(f"Revision aborted at stage '{e.stage}'", fg="red", bold=True))
         click.echo(f"Error Code: {e.error_code}")
@@ -736,6 +816,8 @@ def revise(
     )
     click.echo(f"  Status:           {manifest.status}")
     click.echo(f"  Cost:             ${report['cost_usd']:.4f} USD")
+    if report.get("change_log"):
+        click.echo(f"  Change log:       {report['change_log']}")
     if manifest.final_video_path:
         click.echo(f"  Final video:      {output_path / manifest.final_video_path}")
     click.echo()
@@ -744,6 +826,61 @@ def revise(
         raise click.ClickException(
             f"Revision finished with status {manifest.status}; inspect the saved reports."
         )
+
+
+def _plan_edits(base, ops_path, feedback, density, analogies, voice):
+    """Compile --ops / --say / --density into an edited script; print the plan.
+
+    Returns (script, visual_fixes, applied_ops). Raises ClickException when
+    nothing could be applied.
+    """
+    from src.agents.professor_input_interpreter import ProfessorInputInterpreter, build_timeline
+    from src.agents.script_editor import ScriptEditorAgent
+    from src.orchestrator.revision import estimate_revision
+    from src.schemas.edit_ops import SetDensity, parse_ops
+
+    notes = []
+    if ops_path:
+        text = Path(ops_path).read_text(encoding="utf-8")
+        if str(ops_path).lower().endswith((".yaml", ".yml")):
+            import yaml
+            data = yaml.safe_load(text)
+        else:
+            data = json.loads(text)
+        ops = parse_ops(data)
+    elif density:
+        ops = [SetDensity(scope="global", level=density.lower(), analogies=analogies.lower())]
+    else:
+        timeline = build_timeline(base.storyboard, base.delivery_report)
+        plan = ProfessorInputInterpreter().interpret_feedback(feedback, base.script, timeline)
+        ops, notes = plan.ops, plan.notes
+        click.echo(click.style("Here's how I understood your feedback:", bold=True))
+        for item, op in zip(plan.items, ops):
+            click.echo(f"  - [{item['class']}] {op.op}: " + json.dumps(op.model_dump(exclude={'op'}))[:160])
+        for note in notes:
+            click.echo(click.style(f"  - not understood (please rephrase): {note}", fg="yellow"))
+        click.echo()
+    if not ops:
+        raise click.ClickException("No edits to apply.")
+
+    result = ScriptEditorAgent().apply(base.script, ops)
+    click.echo(click.style("Changes:", bold=True))
+    for line in result.diff or ["(no change to the script)"]:
+        click.echo(f"  {line}")
+    for warning in result.warnings:
+        click.echo(click.style(f"  warning: {warning}", fg="yellow"))
+    for error in result.errors:
+        click.echo(click.style(f"  rejected: {error}", fg="red"))
+    estimate = estimate_revision(base, result.script, voice=voice, visual_fixes=result.visual_fixes)
+    click.echo(
+        f"Estimate: {estimate['scenes_rebuilt']} scene(s) rebuilt, "
+        f"{estimate['scenes_renarrated']} re-narrated, {estimate['scenes_reused']} reused; "
+        f"length {estimate['length_delta_seconds']:+.0f}s; ~${estimate['estimated_cost_usd']:.2f}"
+    )
+    click.echo()
+    if not result.applied:
+        raise click.ClickException("None of the edits could be applied.")
+    return result.script, result.visual_fixes, result.applied
 
 
 def main() -> None:

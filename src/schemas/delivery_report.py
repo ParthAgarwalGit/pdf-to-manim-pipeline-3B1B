@@ -46,5 +46,12 @@ class DeliveryReport(BaseModel):
         default_factory=list,
         description="Blocking (high/critical) findings from the final video review",
     )
+    directives: List[CheckResult] = Field(
+        default_factory=list,
+        description="Compliance with the professor's brief; unmet directives block 'ready'",
+    )
+    change_log: str = Field(
+        default="", description="For revisions: what changed and what was reused",
+    )
     repair_rounds: int = 0
     thresholds: Dict[str, float] = Field(default_factory=dict)

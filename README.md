@@ -210,6 +210,38 @@ regenerated with that finding as feedback (at most 3 LLM regenerations per
 run). `PipelineConfig(enable_asr_check=True)` adds a paid Whisper check that
 the spoken audio matches the script.
 
+### Steer It With a Brief
+
+Give your own instructions alongside the PDF:
+
+```bash
+pdf2manim convert notes.pdf --brief brief.md
+```
+
+> My students are 2nd-year EE and struggle with phasors. Use the rotating-arm
+> picture, not the clock analogy. Skip 4.3. Spend more time on resonance.
+> Under 10 minutes. I write j, not i.
+
+The brief is read back ("Here's how I understood your brief") before anything
+is spent. The instructions are binding. Section 4.3 is never scripted. A beat
+that slips in the clock analogy is rewritten. Generated LaTeX is checked for
+`i`, and the length is checked against your target. Anything still unmet is
+listed in the delivery report.
+
+### Feedback in Plain Words
+
+```bash
+pdf2manim revise output/notes/<run> --say "At 2:13 the label overlaps the curve. 'Euler' is pronounced Oiler. Drop the pizza analogy."
+```
+
+Each piece of feedback becomes an edit anchored to the moment you named. A
+visual fix regenerates that scene's code but keeps its audio. A pronunciation
+fix re-records only the scenes that say the word. A content change rewrites
+the affected beats. You see the diff and an estimate before confirming
+(`--yes` skips the prompt). The same edits can be scripted with `--ops
+edits.yaml`, and `--density essential --analogies off` trims a video
+without regenerating it.
+
 ### Revise a Finished Video
 
 Every run saves `lesson_script.json`: the narration as beats, each tagged with

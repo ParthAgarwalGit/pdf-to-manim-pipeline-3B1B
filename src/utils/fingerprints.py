@@ -15,7 +15,7 @@ are inserted or removed.
 
 import hashlib
 import json
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, Optional
 
 FINGERPRINT_VERSION = 1
 
@@ -50,8 +50,52 @@ def beats_fingerprint(beats: Iterable[Any]) -> str:
     return _digest([beat_fingerprint(beat) for beat in beats])
 
 
-def narration_fingerprint(narration: str, voice: str) -> str:
-    return _digest({"v": FINGERPRINT_VERSION, "narration": narration, "voice": voice})
+def narration_fingerprint(
+    narration: str,
+    voice: str,
+    pauses: Optional[Dict[str, float]] = None,
+    lexicon: Optional[Dict[str, str]] = None,
+) -> str:
+    """Inputs of a scene's TTS audio.
+
+    Pauses and lexicon entries only enter the digest when present, so runs
+    made before they existed keep matching.
+    """
+    payload: Dict[str, Any] = {"v": FINGERPRINT_VERSION, "narration": narration, "voice": voice}
+    if pauses:
+        payload["pauses"] = {k: v for k, v in sorted(pauses.items()) if v}
+    if lexicon:
+        payload["lexicon"] = dict(sorted(lexicon.items()))
+    return _digest(payload)
+
+
+def scene_narration_fingerprint(scene: Any, voice: str, lexicon: Optional[Dict[str, str]] = None) -> str:
+    """Narration fingerprint of a storyboard scene, with only the pauses and
+    lexicon entries that actually affect its audio."""
+    beats = getattr(scene, "source_beats", None) or []
+    pauses = {b.beat_id: b.pause_after for b in beats if getattr(b, "pause_after", 0)}
+    return narration_fingerprint(
+        scene.narration, voice, pauses, lexicon_for(scene.narration, lexicon),
+    )
+
+
+def lexicon_for(text: str, lexicon: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """The lexicon entries whose word occurs in ``text`` (case-insensitive)."""
+    import re
+
+    return {
+        word: say for word, say in (lexicon or {}).items()
+        if re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text or "", re.IGNORECASE)
+    }
+
+
+def apply_lexicon(text: str, lexicon: Optional[Dict[str, str]]) -> str:
+    """Text as TTS should read it: lexicon words replaced by their respelling."""
+    import re
+
+    for word, say in (lexicon or {}).items():
+        text = re.sub(rf"(?<!\w){re.escape(word)}(?!\w)", say, text, flags=re.IGNORECASE)
+    return text
 
 
 def visual_fingerprint(scene: Any, render_quality: str, tts_first: bool) -> str:

@@ -23,7 +23,7 @@ from src.schemas.video_script import Analogy, VideoScript
 from src.utils.fingerprints import (
     beat_fingerprint,
     beats_fingerprint,
-    narration_fingerprint,
+    scene_narration_fingerprint,
     visual_fingerprint,
 )
 
@@ -44,6 +44,8 @@ class BaseRun:
     script: VideoScript
     run_config: Optional[RunConfig] = None
     records: Dict[str, SceneRecord] = field(default_factory=dict)
+    cost_per_scene: float = 0.0
+    delivery_report: Optional[Dict[str, Any]] = None
 
     def artifact(self, rel_path: Optional[str]) -> Optional[Path]:
         """Absolute path of a recorded artifact, or None if it is missing."""
@@ -123,12 +125,24 @@ def load_base_run(run_dir: Path) -> BaseRun:
         records = {record.scene_id: record for record in manifest.scenes}
     else:
         records = _legacy_records(run_dir, storyboard, run_config)
+    cost_per_scene = 0.0
+    if manifest and manifest.cost_summary and manifest.total_scenes:
+        cost_per_scene = float(manifest.cost_summary.total_usd) / manifest.total_scenes
+    delivery = None
+    report_path = run_dir / "delivery_report.json"
+    if report_path.is_file():
+        try:
+            delivery = json.loads(report_path.read_text(encoding="utf-8"))
+        except ValueError:
+            delivery = None
     return BaseRun(
         run_dir=run_dir,
         storyboard=storyboard,
         script=script,
         run_config=run_config,
         records=records,
+        cost_per_scene=cost_per_scene,
+        delivery_report=delivery,
     )
 
 
@@ -141,6 +155,7 @@ def _legacy_records(
     voice = run_config.tts_voice if run_config else "alloy"
     quality = run_config.render_quality if run_config else "medium"
     tts_first = bool(getattr(run_config, "tts_first", False))
+    lexicon: Dict[str, str] = {}  # legacy runs predate the pronunciation lexicon
     records: Dict[str, SceneRecord] = {}
     for scene in storyboard.scenes:
         sid = scene.scene_id
@@ -164,7 +179,7 @@ def _legacy_records(
             scene_id=sid,
             beat_ids=[b.beat_id for b in scene.source_beats],
             beats_fp=beats_fingerprint(scene.source_beats),
-            narration_fp=narration_fingerprint(scene.narration, voice),
+            narration_fp=scene_narration_fingerprint(scene, voice, lexicon),
             visual_fp=visual_fingerprint(scene, quality, tts_first),
             code_path=_relative(code, run_dir) if code.is_file() else None,
             video_path=_relative(video, run_dir) if video else None,
@@ -184,6 +199,7 @@ def build_scene_records(
     tts_first: bool,
     reused_video: Optional[Dict[str, str]] = None,
     reused_audio: Optional[Dict[str, str]] = None,
+    lexicon: Optional[Dict[str, str]] = None,
 ) -> List[SceneRecord]:
     """One record per scene: its fingerprints and where its artifacts are."""
     output_dir = Path(output_dir)
@@ -211,7 +227,7 @@ def build_scene_records(
             scene_id=sid,
             beat_ids=[b.beat_id for b in scene.source_beats],
             beats_fp=beats_fingerprint(scene.source_beats),
-            narration_fp=narration_fingerprint(scene.narration, voice),
+            narration_fp=scene_narration_fingerprint(scene, voice, lexicon),
             visual_fp=visual_fingerprint(scene, render_quality, tts_first),
             code_path=code_paths.get(sid),
             video_path=_relative(Path(render.video_path), output_dir) if render else None,
@@ -298,6 +314,86 @@ def beat_diff(base: VideoScript, revised: VideoScript) -> Dict[str, List[str]]:
         "removed": [bid for bid in before if bid not in after],
         "changed": [bid for bid in after if bid in before and after[bid] != before[bid]],
     }
+
+
+def estimate_revision(
+    base: BaseRun,
+    script: VideoScript,
+    voice: Optional[str] = None,
+    visual_fixes: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """What a revision would rebuild, before anything is spent.
+
+    Uses the same segment-run matching as the revision itself (no LLM): an
+    unchanged run reuses its scenes; a changed run is assumed to rebuild a
+    scene per ~25 s of narration. Scenes whose narration changes only in
+    pauses or pronunciation are re-narrated, not regenerated.
+    """
+    from src.agents.script_architect import ScriptArchitectAgent as Architect
+
+    voice = voice or (base.run_config.tts_voice if base.run_config else "alloy")
+    base_runs: Dict[Any, List[Any]] = {}
+    for segment_id, scenes in Architect._scene_runs(base.storyboard.scenes):
+        fps = tuple(beat_fingerprint(b) for s in scenes for b in s.source_beats)
+        base_runs.setdefault((segment_id, fps), scenes)
+    fixed_beats = set(visual_fixes or {})
+    rebuilt = reused = renarrated = 0
+    for segment_id, beats in Architect._beat_runs(script.beats):
+        fps = tuple(beat_fingerprint(b) for b in beats)
+        scenes = base_runs.get((segment_id, fps))
+        if scenes is None:
+            words = sum(len(b.narration.split()) for b in beats)
+            rebuilt += max(1, round(words / Architect.WORDS_PER_SECOND / Architect.TARGET_SCENE_DURATION))
+            continue
+        by_id = {b.beat_id: b for b in beats}
+        for scene in scenes:
+            ids = [b.beat_id for b in scene.source_beats]
+            if fixed_beats & set(ids):
+                rebuilt += 1
+                continue
+            probe = scene.model_copy(update={"source_beats": [by_id.get(i, b) for i, b in zip(ids, scene.source_beats)]})
+            record = base.records.get(scene.scene_id)
+            if record and record.narration_fp != scene_narration_fingerprint(probe, voice, script.pronunciations):
+                renarrated += 1
+            else:
+                reused += 1
+    old_words = sum(len(b.narration.split()) for b in base.script.beats)
+    new_words = sum(len(b.narration.split()) for b in script.beats)
+    return {
+        "scenes_rebuilt": rebuilt,
+        "scenes_renarrated": renarrated,
+        "scenes_reused": reused,
+        "length_delta_seconds": round((new_words - old_words) / Architect.WORDS_PER_SECOND, 1),
+        "estimated_cost_usd": round(base.cost_per_scene * rebuilt, 2),
+    }
+
+
+def change_log(storyboard: StoryboardJSON, regenerated: List[str], retimed: List[str], reused_video: Dict[str, str]) -> str:
+    """'Changed: scenes 4-5. Reused unchanged: 28 scenes.' for the professor."""
+    index = {s.scene_id: i + 1 for i, s in enumerate(storyboard.scenes)}
+
+    def ranges(ids: List[str]) -> str:
+        numbers = sorted(index[i] for i in ids if i in index)
+        spans, start = [], None
+        for n in numbers:
+            if start is None:
+                start = prev = n
+            elif n == prev + 1:
+                prev = n
+            else:
+                spans.append((start, prev))
+                start = prev = n
+        if start is not None:
+            spans.append((start, prev))
+        return ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in spans)
+
+    parts = []
+    if regenerated:
+        parts.append(f"Changed: scene{'s' if len(regenerated) > 1 else ''} {ranges(regenerated)}.")
+    if retimed:
+        parts.append(f"Re-timed to new narration: scene{'s' if len(retimed) > 1 else ''} {ranges(retimed)}.")
+    parts.append(f"Reused unchanged: {len(reused_video)} scene{'s' if len(reused_video) != 1 else ''}.")
+    return " ".join(parts)
 
 
 def write_revision_report(path: Path, payload: Dict[str, Any]) -> None:

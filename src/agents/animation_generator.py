@@ -469,7 +469,7 @@ about {target_duration}s.
 At the END of construct(), add a comment:
   # Total animation time: Xs
 with your manually-computed running total.
-{color_block}{self._build_sync_block(scene_spec)}"""
+{color_block}{self._build_notation_block(context)}{self._build_sync_block(scene_spec)}"""
         user_prompt = f"""Generate the full class for this scene:
 
 {json.dumps(scene_data, indent=2)}
@@ -515,6 +515,17 @@ with your manually-computed running total.
         if getattr(scene_spec, "audio_duration_seconds", None) is None:
             return {}
         return dict(getattr(scene_spec, "beat_timings", None) or {})
+
+    @staticmethod
+    def _build_notation_block(context: Any) -> str:
+        rules = list(getattr(context, "notation_rules", None) or [])
+        if not rules:
+            return ""
+        return "\n".join(
+            ["", "═══════════════════════  PROFESSOR NOTATION (BINDING)  ═══════════════════════"]
+            + [f"- {rule}" for rule in rules]
+            + ["Apply this in every MathTex/Tex string and label.", ""]
+        )
 
     def _build_sync_block(self, scene_spec: Any) -> str:
         timings = self._sync_timings(scene_spec)

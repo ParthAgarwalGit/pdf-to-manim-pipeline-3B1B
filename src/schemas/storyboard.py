@@ -52,6 +52,14 @@ class Configuration(BaseModel):
             "an emergent property of document size. None = ungoverned."
         ),
     )
+    professor_notes: List[str] = Field(
+        default_factory=list,
+        description="Binding instructions from the professor's brief for the script prompts",
+    )
+    notation_rules: List[str] = Field(
+        default_factory=list,
+        description="Binding notation directives for code generation, e.g. 'Write j, not i.'",
+    )
 
     @field_validator('verbosity')
     @classmethod

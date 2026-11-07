@@ -295,6 +295,30 @@ P2 is split in two. **P2a** (layers 2 and 3 of Part H) is built: `src/agents/del
 - **`regenerate` repair:** re-codegen with the findings as feedback, capped by `max_gate_regenerations` (default 3). It shares `_regenerate_scene` with render salvage.
 - **Render environment.** The renderer now puts the running pipeline's root first on `PYTHONPATH`, so generated `src.utils` imports match the pipeline's version.
 
+### P3 as built (2026-11-07)
+
+- **Edit ops** (`src/schemas/edit_ops.py`): all of Part C, plus three ops for the Part G feedback classes. `pace` (pause after a beat → `Beat.pause_after`) handles pacing. `pronounce` (`VideoScript.pronunciations` lexicon, applied only to TTS input) handles audio. `fix_visual` (new code for the scene, audio kept) handles visual feedback. `set_density` and `presenter` are defined here and completed in P4 and P5.
+- **`ScriptEditorAgent`** (`src/agents/script_editor.py`):
+  - Deterministic ops never call an LLM. Generative ops (revise, replace/add analogy, expand, condense, seam repair) do, and without a key they are rejected with a reason.
+  - `replace_analogy` re-asks once if a quoted phrase was dropped.
+  - Invariants: untargeted locked beats are restored and reported. A remove that would orphan a concept is rejected and names the dependent beats. Cuts are logged as `reason: professor`.
+- **`ProfessorInputInterpreter`** (`src/agents/professor_input_interpreter.py`) uses one schema-checked LLM call, or rules when no key is set.
+  - Brief mode never drops text: unmapped sentences become notes.
+  - Feedback mode anchors timestamps to beats through `build_timeline`, using delivery-report scene windows plus the timing track.
+- **Directives in a run** (`run_pipeline(directives=...)`, `convert --brief FILE [--yes]` with read-back and confirm). They act at five points:
+  - global directives set config;
+  - scope drops segments before any spend (`professor_omissions.json`);
+  - instructions reach the script prompts as a binding block, and notation reaches the codegen prompt;
+  - rejected analogies and skipped concepts are repaired in the script by the editor (at most 2 rounds) before visual planning;
+  - length and notation are checked after the storyboard and after codegen.
+
+  Every result is in `directive_checks.json` and the delivery report, and an unmet directive blocks "ready".
+- **Feedback revisions:** `revise RUN_DIR --say "..." | --ops edits.yaml | --density ... [--yes]`.
+  - The CLI prints the interpretation, the diff and an estimate (scenes rebuilt, re-narrated or reused; length; cost) before asking to confirm.
+  - `run_revision(visual_fixes=..., ops_applied=...)` regenerates fixed scenes with the instruction as feedback and keeps their audio. A pronunciation fix re-narrates only the scenes that contain the word.
+  - `revision.json` and the delivery report carry a change log ("Changed: scenes 4-5. Reused unchanged: 28 scenes.").
+- **Not built:** the Gradio review tab (P6 covers the end-to-end flow). Remaining notation violations are reported, not regenerated.
+
 ## Testing
 
 - All new behaviour sits behind `PipelineConfig` flags that default to off. A flag-off regression test asserts byte-identical storyboard and manifest output.
