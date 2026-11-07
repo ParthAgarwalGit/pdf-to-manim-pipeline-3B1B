@@ -1861,7 +1861,7 @@ class Orchestrator:
             if len(rendered) == 1:
                 shutil.copy2(rendered[0], final_path)
             elif rendered:
-                renderer._concatenate_videos(rendered, final_path)
+                self.video_renderer_agent._concatenate_videos(rendered, final_path)
             video_output.final_video_path = final_path
             if hasattr(video_output, "total_duration"):
                 video_output.total_duration = sum(
