@@ -69,6 +69,26 @@ def setup_logging(verbosity: str) -> logging.Logger:
     return logging.getLogger(__name__)
 
 
+def _echo_delivery(output_path: Path) -> None:
+    """Print the delivery gate's verdict, if the run produced one."""
+    report_path = output_path / "delivery_report.json"
+    if not report_path.is_file():
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    ready = report.get("status") == "ready"
+    click.echo(click.style("Delivery Check:", bold=True))
+    for i, line in enumerate((report.get("summary") or "").splitlines()):
+        if i == 0:
+            click.echo("  " + click.style(line, fg="green" if ready else "yellow", bold=True))
+        else:
+            click.echo(f"    {line}")
+    click.echo(f"  Details: {report_path}")
+    click.echo()
+
+
 def validate_pdf_path(ctx, param, value: str) -> str:
     """Validate that the PDF file exists and is a valid file."""
     if not value:
@@ -373,6 +393,7 @@ def convert(
                     fg="yellow",
                 ))
             click.echo()
+            _echo_delivery(Path(manifest.output_directory))
 
             # Display cost information
             total_cost = cost_tracker.get_total_cost()
@@ -717,6 +738,8 @@ def revise(
     click.echo(f"  Cost:             ${report['cost_usd']:.4f} USD")
     if manifest.final_video_path:
         click.echo(f"  Final video:      {output_path / manifest.final_video_path}")
+    click.echo()
+    _echo_delivery(output_path)
     if manifest.status in {"FAILURE", "CRITICAL_FAILURE"}:
         raise click.ClickException(
             f"Revision finished with status {manifest.status}; inspect the saved reports."

@@ -217,6 +217,11 @@ class OutputManifest(BaseModel):
         default_factory=list,
         description="Per-scene fingerprints and artifact paths, in video order"
     )
+    delivery_status: Optional[str] = Field(
+        default=None,
+        description="Pre-delivery gate verdict: 'ready' or 'needs_review' "
+                    "(see delivery_report.json); None when the gate did not run"
+    )
 
     @field_validator('status')
     @classmethod

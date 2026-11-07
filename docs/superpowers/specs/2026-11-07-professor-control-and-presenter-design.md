@@ -270,6 +270,27 @@ P1 landed with these refinements to Parts A and B:
 - **OCR is not needed.** A revision re-plans from the lesson script and the base storyboard only.
 - **Not yet enforced.** `locked` is recorded but nothing rewrites beats in P1. Enforcement comes with the P3 editor.
 
+### P2 split: P2a built (2026-11-07), P2b next
+
+P2 is split in two. **P2a** (layers 2 and 3 of Part H) is built: `src/agents/delivery_gate.py`, `src/utils/media_probe.py`, `src/utils/scene_retime.py`, `src/schemas/delivery_report.py`.
+
+- **Checks:** `av_duration` (≤ 0.3 s, frozen tail > 1 s is high), `narration_present`, `narration_intact` (≥ TTS − 50 ms), `narration_gaps` (no silence ≥ 2 s), `loudness` (−16 ± 1.5 LUFS, TP ≤ −1 dBTP), and whole-video `stream_format` and `concat_drift` (0.1 s + 5 ms per clip). Blocking (high/critical) findings from the existing frame QA review are folded in.
+- **Repairs:** all deterministic, with at most 2 rounds per scene:
+  - `retime`: an AST edit of the scene's single-execution `self.wait` holds, then re-render and recompose;
+  - `recompose`;
+  - `renormalize`: two-pass linear loudnorm;
+  - `reconcat`: re-encode, scaling clips to the common format.
+- **Prevention in the composer:** narration is never trimmed (the old simple merge cut up to 0.5 s of speech), every narration track gets loudnorm, silent scenes get a silent track, and the re-encode fallback scales mismatched clips (it used to fail on them).
+- **Verdict:** `delivery_report.json` plus `manifest.delivery_status`, printed by the CLI. The video is delivered either way.
+- **Calibration:** checked on synthetic ffmpeg fixtures and one real manim render. Thresholds still need tuning on real lecture runs.
+
+**P2b** (layer 1 plus the rest of layer 2) is still to build:
+- the per-beat timing track (`timing_track.json`);
+- the `sync_to` runtime helper and its validator lint;
+- the beat-alignment check (activity onset per beat window);
+- LLM re-codegen as a repair for visual QA and alignment failures;
+- the optional ASR fidelity check.
+
 ## Testing
 
 - All new behaviour sits behind `PipelineConfig` flags that default to off. A flag-off regression test asserts byte-identical storyboard and manifest output.

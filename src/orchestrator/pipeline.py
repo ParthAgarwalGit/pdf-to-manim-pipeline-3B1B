@@ -109,7 +109,11 @@ class PipelineConfig:
     # LLM call, so a pathological run must not multiply the bill unbounded.
     # 0 disables salvage entirely.
     max_salvage_scenes: int = 10
-    
+    # Pre-delivery quality gate: measure every composed scene, apply bounded
+    # deterministic repairs, write delivery_report.json (ready/needs review).
+    enable_delivery_gate: bool = True
+    max_gate_repair_rounds: int = 2
+
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
         return Configuration(
@@ -451,6 +455,12 @@ class Orchestrator:
             else:
                 logger.info("Audio-video composition skipped (missing render or TTS)")
 
+            # Pre-delivery gate: measure, repair (bounded), then review the
+            # repaired media.
+            gate_result = self._run_delivery_gate(
+                sanitized_storyboard, video_output, tts_output, composition_output,
+            )
+
             # Final video review (only if we have rendered output)
             video_review_output = None
             if self.config.enable_render:
@@ -463,6 +473,7 @@ class Orchestrator:
                     composition_output,
                     self.structured_logger
                 )
+            self._record_delivery(manifest, gate_result, video_review_output)
 
             manifest = self._finalize_manifest(
                 manifest,
@@ -695,12 +706,16 @@ class Orchestrator:
                     composition_output = self._run_audio_video_composition(
                         video_output, tts_output, manifest, self.structured_logger,
                     )
+                gate_result = self._run_delivery_gate(
+                    storyboard, video_output, tts_output, composition_output,
+                )
                 video_review_output = None
                 if self.config.enable_render:
                     video_review_output = self._run_final_video_review(
                         storyboard, scene_output, manifest, video_output,
                         tts_output, composition_output, self.structured_logger,
                     )
+                self._record_delivery(manifest, gate_result, video_review_output)
 
             manifest = self._finalize_manifest(
                 manifest, video_output, tts_output, composition_output,
@@ -2145,6 +2160,55 @@ class Orchestrator:
             shared_context=getattr(scene_output, "shared_context", None),
         )
 
+    def _run_delivery_gate(self, storyboard, video_output, tts_output, composition_output):
+        """Measure every composed scene and apply bounded deterministic repairs.
+
+        Mutates ``video_output`` and ``composition_output`` in place when a
+        scene is re-timed or recomposed. Returns None when there is no
+        composed video to check (gate disabled, render or TTS skipped).
+        Never fatal: a gate error leaves the media as composed.
+        """
+        if not self.config.enable_delivery_gate or not isinstance(
+            composition_output, AudioVideoComposerOutput
+        ):
+            return None
+        from src.agents.delivery_gate import DeliveryGate
+
+        gate = DeliveryGate(
+            renderer=self.video_renderer_agent,
+            composer=self.audio_video_composer_agent,
+            render_quality=self.config.render_quality,
+            max_rounds=self.config.max_gate_repair_rounds,
+        )
+        start = time.time()
+        try:
+            result = gate.run(
+                storyboard, self._run_output_dir, video_output, tts_output or [], composition_output,
+            )
+        except Exception as exc:
+            logger.warning("Delivery gate failed; delivering without it: %s", exc, exc_info=True)
+            return None
+        result.gate = gate
+        repaired = sum(1 for s in result.scenes if s.repairs_applied)
+        logger.info(
+            "Delivery gate: %d/%d scenes passed, %d repaired in %d round(s) (%.1fs)",
+            sum(1 for s in result.scenes if s.passed), len(result.scenes),
+            repaired, result.repair_rounds, time.time() - start,
+        )
+        return result
+
+    def _record_delivery(self, manifest: OutputManifest, gate_result, video_review_output) -> None:
+        """Turn the gate result plus blocking review findings into the delivery report."""
+        if gate_result is None:
+            return
+        report = gate_result.gate.report(
+            gate_result, getattr(video_review_output, "findings", None),
+        )
+        self._quality_reports["delivery"] = report.model_dump(mode="json")
+        manifest.delivery_status = report.status
+        log = logger.info if report.status == "ready" else logger.warning
+        log("Delivery: %s", report.summary.replace("\n", " | "))
+
     def _run_final_video_review(
         self,
         storyboard,
@@ -2356,6 +2420,7 @@ class Orchestrator:
             "tts": "tts.json",
             "narration_timing": "narration_timing.json",
             "manim_verifier": "manim_verifier.json",
+            "delivery": "delivery_report.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:

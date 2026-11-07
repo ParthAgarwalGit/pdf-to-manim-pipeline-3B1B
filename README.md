@@ -178,6 +178,29 @@ only one writable output directory.
 pdf2manim cost document.pdf
 ```
 
+### Delivery Check
+
+Before a video is handed over, every scene is measured: animation vs.
+narration length (no frozen last frame), narration not cut off, no long
+silences, loudness at −16 LUFS, and uniform clip formats with no A/V drift
+across the joined video. Failures are repaired automatically where a
+deterministic fix exists (re-time the scene's pauses and re-render,
+recompose, re-normalize, re-encode the join), at most twice per scene.
+The verdict is in `delivery_report.json` and printed at the end of the run:
+
+```
+Ready: 32/32 scenes passed sync and quality checks.
+```
+
+or, when something still needs a human:
+
+```
+Needs review: 31/32 scenes passed sync and quality checks.
+Scene 14 (0:42-0:51): The animation ends 2.3s before the narration, so the last frame is frozen.
+```
+
+The video is delivered either way. Disable with `PipelineConfig(enable_delivery_gate=False)`.
+
 ### Revise a Finished Video
 
 Every run saves `lesson_script.json`: the narration as beats, each tagged with
@@ -306,6 +329,7 @@ output/{pdf_filename}/{timestamp}/
 ├── storyboard_review.json  # Storyboard quality review (coverage, pedagogy)
 ├── scene_code_review.json  # Code validation review (incl. security gate)
 ├── video_review.json       # Final media review (incl. frame-level visual QA)
+├── delivery_report.json    # Delivery gate verdict: ready / needs review, per-scene checks
 ├── tts.json                # TTS batch outcome
 ├── manifest.json           # File listing, cost summary, per-scene fingerprints
 ├── audio/                  # Per-scene narration .mp3
