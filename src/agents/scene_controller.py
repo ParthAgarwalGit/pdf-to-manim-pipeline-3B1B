@@ -252,6 +252,7 @@ class SceneControllerAgent(Agent):
             visual_intent=scene.visual_intent.model_dump(),
             duration_estimate=scene.duration_estimate,
             audio_duration_seconds=scene.audio_duration_seconds,
+            beat_timings=dict(getattr(scene, "beat_timings", None) or {}),
         )
     
     def _process_scene_with_generator(

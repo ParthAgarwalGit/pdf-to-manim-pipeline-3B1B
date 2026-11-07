@@ -133,8 +133,13 @@ class FakeMedia:
             audio.parent.mkdir(parents=True, exist_ok=True)
             audio.write_bytes(f"{voice}:{scene['narration']}".encode())
             self.narrated.append(scene["scene_id"])
+            beats = scene.get("beats") or []
+            # Voice-dependent pacing, so a new voice means a new timing track.
+            per_beat = 9.0 / max(1, len(beats)) * (1.1 if voice == "nova" else 1.0)
+            timings = {b: [round(i * per_beat, 3), round((i + 1) * per_beat, 3)] for i, (b, _) in enumerate(beats)}
             results.append(TTSOutput(
-                audio_file_path=str(audio), duration_seconds=9.0, scene_id=scene["scene_id"],
+                audio_file_path=str(audio), duration_seconds=round(per_beat * max(1, len(beats)), 3),
+                scene_id=scene["scene_id"], beat_timings=timings,
             ))
         return results
 
@@ -459,10 +464,18 @@ class TestRevisionRuns:
         assert unchanged.media.rendered == [] and unchanged.media.narrated == []
 
         revoiced = _orchestrator(tmp_path, tts_first=True, tts_voice="nova")
-        revoiced.run_revision(str(run_dir), script)
-        # A new recording re-times the plan, so nothing can keep its render.
+        manifest = revoiced.run_revision(str(run_dir), script)
+        # A new recording re-times every scene, so every render is redone,
+        # but the code is reused with the new timing track injected: no codegen.
         assert len(revoiced.media.rendered) == base_manifest.total_scenes
         assert len(revoiced.media.narrated) == base_manifest.total_scenes
+        assert revoiced.media.generated == []
+        rev_dir = Path(manifest.output_directory)
+        report = json.loads((rev_dir / "revision.json").read_text("utf-8"))
+        assert len(report["scenes"]["retimed"]) == base_manifest.total_scenes
+        first = manifest.scenes[0]
+        code = (rev_dir / first.code_path).read_text("utf-8")
+        assert "BEAT_TIMES = {" in code and code.rstrip().endswith("sync_to_end(self)")
 
     def test_legacy_run_without_records_is_still_revisable(self, tmp_path):
         script = _script()

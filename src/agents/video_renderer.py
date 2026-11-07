@@ -268,6 +268,7 @@ class VideoRendererAgent(Agent):
                 capture_output=True,
                 text=True,
                 timeout=300,  # 5 min per scene
+                env=self._render_env(),
             )
 
             if result.returncode != 0:
@@ -322,6 +323,21 @@ class VideoRendererAgent(Agent):
                 scene_id=scene_id, success=False,
                 error=f"Unexpected error: {e}",
             )
+
+    @staticmethod
+    def _render_env() -> dict:
+        """Environment for the manim subprocess.
+
+        Generated scenes import helpers from ``src.utils``. Put the root of
+        the running pipeline's ``src`` package first on PYTHONPATH so those
+        imports resolve to the same code version, not to whatever ``src`` an
+        editable install elsewhere happens to provide.
+        """
+        env = os.environ.copy()
+        repo_root = str(Path(__file__).resolve().parents[2])
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = repo_root + (os.pathsep + existing if existing else "")
+        return env
 
     def _detect_scene_class(self, scene_file: str) -> Optional[str]:
         """Parse the file to find the Scene subclass name."""

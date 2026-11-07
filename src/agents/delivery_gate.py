@@ -1,14 +1,16 @@
 """Pre-delivery quality gate: measure, repair (bounded), report.
 
 Runs after composition. Every composed scene is measured with ffprobe and
-ffmpeg against fixed thresholds; failures are routed to the smallest
-deterministic repair (no LLM calls):
+ffmpeg against fixed thresholds; failures are routed to the smallest repair:
 
 - ``retime``: spread the measured audio/video gap across the scene's own
-  ``self.wait`` holds, re-render, recompose;
+  ``self.wait`` holds, re-render, recompose (no LLM);
 - ``recompose``: merge again (the composer never trims narration);
 - ``renormalize``: two-pass loudness normalization of the clip;
-- ``reconcat``: re-encode the final concatenation.
+- ``reconcat``: re-encode the final concatenation;
+- ``regenerate``: re-codegen the scene with the finding as feedback, for
+  visual failures (a static beat window, a blank render). The only repair
+  that costs an LLM call; capped per run by ``max_regenerations``.
 
 Each scene gets at most ``max_rounds`` repair rounds and passing scenes are
 never touched. The result is a ``DeliveryReport``: ``ready`` only when every
@@ -43,12 +45,37 @@ THRESHOLDS: Dict[str, float] = {
     "true_peak_max_dbtp": -1.0,
     "concat_drift_base_s": 0.1,
     "concat_drift_per_clip_s": 0.005,
+    "beat_onset_tolerance_s": 0.75,
+    # Fraction of (160x90) pixels changing between samples that counts as
+    # motion; a small dot sliding across a Manim frame measures ~0.0005.
+    "activity_threshold": 0.0002,
+    "asr_max_wer": 0.10,
 }
 
-# When several checks fail, the broadest repair goes first: a retime
+# When several checks fail, the cheapest broad repair goes first: a retime
 # re-renders and recomposes, which also redoes loudness and narration.
-_REPAIR_PRIORITY = ("retime", "recompose", "renormalize")
+# Regeneration (an LLM call) comes last.
+_REPAIR_PRIORITY = ("retime", "recompose", "renormalize", "regenerate")
 _BLOCKING_SEVERITIES = {"high", "critical"}
+
+
+def word_error_rate(reference: str, hypothesis: str) -> float:
+    """Word-level edit distance over the reference length (case/punctuation-blind)."""
+    import re
+
+    def words(text: str) -> List[str]:
+        return re.findall(r"[a-z0-9']+", (text or "").lower())
+
+    ref, hyp = words(reference), words(hypothesis)
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    previous = list(range(len(hyp) + 1))
+    for i, r in enumerate(ref, 1):
+        current = [i] + [0] * len(hyp)
+        for j, h in enumerate(hyp, 1):
+            current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (r != h))
+        previous = current
+    return previous[-1] / len(ref)
 
 
 def format_timestamp(seconds: Optional[float]) -> str:
@@ -65,6 +92,9 @@ class SceneMedia:
     video_path: Optional[str] = None
     audio_path: Optional[str] = None
     composed_path: Optional[str] = None
+    narration: str = ""
+    # (beat_id, start, end, text) from the timing track, in narration order.
+    beats: List[tuple] = field(default_factory=list)
 
 
 @dataclass
@@ -77,12 +107,27 @@ class GateResult:
     gate: Any = None  # the DeliveryGate that produced it (builds the report)
 
 
+def _frame_review(scene_id: str, video_path: str) -> List[Any]:
+    """Blocking keyframe findings (blank renders) from the existing frame QA."""
+    from types import SimpleNamespace
+    from src.agents.video_quality_reviewer import VideoQualityReviewerAgent
+
+    findings = VideoQualityReviewerAgent()._review_rendered_frames(
+        {scene_id: SimpleNamespace(success=True, video_path=video_path)}
+    )
+    return [f for f in findings if getattr(f, "severity", "") in _BLOCKING_SEVERITIES]
+
+
 @dataclass
 class _Probes:
     probe: Callable[[str], Optional[media_probe.MediaInfo]] = media_probe.probe
     loudness: Callable[[str], Optional[media_probe.Loudness]] = media_probe.measure_loudness
     silences: Callable[..., Optional[list]] = media_probe.detect_silences
     normalize: Callable[..., bool] = media_probe.normalize_audio_track
+    activity: Callable[[str], Optional[List[float]]] = media_probe.frame_activity
+    frame_review: Callable[[str, str], List[Any]] = _frame_review
+    # Speech-to-text of an audio file; None disables the fidelity check.
+    transcribe: Optional[Callable[[str], Optional[str]]] = None
 
 
 class DeliveryGate:
@@ -93,6 +138,8 @@ class DeliveryGate:
         render_quality: str = "medium",
         max_rounds: int = 2,
         probes: Optional[_Probes] = None,
+        regenerate: Optional[Callable[[str, List[str]], Any]] = None,
+        max_regenerations: int = 3,
     ):
         self.renderer = renderer
         self.composer = composer
@@ -100,6 +147,10 @@ class DeliveryGate:
         self.max_rounds = max(0, int(max_rounds))
         self.probes = probes or _Probes()
         self.thresholds = dict(THRESHOLDS)
+        # (scene_id, feedback) -> SceneRenderResult of fresh code, or None.
+        self.regenerate = regenerate
+        self.max_regenerations = max(0, int(max_regenerations))
+        self.regenerations = 0
 
     # ── measurement ─────────────────────────────────────────────────────
 
@@ -203,7 +254,119 @@ class DeliveryGate:
                 measured={"integrated_lufs": loudness.integrated, "true_peak_dbtp": loudness.true_peak},
                 repair="renormalize" if (off_target or too_hot) else None,
             ))
+
+        if media.beats and media.video_path:
+            checks.append(self._check_beat_alignment(media))
+        if media.video_path:
+            checks.append(self._check_visual_qa(media))
+        if self.probes.transcribe is not None and media.narration and media.composed_path:
+            checks.append(self._check_fidelity(media))
         return checks
+
+    def _check_beat_alignment(self, media: SceneMedia) -> CheckResult:
+        """Visuals must move during every beat and start when the beat starts."""
+        t = self.thresholds
+        activity = self.probes.activity(media.video_path)
+        if not activity:
+            return CheckResult(
+                check="beat_alignment", passed=None,
+                message="On-screen motion could not be measured.",
+            )
+        fps = media_probe.ACTIVITY_FPS
+        threshold = t["activity_threshold"]
+        tolerance = t["beat_onset_tolerance_s"]
+        static, late = [], []
+        for beat_id, start, end, text in media.beats:
+            window = [a for i, a in enumerate(activity) if start <= i / fps < end]
+            if window and max(window) < threshold:
+                static.append((beat_id, start, end, text))
+                continue
+            onset = next(
+                (i / fps for i, a in enumerate(activity)
+                 if start - tolerance <= i / fps < end and a >= threshold),
+                None,
+            )
+            if onset is not None and onset > start + tolerance:
+                late.append((beat_id, start, onset, text))
+
+        def snippet(text: str) -> str:
+            words = (text or "").split()
+            return " ".join(words[:8]) + ("..." if len(words) > 8 else "")
+
+        feedback: List[str] = []
+        message = ""
+        for beat_id, start, end, text in static:
+            feedback.append(
+                f"Nothing moves on screen during {beat_id} ({start:.1f}-{end:.1f}s, "
+                f"\"{snippet(text)}\"). Right after sync_to(self, \"{beat_id}\"), add a "
+                "visible animation that shows what this beat says."
+            )
+        for beat_id, start, onset, text in late:
+            feedback.append(
+                f"The visual for {beat_id} starts {onset - start:.1f}s after its narration. "
+                f"Begin its animation immediately after sync_to(self, \"{beat_id}\")."
+            )
+        if static:
+            _, start, end, text = static[0]
+            message = (
+                f"Nothing moves on screen for {end - start:.1f}s while the narration says "
+                f"\"{snippet(text)}\""
+            )
+        elif late:
+            _, start, onset, text = late[0]
+            message = f"The visual for \"{snippet(text)}\" starts {onset - start:.1f}s after the narration."
+        passed = not static and not late
+        return CheckResult(
+            check="beat_alignment", passed=passed,
+            severity="medium" if static else "low",
+            message=message,
+            measured={
+                "static_beats": [b[0] for b in static],
+                "late_beats": [b[0] for b in late],
+                "feedback": feedback,
+            },
+            repair=None if passed else "regenerate",
+        )
+
+    def _check_visual_qa(self, media: SceneMedia) -> CheckResult:
+        try:
+            findings = self.probes.frame_review(media.scene_id, media.video_path)
+        except Exception as exc:
+            logger.warning("Frame review failed for %s: %s", media.scene_id, exc)
+            return CheckResult(check="visual_qa", passed=None, message="Frames could not be reviewed.")
+        if not findings:
+            return CheckResult(check="visual_qa", passed=True)
+        first = findings[0]
+        return CheckResult(
+            check="visual_qa", passed=False, severity=getattr(first, "severity", "critical"),
+            message=getattr(first, "issue", "The render failed visual QA."),
+            measured={"feedback": [
+                getattr(f, "llm_direction", "") or getattr(f, "issue", "") for f in findings
+            ]},
+            repair="regenerate",
+        )
+
+    def _check_fidelity(self, media: SceneMedia) -> CheckResult:
+        try:
+            transcript = self.probes.transcribe(media.composed_path)
+        except Exception as exc:
+            logger.warning("Transcription failed for %s: %s", media.scene_id, exc)
+            transcript = None
+        if transcript is None:
+            return CheckResult(
+                check="narration_fidelity", passed=None,
+                message="The narration could not be transcribed.",
+            )
+        wer = word_error_rate(media.narration, transcript)
+        passed = wer <= self.thresholds["asr_max_wer"]
+        return CheckResult(
+            check="narration_fidelity", passed=passed,
+            message="" if passed else (
+                f"The spoken narration differs from the script ({wer:.0%} of words); "
+                "words may be skipped or garbled."
+            ),
+            measured={"wer": round(wer, 3)},
+        )
 
     def check_final(
         self,
@@ -325,7 +488,7 @@ class DeliveryGate:
                 if done:
                     repairs[m.scene_id].append(repair)
                     composed_changed = True
-                    rerendered = rerendered or repair == "retime"
+                    rerendered = rerendered or repair in ("retime", "regenerate")
                     checks[m.scene_id] = self.check_scene(m)
                 else:
                     exhausted[m.scene_id].add(repair)
@@ -433,16 +596,24 @@ class DeliveryGate:
             for r in getattr(composition_output, "scene_results", []) or []
             if getattr(r, "success", False) and getattr(r, "composed_video_path", None)
         }
-        return [
-            SceneMedia(
+        media: List[SceneMedia] = []
+        for index, scene in enumerate(getattr(storyboard, "scenes", []) or []):
+            timings = getattr(scene, "beat_timings", None) or {}
+            texts = {b.beat_id: b.narration for b in getattr(scene, "source_beats", None) or []}
+            beats = sorted(
+                (beat_id, float(span[0]), float(span[1]), texts.get(beat_id, ""))
+                for beat_id, span in timings.items()
+            )
+            media.append(SceneMedia(
                 scene_id=scene.scene_id,
                 index=index,
                 video_path=renders.get(scene.scene_id),
                 audio_path=audio.get(scene.scene_id),
                 composed_path=composed.get(scene.scene_id),
-            )
-            for index, scene in enumerate(getattr(storyboard, "scenes", []) or [])
-        ]
+                narration=getattr(scene, "narration", "") or "",
+                beats=sorted(beats, key=lambda b: b[1]),
+            ))
+        return media
 
     def _timeline(self, media, checks, repairs) -> List[SceneDelivery]:
         scenes: List[SceneDelivery] = []
@@ -476,6 +647,8 @@ class DeliveryGate:
                 return self._recompose(media, output_dir, composition_output)
             if repair == "renormalize":
                 return self._renormalize(media)
+            if repair == "regenerate":
+                return self._regenerate(media, checks, output_dir, video_output, composition_output)
         except Exception as exc:
             logger.warning("Delivery repair %s for %s failed: %s", repair, media.scene_id, exc)
         return False
@@ -502,6 +675,27 @@ class DeliveryGate:
             scene_file.write_text(original, encoding="utf-8")  # keep the working version
             return False
         logger.info("Delivery gate re-timed %s by %+.2fs", media.scene_id, applied)
+        media.video_path = result.video_path
+        results = getattr(video_output, "scene_results", None)
+        if results is not None:
+            for i, existing in enumerate(results):
+                if existing.scene_id == media.scene_id:
+                    results[i] = result
+        return self._recompose(media, output_dir, composition_output)
+
+    def _regenerate(self, media, checks, output_dir, video_output, composition_output) -> bool:
+        """Re-codegen the scene with the visual findings as feedback, then recompose."""
+        if self.regenerate is None or self.regenerations >= self.max_regenerations:
+            return False
+        feedback: List[str] = []
+        for check in checks:
+            if check.passed is False and check.repair == "regenerate":
+                feedback.extend((check.measured or {}).get("feedback") or [check.message])
+        self.regenerations += 1
+        result = self.regenerate(media.scene_id, feedback)
+        if not getattr(result, "success", False) or not getattr(result, "video_path", None):
+            return False
+        logger.info("Delivery gate regenerated %s", media.scene_id)
         media.video_path = result.video_path
         results = getattr(video_output, "scene_results", None)
         if results is not None:

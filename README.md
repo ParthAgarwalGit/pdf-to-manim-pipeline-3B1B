@@ -201,6 +201,15 @@ Scene 14 (0:42-0:51): The animation ends 2.3s before the narration, so the last 
 
 The video is delivered either way. Disable with `PipelineConfig(enable_delivery_gate=False)`.
 
+With `--tts-first`, narration is recorded beat by beat before any code is
+written, giving a timing track (`timing_track.json`). The generated scene
+calls `sync_to(self, "beat_007")` before each beat's animation and waits on
+Manim's own clock, so visuals line up with the words at render time. The
+gate then checks that something moves during every beat; a still beat is
+regenerated with that finding as feedback (at most 3 LLM regenerations per
+run). `PipelineConfig(enable_asr_check=True)` adds a paid Whisper check that
+the spoken audio matches the script.
+
 ### Revise a Finished Video
 
 Every run saves `lesson_script.json`: the narration as beats, each tagged with

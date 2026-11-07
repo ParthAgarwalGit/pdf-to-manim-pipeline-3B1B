@@ -437,7 +437,8 @@ def test_frozen_tail_is_fixed_by_a_real_retime_and_rerender(tmp_path):
     scene_file.write_text(
         '"""\nScene: scene_001\n"""\n\nfrom manim import *\n\n'
         "class Scene001(Scene):\n    def construct(self):\n"
-        "        self.play(Create(Circle()), run_time=0.5)\n        self.wait(0.5)\n",
+        "        self.play(FadeIn(Square(side_length=4, fill_opacity=0.9)), run_time=0.5)\n"
+        "        self.wait(0.5)\n",
         encoding="utf-8",
     )
     renderer = VideoRendererAgent()

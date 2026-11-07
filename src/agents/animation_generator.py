@@ -18,6 +18,7 @@ from google.genai import types
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
 from src.schemas.animation_code import AnimationCodeObject
 from src.schemas.scene_processing import SceneProcessingInput, SharedContext
+from src.utils.sync_contract import SYNC_IMPORT, inject_sync_contract, lint_sync_calls
 from src.utils.manim_engine_contract import (
     build_animation_codegen_contract_prompt,
     build_3b1b_quality_prompt,
@@ -294,6 +295,7 @@ class AnimationCodeGeneratorAgent(Agent):
                     
                     # Validate syntax
                     self._validate_syntax(code)
+                    code = self._apply_sync_contract(code, scene_spec)
                     
                     # Format code
                     formatted_code = self._format_code(code, scene_spec, context)
@@ -467,7 +469,7 @@ about {target_duration}s.
 At the END of construct(), add a comment:
   # Total animation time: Xs
 with your manually-computed running total.
-{color_block}"""
+{color_block}{self._build_sync_block(scene_spec)}"""
         user_prompt = f"""Generate the full class for this scene:
 
 {json.dumps(scene_data, indent=2)}
@@ -496,12 +498,66 @@ with your manually-computed running total.
             cleaned = self._clean_llm_code(raw_code, class_name)
             # Duration sync (P1.4): distribute any missing time across existing
             # waits so the composer does not need to freeze the tail.
+            if self._sync_timings(scene_spec):
+                # sync_to / sync_to_end own the timing; padding waits on top
+                # would push the video past the narration.
+                return cleaned
             return self._distribute_duration_slack(cleaned, target_duration)
 
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"LLM generation failed: {e}")
             return self._mock_generate_code(scene_spec, context)
+
+    @staticmethod
+    def _sync_timings(scene_spec: Any) -> Dict[str, List[float]]:
+        """The scene's measured beat timing track, when narration came first."""
+        if getattr(scene_spec, "audio_duration_seconds", None) is None:
+            return {}
+        return dict(getattr(scene_spec, "beat_timings", None) or {})
+
+    def _build_sync_block(self, scene_spec: Any) -> str:
+        timings = self._sync_timings(scene_spec)
+        if not timings:
+            return ""
+        lines = [
+            f"  {beat_id} starts at {span[0]:.1f}s"
+            for beat_id, span in sorted(timings.items(), key=lambda kv: kv[1][0])
+        ]
+        return "\n".join([
+            "",
+            "═══════════════════════  NARRATION SYNC  ═══════════════════════",
+            "The narration's beat start times are measured. Call",
+            '  sync_to(self, "<beat_id>")',
+            "immediately BEFORE the animations for each beat, in this order:",
+            *lines,
+            "sync_to waits on Manim's clock until that beat begins, so never pad",
+            "with self.wait() to line things up and never total up timings yourself.",
+            "End construct() with sync_to_end(self). BEAT_TIMES and NARRATION_END",
+            "are added to the class for you; do not define them.",
+            "",
+        ])
+
+    def _apply_sync_contract(self, code: str, scene_spec: Any) -> str:
+        """Inject the measured timing track; lint the sync calls (warn only)."""
+        timings = self._sync_timings(scene_spec)
+        if not timings:
+            return code
+        ordered = sorted(timings.items(), key=lambda kv: kv[1][0])
+        class_name = self._get_class_name(scene_spec.scene_id)
+        code = inject_sync_contract(
+            code,
+            {beat_id: span[0] for beat_id, span in ordered},
+            scene_spec.audio_duration_seconds,
+            class_name=class_name,
+        )
+        issues = lint_sync_calls(code, [beat_id for beat_id, _ in ordered], class_name)
+        if issues:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Sync lint for %s: %s", scene_spec.scene_id, " ".join(issues),
+            )
+        return code
 
     def _object_plan_for_prompt(self, obj: Any) -> Dict[str, Any]:
         """Serialize ONE planned math object for the code LLM.
@@ -1103,6 +1159,7 @@ Generated: {datetime.now().isoformat()}
             "from src.utils.animation_patterns import progressive_write, dim_and_focus, staged_transform, execute_animation_steps",
             "from src.utils.layout_tracker import LayoutTracker",
             "from src.utils.geometry_helpers import connect, drop_perpendicular, on_axes, perpendicular_foot",
+            SYNC_IMPORT,
         ]
 
     def _emit_primitive(self, var_name: str, obj_data: dict) -> str:

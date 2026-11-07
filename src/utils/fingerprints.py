@@ -61,7 +61,7 @@ def visual_fingerprint(scene: Any, render_quality: str, tts_first: bool) -> str:
     plan, so it is part of the fingerprint; otherwise audio never touches
     the visuals.
     """
-    return _digest({
+    payload = {
         "v": FINGERPRINT_VERSION,
         "beats": beats_fingerprint(getattr(scene, "source_beats", None) or []),
         "narration": scene.narration,
@@ -69,4 +69,9 @@ def visual_fingerprint(scene: Any, render_quality: str, tts_first: bool) -> str:
         "duration": scene.duration_estimate,
         "audio_duration": scene.audio_duration_seconds if tts_first else None,
         "quality": render_quality,
-    })
+    }
+    timings = getattr(scene, "beat_timings", None)
+    if tts_first and timings:
+        # The beat timing track is injected into the scene code.
+        payload["beat_timings"] = timings
+    return _digest(payload)

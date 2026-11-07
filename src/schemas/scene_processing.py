@@ -137,6 +137,10 @@ class SceneSpec(BaseModel):
         gt=0.0,
         description="Measured narration duration used as the animation target",
     )
+    beat_timings: Dict[str, List[float]] = Field(
+        default_factory=dict,
+        description="Timing track (beat_id -> [start, end] s) for the sync contract",
+    )
     
     @field_validator('scene_id')
     @classmethod

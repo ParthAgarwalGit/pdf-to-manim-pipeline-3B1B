@@ -547,6 +547,11 @@ class Scene(BaseModel):
         default_factory=list,
         description="SourceSegment ids covered by this scene."
     )
+    beat_timings: Dict[str, List[float]] = Field(
+        default_factory=dict,
+        description="Timing track: beat_id -> [start, end] seconds within the "
+                    "scene's narration audio (per-beat TTS)."
+    )
 
     @field_validator('scene_id')
     @classmethod

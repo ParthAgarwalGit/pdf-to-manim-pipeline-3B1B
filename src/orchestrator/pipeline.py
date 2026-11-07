@@ -113,6 +113,10 @@ class PipelineConfig:
     # deterministic repairs, write delivery_report.json (ready/needs review).
     enable_delivery_gate: bool = True
     max_gate_repair_rounds: int = 2
+    # Regenerate repairs cost one codegen LLM call each; capped per run.
+    max_gate_regenerations: int = 3
+    # Whisper transcript vs script (paid); off by default.
+    enable_asr_check: bool = False
 
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -644,11 +648,30 @@ class Orchestrator:
                 "video": {sid: r.scene_id for sid, r in reuse_video.items()},
                 "audio": {sid: r.scene_id for sid, r in reuse_audio.items()},
             }
-            regenerate = [s.scene_id for s in storyboard.scenes if s.scene_id not in reuse_video]
+            # Narration-first: a scene whose beats are unchanged but whose
+            # narration is re-recorded keeps its code. The new timing track is
+            # injected into it and it is re-rendered, with no codegen call.
+            retime_only: Dict[str, Any] = {}
+            if self.config.tts_first:
+                for sid, base_id in reuse_plan.items():
+                    record = base.records.get(base_id)
+                    if (
+                        record is not None
+                        and sid not in reuse_video
+                        and sid not in reuse_audio
+                        and base.artifact(record.code_path)
+                    ):
+                        retime_only[sid] = record
+            regenerate = [
+                s.scene_id for s in storyboard.scenes
+                if s.scene_id not in reuse_video and s.scene_id not in retime_only
+            ]
             narrate = [s for s in storyboard.scenes if s.scene_id not in reuse_audio]
             logger.info(
-                "Revision plan: %d scenes; reusing %d plan(s), %d render(s), %d narration(s)",
+                "Revision plan: %d scenes; reusing %d plan(s), %d render(s), %d narration(s); "
+                "%d re-timed without codegen",
                 len(storyboard.scenes), len(reuse_plan), len(reuse_video), len(reuse_audio),
+                len(retime_only),
             )
 
             if self.config.dry_run:
@@ -676,7 +699,9 @@ class Orchestrator:
                     scene_output = self._run_raw_manim_verifier(scene_output, storyboard)
                 else:
                     scene_output = None
-                scene_output = self._merge_scene_output(storyboard, scene_output, base, reuse_video)
+                scene_output = self._merge_scene_output(
+                    storyboard, scene_output, base, reuse_video, retime_only,
+                )
 
                 manifest = self._run_persistence(scene_output, storyboard, None, file_ref, self.structured_logger)
                 self._write_lesson_script(manifest, storyboard)
@@ -685,7 +710,7 @@ class Orchestrator:
                 if self.config.enable_render:
                     scene_files = [
                         str(rev_dir / f"scene_{sid}.py")
-                        for sid in regenerate
+                        for sid in regenerate + list(retime_only)
                         if (rev_dir / f"scene_{sid}.py").is_file()
                     ]
                     fresh_renders = (
@@ -733,6 +758,7 @@ class Orchestrator:
                     "reused_video": self._scene_reuse["video"],
                     "reused_audio": self._scene_reuse["audio"],
                     "regenerated": regenerate,
+                    "retimed": list(retime_only),
                 },
                 "cost_usd": round(CostTracker.get_instance().get_total_cost() - cost_before, 4),
                 "duration_seconds": round(time.time() - start, 2),
@@ -785,19 +811,43 @@ class Orchestrator:
             )
         return results
 
-    def _merge_scene_output(self, storyboard, scene_output, base, reuse_video: Dict[str, Any]):
-        """Combine fresh code with the reused scenes' code, in video order."""
+    def _merge_scene_output(
+        self,
+        storyboard,
+        scene_output,
+        base,
+        reuse_video: Dict[str, Any],
+        retime_only: Optional[Dict[str, Any]] = None,
+    ):
+        """Combine fresh code with the reused scenes' code, in video order.
+
+        ``retime_only`` scenes reuse their parent code with the new timing
+        track injected (narration re-recorded, beats unchanged).
+        """
         from types import SimpleNamespace
         from src.orchestrator.revision import code_object_from_file
         from src.schemas.scene_processing import SceneProcessingReport
+        from src.utils.sync_contract import inject_sync_contract
 
+        retime_only = retime_only or {}
         fresh = {c.scene_id: c for c in getattr(scene_output, "animation_code_objects", []) or []}
         failed = list(getattr(getattr(scene_output, "report", None), "failed_scenes", []) or [])
         code_objects = []
         for scene in storyboard.scenes:
             record = reuse_video.get(scene.scene_id)
+            retime = retime_only.get(scene.scene_id)
             if record is not None:
                 code_objects.append(code_object_from_file(base.artifact(record.code_path), scene))
+            elif retime is not None:
+                code_obj = code_object_from_file(base.artifact(retime.code_path), scene)
+                ordered = sorted((scene.beat_timings or {}).items(), key=lambda kv: kv[1][0])
+                code_obj.code = inject_sync_contract(
+                    code_obj.code,
+                    {beat_id: span[0] for beat_id, span in ordered},
+                    scene.audio_duration_seconds,
+                    class_name=code_obj.class_name,
+                )
+                code_objects.append(code_obj)
             elif scene.scene_id in fresh:
                 code_objects.append(fresh[scene.scene_id])
         report = SceneProcessingReport(
@@ -1366,6 +1416,67 @@ class Orchestrator:
                 error=f"Video rendering failed: {e}"
             )
 
+    def _regenerate_scene(self, scene, storyboard, feedback: List[str]):
+        """Re-codegen one scene with ``feedback``, validate, persist, re-render.
+
+        Shared by render salvage and the delivery gate's regenerate repair.
+        Returns the new SceneRenderResult (check ``success``), or None when
+        generation or validation failed. One codegen LLM call; never raises.
+        """
+        from src.agents.animation_generator import (
+            AnimationCodeGeneratorAgent,
+            AnimationGeneratorInput,
+            AnimationGeneratorOutput,
+        )
+        from src.schemas.scene_processing import SceneProcessingInput
+
+        controller = self.scene_controller_agent
+        renderer = self.video_renderer_agent
+        try:
+            generator = AnimationCodeGeneratorAgent(strict=self.config.strict)
+            gen_out = generator.execute(AnimationGeneratorInput(
+                SceneProcessingInput(
+                    scene_spec=controller._scene_to_spec(scene),
+                    context=controller._initialize_context(storyboard),
+                    scene_index=scene.scene_index,
+                ),
+                review_feedback=feedback,
+            ))
+            if not isinstance(gen_out, AnimationGeneratorOutput):
+                return None
+            code_obj = gen_out.animation_code
+
+            # Gate the regenerated code (also applies the LaTeX auto-fix).
+            validation = self.manim_code_validator_agent.execute(
+                ManimValidatorInput(animation_code_objects=[code_obj])
+            )
+            if not isinstance(validation, ManimValidatorOutput):
+                logger.warning(
+                    "Regenerated code for %s failed validation; dropping.", scene.scene_id,
+                )
+                return None
+
+            # Rewrite the scene file exactly as Persistence formats it.
+            file_path = Path(self._run_output_dir) / f"scene_{code_obj.scene_id}.py"
+            content = self.persistence_agent._generate_scene_file_content(code_obj)
+            self.persistence_agent._write_file_atomically(str(file_path), content)
+
+            # Same quality as the main render, or the stream-copy concat breaks.
+            rerender = renderer._render_scene(
+                str(file_path),
+                renderer.quality_flag_for(self.config.render_quality),
+                str(Path(self._run_output_dir) / "media"),
+            )
+            if not rerender.success:
+                logger.warning(
+                    "Re-render after regeneration failed for %s: %s",
+                    scene.scene_id, (rerender.error or "")[:200],
+                )
+            return rerender
+        except Exception as exc:
+            logger.warning("Regeneration of %s errored: %s", scene.scene_id, exc)
+            return None
+
     def _salvage_failed_renders(self, video_output, storyboard):
         """One codegen-regeneration attempt per failed render.
 
@@ -1398,22 +1509,8 @@ class Orchestrator:
             return video_output
 
         import shutil
-        from src.agents.animation_generator import (
-            AnimationCodeGeneratorAgent,
-            AnimationGeneratorInput,
-            AnimationGeneratorOutput,
-        )
-        from src.schemas.scene_processing import SceneProcessingInput
 
         scenes_by_id = {s.scene_id: s for s in getattr(storyboard, "scenes", [])}
-        generator = AnimationCodeGeneratorAgent(strict=self.config.strict)
-        controller = self.scene_controller_agent
-        renderer = self.video_renderer_agent
-        media_dir = str(Path(self._run_output_dir) / "media")
-        # Salvaged scenes must match the main render's resolution, or the
-        # stream-copy concat produces a broken final video.
-        quality_flag = renderer.quality_flag_for(self.config.render_quality)
-
         logger.info("Attempting render salvage for %d failed scene(s).", len(failed))
         salvaged = 0
         for result in failed:
@@ -1426,48 +1523,11 @@ class Orchestrator:
                 "Fix the exact cause (usually a LaTeX string or an invalid mobject "
                 "argument) while keeping the same visual plan and narration.",
             ]
-            try:
-                spec = controller._scene_to_spec(scene)
-                context = controller._initialize_context(storyboard)
-                gen_out = generator.execute(AnimationGeneratorInput(
-                    SceneProcessingInput(
-                        scene_spec=spec, context=context,
-                        scene_index=scene.scene_index,
-                    ),
-                    review_feedback=feedback,
-                ))
-                if not isinstance(gen_out, AnimationGeneratorOutput):
-                    continue
-                code_obj = gen_out.animation_code
-
-                # Gate the regenerated code (also applies the LaTeX auto-fix).
-                validation = self.manim_code_validator_agent.execute(
-                    ManimValidatorInput(animation_code_objects=[code_obj])
-                )
-                if not isinstance(validation, ManimValidatorOutput):
-                    logger.warning(
-                        "Salvage for %s produced code that failed validation; dropping.",
-                        result.scene_id,
-                    )
-                    continue
-
-                # Rewrite the scene file exactly as Persistence formats it.
-                file_path = Path(self._run_output_dir) / f"scene_{code_obj.scene_id}.py"
-                content = self.persistence_agent._generate_scene_file_content(code_obj)
-                self.persistence_agent._write_file_atomically(str(file_path), content)
-
-                rerender = renderer._render_scene(str(file_path), quality_flag, media_dir)
-                if rerender.success:
-                    scene_results[scene_results.index(result)] = rerender
-                    salvaged += 1
-                    logger.info("Salvaged scene %s after render failure.", result.scene_id)
-                else:
-                    logger.warning(
-                        "Salvage re-render still failed for %s: %s",
-                        result.scene_id, (rerender.error or "")[:200],
-                    )
-            except Exception as exc:
-                logger.warning("Salvage attempt for %s errored: %s", result.scene_id, exc)
+            rerender = self._regenerate_scene(scene, storyboard, feedback)
+            if rerender is not None and rerender.success:
+                scene_results[scene_results.index(result)] = rerender
+                salvaged += 1
+                logger.info("Salvaged scene %s after render failure.", result.scene_id)
 
         if not salvaged:
             return video_output
@@ -1643,7 +1703,14 @@ class Orchestrator:
                     )
                     if obj.interval.t_out <= obj.interval.t_in:
                         obj.interval.t_out = min(new_duration, obj.interval.t_in + 0.05)
+            timings = getattr(scene, "beat_timings", None) or {}
             for beat in intent.beats:
+                if beat.beat_id in timings:
+                    # Measured per-beat narration beats proportional scaling.
+                    beat.start_time, beat.end_time = (
+                        min(new_duration, round(float(t), 3)) for t in timings[beat.beat_id]
+                    )
+                    continue
                 beat.start_time = min(new_duration, round(beat.start_time * scale, 3))
                 beat.end_time = min(new_duration, round(beat.end_time * scale, 3))
             for transformation in intent.transformations:
@@ -1802,10 +1869,13 @@ class Orchestrator:
                 scene_id = getattr(scene, 'scene_id', None)
                 narration = getattr(scene, 'narration', None)
                 if scene_id and narration and narration.strip():
-                    scenes_to_tts.append({
-                        "scene_id": scene_id,
-                        "narration": narration
-                    })
+                    entry = {"scene_id": scene_id, "narration": narration}
+                    beats = list(getattr(scene, "source_beats", None) or [])
+                    # Per-beat synthesis yields the beat timing track; only
+                    # when the beats are exactly the scene's narration.
+                    if beats and "\n\n".join(b.narration for b in beats) == narration:
+                        entry["beats"] = [(b.beat_id, b.narration) for b in beats]
+                    scenes_to_tts.append(entry)
 
         if not scenes_to_tts:
             logger.info("No scenes with narration found. Skipping TTS generation.")
@@ -1825,6 +1895,13 @@ class Orchestrator:
 
             success_count = sum(1 for r in tts_results if isinstance(r, TTSOutput))
             error_count = sum(1 for r in tts_results if isinstance(r, TTSError))
+
+            scenes_by_id = {s.scene_id: s for s in getattr(storyboard, "scenes", []) or []}
+            for result in tts_results:
+                timings = getattr(result, "beat_timings", None)
+                scene = scenes_by_id.get(getattr(result, "scene_id", None))
+                if isinstance(result, TTSOutput) and timings and scene is not None:
+                    scene.beat_timings = dict(timings)
 
             for result in tts_results:
                 if isinstance(result, TTSOutput):
@@ -2172,13 +2249,22 @@ class Orchestrator:
             composition_output, AudioVideoComposerOutput
         ):
             return None
-        from src.agents.delivery_gate import DeliveryGate
+        from src.agents.delivery_gate import DeliveryGate, _Probes
+
+        scenes_by_id = {s.scene_id: s for s in getattr(storyboard, "scenes", []) or []}
+
+        def regenerate(scene_id: str, feedback: List[str]):
+            scene = scenes_by_id.get(scene_id)
+            return self._regenerate_scene(scene, storyboard, feedback) if scene else None
 
         gate = DeliveryGate(
             renderer=self.video_renderer_agent,
             composer=self.audio_video_composer_agent,
             render_quality=self.config.render_quality,
             max_rounds=self.config.max_gate_repair_rounds,
+            probes=_Probes(transcribe=self._asr_transcriber()),
+            regenerate=regenerate,
+            max_regenerations=self.config.max_gate_regenerations,
         )
         start = time.time()
         try:
@@ -2196,6 +2282,29 @@ class Orchestrator:
             repaired, result.repair_rounds, time.time() - start,
         )
         return result
+
+    def _asr_transcriber(self):
+        """Whisper transcription for the narration-fidelity check, if enabled.
+
+        Off by default (paid: about $0.006 per audio minute). Returns None
+        when disabled or when no OpenAI key is configured.
+        """
+        import os
+
+        if not self.config.enable_asr_check or not os.getenv("OPENAI_API_KEY"):
+            return None
+        try:
+            import openai
+        except ImportError:
+            return None
+        client = openai.OpenAI()
+
+        def transcribe(path: str):
+            with open(path, "rb") as audio:
+                response = client.audio.transcriptions.create(model="whisper-1", file=audio)
+            return getattr(response, "text", None)
+
+        return transcribe
 
     def _record_delivery(self, manifest: OutputManifest, gate_result, video_review_output) -> None:
         """Turn the gate result plus blocking review findings into the delivery report."""
@@ -2364,6 +2473,20 @@ class Orchestrator:
             else:
                 manifest.status = "FAILURE"
 
+        timing_track = {
+            s.scene_id: s.beat_timings
+            for s in getattr(storyboard, "scenes", None) or []
+            if getattr(s, "beat_timings", None)
+        }
+        if timing_track:
+            self._quality_reports["timing_track"] = timing_track
+            # Persistence wrote storyboard.json before narration existed in
+            # render-parallel runs; refresh it so revisions see the track.
+            try:
+                self.persistence_agent._write_storyboard(manifest.output_directory, storyboard)
+            except Exception as exc:  # pragma: no cover — best effort
+                logger.warning("storyboard.json not refreshed with timings: %s", exc)
+
         if storyboard is not None and getattr(storyboard, "scenes", None):
             from src.orchestrator.revision import build_scene_records
 
@@ -2421,6 +2544,7 @@ class Orchestrator:
             "narration_timing": "narration_timing.json",
             "manim_verifier": "manim_verifier.json",
             "delivery": "delivery_report.json",
+            "timing_track": "timing_track.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:

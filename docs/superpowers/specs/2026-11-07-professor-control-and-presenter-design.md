@@ -284,12 +284,16 @@ P2 is split in two. **P2a** (layers 2 and 3 of Part H) is built: `src/agents/del
 - **Verdict:** `delivery_report.json` plus `manifest.delivery_status`, printed by the CLI. The video is delivered either way.
 - **Calibration:** checked on synthetic ffmpeg fixtures and one real manim render. Thresholds still need tuning on real lecture runs.
 
-**P2b** (layer 1 plus the rest of layer 2) is still to build:
-- the per-beat timing track (`timing_track.json`);
-- the `sync_to` runtime helper and its validator lint;
-- the beat-alignment check (activity onset per beat window);
-- LLM re-codegen as a repair for visual QA and alignment failures;
-- the optional ASR fidelity check.
+**P2b** (layer 1 plus the rest of layer 2) is built too:
+- **Timing track.** TTS synthesizes each beat separately (`TTSAgent._generate_beat_audio`) and joins the parts with one re-encode. Per-part durations are scaled to the joined file. The track is stored as `Scene.beat_timings` and `timing_track.json`. Optional pauses after beats prepare for pacing edits.
+- **Sync by construction (narration-first runs).** After codegen, `src/utils/sync_contract.py` injects `BEAT_TIMES`/`NARRATION_END` into the scene class and makes `construct()` end with `sync_to_end(self)`. The prompt tells the LLM to call `sync_to(self, beat_id)` before each beat. `src/utils/narration_sync.py` waits on Manim's own clock. The lint (each beat synced, in order, ends with `sync_to_end`) only warns. Slack-wait padding is skipped when the contract applies.
+- **Re-time without codegen.** In a revision, a narration-first scene whose beats are unchanged but whose narration is re-recorded keeps its code. The new track is re-injected and the scene re-rendered (`revision.json` → `retimed`).
+- **New gate checks:**
+  - `beat_alignment`: frame activity at 4 fps on 160x90 frames; a fully static beat window is medium, an onset more than 0.75 s late is low;
+  - `visual_qa`: blocking keyframe findings from the existing frame QA;
+  - `narration_fidelity`: Whisper word error rate against the script, ≤ 10 %. Off by default (`enable_asr_check`).
+- **`regenerate` repair:** re-codegen with the findings as feedback, capped by `max_gate_regenerations` (default 3). It shares `_regenerate_scene` with render salvage.
+- **Render environment.** The renderer now puts the running pipeline's root first on `PYTHONPATH`, so generated `src.utils` imports match the pipeline's version.
 
 ## Testing
 

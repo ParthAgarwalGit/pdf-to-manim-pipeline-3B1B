@@ -184,6 +184,45 @@ def detect_silences(
     return parse_silencedetect(result.stderr, total)
 
 
+ACTIVITY_FPS = 4.0
+_ACTIVITY_SIZE = (160, 90)
+_PIXEL_CHANGE = 16  # grey levels; encoder noise on flat Manim frames stays below
+
+
+def frame_activity(path: str, fps: float = ACTIVITY_FPS) -> Optional[List[float]]:
+    """Fraction of pixels that change between consecutive sampled frames.
+
+    ``activity[i]`` is the change from frame ``i-1`` to frame ``i``, sampled
+    at ``i / fps`` seconds (``activity[0]`` is 0). Frames are downscaled to
+    160x90 greyscale, so a moving dot still registers but encoder noise does not.
+    """
+    import numpy as np
+
+    width, height = _ACTIVITY_SIZE
+    try:
+        result = subprocess.run(
+            [
+                get_ffmpeg(), "-v", "error", "-i", str(path),
+                "-vf", f"fps={fps},scale={width}:{height},format=gray",
+                "-f", "rawvideo", "-",
+            ],
+            capture_output=True, timeout=300,
+        )
+    except Exception as exc:
+        logger.warning("Frame sampling failed for %s: %s", path, exc)
+        return None
+    if result.returncode != 0:
+        return None
+    frame_size = width * height
+    count = len(result.stdout) // frame_size
+    if count == 0:
+        return None
+    frames = np.frombuffer(result.stdout[:count * frame_size], dtype=np.uint8)
+    frames = frames.reshape(count, height, width).astype(np.int16)
+    changed = (np.abs(np.diff(frames, axis=0)) > _PIXEL_CHANGE).mean(axis=(1, 2))
+    return [0.0] + [float(x) for x in changed]
+
+
 def normalize_audio_track(src: str, dst: str, measured: Optional[Loudness] = None) -> bool:
     """Re-encode ``src`` with its audio normalized to the delivery target.
 
