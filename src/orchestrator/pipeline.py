@@ -250,6 +250,7 @@ class Orchestrator:
         pdf_file_path: str,
         event_source: str = 's3',
         directives=None,
+        concept_plan=None,
     ) -> OutputManifest:
         """Run the complete PDF-to-Manim pipeline.
 
@@ -258,6 +259,8 @@ class Orchestrator:
             event_source: Cloud storage event source ('s3', 'gcs', 'azure', or 'local')
             directives: ProfessorDirectives compiled from the professor's brief
                 (binding; checked after scripting and reported on delivery)
+            concept_plan: ConceptPlan with per-concept depth/analogy choices
+                (``pdf2manim plan``); skipped concepts are enforced and logged
             
         Returns:
             OutputManifest with all generated files and metadata
@@ -272,6 +275,7 @@ class Orchestrator:
         self._lesson_script = None
         self._scene_reuse = {}
         self._begin_directives(directives)
+        self._begin_concept_plan(concept_plan)
 
         # ── Run identity ─────────────────────────────────────────────
         # Generate run_id ONCE here, before any stage executes.
@@ -577,13 +581,54 @@ class Orchestrator:
             self.config.verbosity = g.verbosity
         self._quality_reports["brief_interpretation"] = directives.model_dump(mode="json", by_alias=True)
 
+    def _begin_concept_plan(self, plan) -> None:
+        """Adopt a concept plan; its skipped concepts become binding directives."""
+        self._concept_plan = plan
+        if plan is None:
+            return
+        from src.agents.concept_planner import skip_directives
+        from src.schemas.directives import ProfessorDirectives
+
+        self._quality_reports["concept_plan"] = plan.model_dump(mode="json")
+        skips = skip_directives(plan)
+        if skips:
+            # Copy: never mutate the caller's directives.
+            self._directives = (
+                self._directives.model_copy(deep=True) if self._directives else ProfessorDirectives()
+            )
+            self._directives.concepts.extend(skips)
+            self._quality_reports.setdefault("professor_omissions", []).extend(
+                {"concept": e.concept, "segment_id": e.segment_id, "reason": "professor: concept plan"}
+                for e in plan.skipped()
+            )
+
+    def plan_concepts(self, pdf_file_path: str, directives=None, event_source: str = "local"):
+        """Outline step for ``pdf2manim plan``: segments -> editable ConceptPlan.
+
+        Runs ingestion, validation, OCR and segmentation (applying the brief's
+        scope), then lists each segment's concepts. Writes nothing to disk.
+        """
+        from src.agents.concept_planner import ConceptPlannerAgent
+
+        self._quality_reports = {}
+        self._begin_directives(directives)
+        quiet = StructuredJSONLogger(output_directory=None)
+        try:
+            file_ref = self._run_ingestion(pdf_file_path, event_source, quiet)
+            validated = self._run_validation(file_ref, quiet)
+            ocr_output = self._run_vision_ocr(validated, quiet)
+            segments = self._apply_scope_directives(self._run_document_segmenter(ocr_output, quiet))
+        finally:
+            quiet.close()
+        return ConceptPlannerAgent().plan(segments, self.config.to_storyboard_config(), directives)
+
     def _apply_scope_directives(self, segments):
         from src.agents.directive_compliance import apply_scope
 
         kept, omissions, checks = apply_scope(segments or [], getattr(self, "_directives", None))
         if omissions:
             logger.info("Brief scope: omitted %d segment(s) as the professor asked", len(omissions))
-            self._quality_reports["professor_omissions"] = omissions
+            self._quality_reports.setdefault("professor_omissions", []).extend(omissions)
         self._directive_checks.extend(checks)
         return kept
 
@@ -678,6 +723,7 @@ class Orchestrator:
         self._scene_reuse = {}
         self._change_log = ""
         self._begin_directives(None)
+        self._begin_concept_plan(None)
         cost_before = CostTracker.get_instance().get_total_cost()
 
         base = load_base_run(Path(base_run_dir))
@@ -1173,6 +1219,7 @@ class Orchestrator:
                 segments=source_segments,
                 review_feedback=review_feedback,
                 directives=directives,
+                concept_plan=getattr(self, "_concept_plan", None),
             )
             input_data.constraints = StepConstraints(budget_tokens=16000, timeout_seconds=180)
 
@@ -2664,6 +2711,7 @@ class Orchestrator:
             "delivery": "delivery_report.json",
             "timing_track": "timing_track.json",
             "brief_interpretation": "brief_interpretation.json",
+            "concept_plan": "concept_plan.json",
             "professor_omissions": "professor_omissions.json",
             "directives": "directive_checks.json",
         }

@@ -228,6 +228,20 @@ that slips in the clock analogy is rewritten. Generated LaTeX is checked for
 `i`, and the length is checked against your target. Anything still unmet is
 listed in the delivery report.
 
+### Plan Concept Depth First
+
+```bash
+pdf2manim plan notes.pdf -o plan.yaml          # one entry per concept per section
+# edit: depth skip | brief | standard | deep; analogy auto | none | professor
+pdf2manim convert notes.pdf --plan plan.yaml
+```
+
+Each section's script follows its plan entries. Skipped concepts are left
+out, enforced, and listed as your omissions. After a video exists,
+`pdf2manim revise RUN --density essential --analogies off` trims optional
+depth and analogies without regenerating, and `--density rich` goes deeper on
+every concept.
+
 ### Feedback in Plain Words
 
 ```bash

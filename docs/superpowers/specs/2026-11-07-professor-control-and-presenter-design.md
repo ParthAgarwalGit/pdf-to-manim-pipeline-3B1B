@@ -319,6 +319,18 @@ P2 is split in two. **P2a** (layers 2 and 3 of Part H) is built: `src/agents/del
   - `revision.json` and the delivery report carry a change log ("Changed: scenes 4-5. Reused unchanged: 28 scenes.").
 - **Not built:** the Gradio review tab (P6 covers the end-to-end flow). Remaining notation violations are reported, not regenerated.
 
+### P4 as built (2026-11-07)
+
+- **Concept plan** (`src/schemas/concept_plan.py`, `src/agents/concept_planner.py`): one LLM call lists 1–6 concepts per segment, falling back to segment headings without a key.
+  - `--verbosity` seeds the default depth (low → brief, high → deep).
+  - Brief directives are merged per concept: a depth, the professor's own analogy (`analogy: professor`), or a rejected analogy recorded as a note.
+- **Front end:** `pdf2manim plan notes.pdf -o plan.yaml [--brief]` runs ingestion, OCR and segmentation and writes the plan for editing. `convert --plan plan.yaml` then uses it. Each segment's script prompt receives only that segment's entries (plus unscoped ones) as a binding CONCEPT PLAN block.
+- **Skips:** skipped concepts become "Do not cover X" directives, enforced by the P3 compliance pass. They are logged in `professor_omissions.json` with `reason: professor: concept plan`.
+- **`set_density`** (scope `global`, `segment` or `concept`):
+  - Lowering is deterministic: drop beats deeper than the level allows (essential 0, standard 1), and with `analogies: off` also drop analogy beats and their callbacks. Locked beats are kept with a warning, and seams are repaired.
+  - Raising (`rich`) compiles to one `expand` per in-scope concept introduction, so it needs an LLM.
+  - Exposed as `revise --density L --analogies on|off` and in ops files.
+
 ## Testing
 
 - All new behaviour sits behind `PipelineConfig` flags that default to off. A flag-off regression test asserts byte-identical storyboard and manifest output.

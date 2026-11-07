@@ -238,6 +238,12 @@ def pdf2manim():
     default=False,
     help='Do not ask to confirm the brief interpretation'
 )
+@click.option(
+    '--plan', 'plan_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='Concept plan (from `pdf2manim plan`): per-concept depth and analogy choices'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -257,6 +263,7 @@ def convert(
     verifier_max_repairs: int,
     brief_path: Optional[str] = None,
     assume_yes: bool = False,
+    plan_path: Optional[str] = None,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -352,6 +359,7 @@ def convert(
             click.echo()
             if not assume_yes and not click.confirm("Generate the video with these instructions?", default=True):
                 raise click.ClickException("Cancelled. Edit the brief and run again.")
+        concept_plan = _load_concept_plan(plan_path) if plan_path else None
 
         # Run the pipeline
         click.echo(click.style("Starting pipeline...", fg="yellow"))
@@ -377,6 +385,7 @@ def convert(
                     pdf_file_path=input_pdf,
                     event_source=event_source,
                     directives=directives,
+                    concept_plan=concept_plan,
                 )
                 bar.update(7)
 
@@ -828,6 +837,74 @@ def revise(
         )
 
 
+def _load_structured(path: str):
+    text = Path(path).read_text(encoding="utf-8")
+    if str(path).lower().endswith((".yaml", ".yml")):
+        import yaml
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
+def _load_concept_plan(path: str):
+    from src.schemas.concept_plan import ConceptPlan
+
+    try:
+        return ConceptPlan.model_validate(_load_structured(path))
+    except Exception as e:
+        raise click.ClickException(f"Invalid concept plan {path}: {e}")
+
+
+@pdf2manim.command()
+@click.argument('input_pdf', callback=validate_pdf_path)
+@click.option('-o', '--out', default='concept_plan.yaml', help='Where to write the plan (YAML or JSON)')
+@click.option(
+    '--brief', 'brief_path',
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Professor's brief; its concept and scope directives seed the plan"
+)
+@click.option(
+    '-v', '--verbosity',
+    type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
+    default='medium',
+    help='Default depth for every concept (low=brief, medium=standard, high=deep)'
+)
+def plan(input_pdf: str, out: str, brief_path: Optional[str], verbosity: str) -> None:
+    """
+    Outline the PDF's concepts as an editable concept plan.
+
+    Each concept gets a depth (skip | brief | standard | deep) and an analogy
+    choice (auto | none | professor, with your own analogy brief). Edit the
+    file, then generate with `pdf2manim convert INPUT_PDF --plan FILE`.
+
+    Examples:
+
+        pdf2manim plan notes.pdf -o plan.yaml
+    """
+    from src.agents.professor_input_interpreter import ProfessorInputInterpreter
+
+    setup_logging(verbosity)
+    directives = None
+    if brief_path:
+        directives = ProfessorInputInterpreter().interpret_brief(Path(brief_path).read_text(encoding="utf-8"))
+    orchestrator = Orchestrator(config=PipelineConfig(verbosity=verbosity.lower()))
+    try:
+        concept_plan = orchestrator.plan_concepts(input_pdf, directives=directives)
+    except PipelineAbortError as e:
+        raise click.ClickException(f"Planning aborted at {e.stage}: {e.message}")
+    data = concept_plan.model_dump(mode="json")
+    if out.lower().endswith((".yaml", ".yml")):
+        import yaml
+        Path(out).write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    else:
+        Path(out).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    click.echo(click.style(f"Concept plan: {len(concept_plan.entries)} concepts -> {out}", bold=True))
+    for entry in concept_plan.entries:
+        analogy = f", analogy: {entry.analogy}" if entry.analogy != "auto" else ""
+        click.echo(f"  [{entry.segment_id or 'all'}] {entry.concept}: {entry.depth}{analogy}")
+    click.echo(f"\nEdit {out}, then: pdf2manim convert {input_pdf} --plan {out}")
+
+
 def _plan_edits(base, ops_path, feedback, density, analogies, voice):
     """Compile --ops / --say / --density into an edited script; print the plan.
 
@@ -841,13 +918,7 @@ def _plan_edits(base, ops_path, feedback, density, analogies, voice):
 
     notes = []
     if ops_path:
-        text = Path(ops_path).read_text(encoding="utf-8")
-        if str(ops_path).lower().endswith((".yaml", ".yml")):
-            import yaml
-            data = yaml.safe_load(text)
-        else:
-            data = json.loads(text)
-        ops = parse_ops(data)
+        ops = parse_ops(_load_structured(ops_path))
     elif density:
         ops = [SetDensity(scope="global", level=density.lower(), analogies=analogies.lower())]
     else:

@@ -397,6 +397,7 @@ class ScriptArchitectInput(AgentInput):
         segments: Optional[List[SourceSegment]] = None,
         review_feedback: Optional[List[str]] = None,
         directives: Optional[Any] = None,
+        concept_plan: Optional[Any] = None,
     ):
         """Initialize input
 
@@ -413,6 +414,7 @@ class ScriptArchitectInput(AgentInput):
         self.segments = segments or []
         self.review_feedback = review_feedback or []
         self.directives = directives
+        self.concept_plan = concept_plan  # ConceptPlan: per-concept depth/analogy
 
 
 class ScriptArchitectAgent(Agent):
@@ -561,6 +563,7 @@ class ScriptArchitectAgent(Agent):
                 config,
                 review_feedback,
                 segments=segments,
+                concept_plan=getattr(script_input, "concept_plan", None),
             )
             logger.info(
                 f"Generated video script: {len(video_script.beats)} beats, "
@@ -1387,6 +1390,7 @@ class ScriptArchitectAgent(Agent):
         config: Configuration,
         review_feedback: Optional[List[str]] = None,
         segments: Optional[List[SourceSegment]] = None,
+        concept_plan: Optional[Any] = None,
     ):
         """Generate ONE continuous video script with a concept-introduction ledger.
 
@@ -1418,6 +1422,7 @@ class ScriptArchitectAgent(Agent):
                 segments=segments,
                 config=config,
                 review_feedback=review_feedback or [],
+                concept_plan=concept_plan,
             )
 
         # Build full source-material context — only this call sees the full PDF.
@@ -1497,7 +1502,7 @@ STYLE:
 - Verbosity ({config.verbosity}): {verbosity_line}
 - Tone: Friendly, intuitive, conversational.
 - Visual hint per beat: 1–2 sentences describing what is on screen.
-{self._professor_block(config)}{review_block}
+{self._professor_block(config)}{self._concept_plan_block(concept_plan.entries if concept_plan else None)}{review_block}
 
 Return JSON in this EXACT shape:
 {{
@@ -1587,6 +1592,7 @@ Return JSON in this EXACT shape:
         segments: List[SourceSegment],
         config: Configuration,
         review_feedback: List[str],
+        concept_plan: Optional[Any] = None,
     ):
         """Generate a global VideoScript through one LLM call per source segment."""
         from src.schemas.video_script import Beat, VideoScript
@@ -1603,6 +1609,7 @@ Return JSON in this EXACT shape:
                 covered_concepts=covered_concepts,
                 review_feedback=review_feedback,
                 known_analogies=list(known_analogies.values()),
+                plan_entries=concept_plan.for_segment(segment.segment_id) if concept_plan else None,
             )
             # Failure isolation: a single bad segment response (API error, invalid
             # JSON, or a malformed beat) must never abort the whole storyboard —
@@ -1732,6 +1739,7 @@ Return JSON in this EXACT shape:
         covered_concepts: List[str],
         review_feedback: List[str],
         known_analogies: Optional[List[Analogy]] = None,
+        plan_entries: Optional[List[Any]] = None,
     ) -> str:
         audience_line = {
             "high-school": "Use real-world analogies; avoid jargon.",
@@ -1784,7 +1792,7 @@ SOURCE SEGMENT:
 
 TEXT:
 {segment.text}
-{math_block}{already_block}{analogies_block}{self._professor_block(config)}{review_block}
+{math_block}{already_block}{analogies_block}{self._professor_block(config)}{self._concept_plan_block(plan_entries)}{review_block}
 TASK: Explain THIS segment fully as part of a larger continuous video.
 Do not preview or re-explain other sections. If a concept was already covered,
 reference it by name without redefining it.
@@ -1835,6 +1843,18 @@ Return JSON in this exact shape:
         return (
             "\nPROFESSOR INSTRUCTIONS (binding; they override the style defaults):\n"
             + "\n".join(f"- {note}" for note in notes)
+            + "\n"
+        )
+
+    @staticmethod
+    def _concept_plan_block(entries) -> str:
+        """Per-concept depth/analogy choices from the professor's concept plan."""
+        entries = list(entries or [])
+        if not entries:
+            return ""
+        return (
+            "\nCONCEPT PLAN (binding, per concept; tag deeper material with a higher depth):\n"
+            + "\n".join(f"- {entry.instruction()}" for entry in entries)
             + "\n"
         )
 

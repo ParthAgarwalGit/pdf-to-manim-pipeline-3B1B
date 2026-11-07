@@ -199,10 +199,14 @@ class ScriptEditorAgent:
             raise EditError(f"nothing in scope {op.scope} {op.target or ''}".strip())
         max_depth = DENSITY_MAX_DEPTH[op.level]
         if op.level == "rich":
-            # Raising density compiles to expand ops on the in-scope core beats.
-            anchors = [b for b in in_scope if b.role == "core" and b.depth == 0]
+            # Raising density compiles to expand ops on the in-scope concepts:
+            # one deeper beat after each concept's introduction.
+            anchors = [
+                b for b in in_scope
+                if b.introduces_concepts and b.depth == 0 and b.role != "bridge"
+            ]
             if not anchors:
-                raise EditError("no core beats in scope to expand")
+                raise EditError("no concept introductions in scope to expand")
             for beat in anchors:
                 self._op_expand(Expand(target=beat.beat_id, levels=1, focus="example"), result)
         doomed = [b for b in in_scope if b.depth > max_depth and b.role != "bridge"]
