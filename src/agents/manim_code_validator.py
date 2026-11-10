@@ -11,11 +11,11 @@ can send it back to the Animation Generator for retry.
 
 import ast
 import logging
-import os
 import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from src.agents.base import (
@@ -26,6 +26,7 @@ from src.agents.base import (
     RetryPolicy,
 )
 from src.schemas.animation_code import AnimationCodeObject
+from src.utils.render_sandbox import RenderSandboxConfig, run_manim
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,9 @@ class ManimValidatorFailure(AgentOutput):
 
 class ManimCodeValidatorAgent(Agent):
     """Validates generated Manim code via AST, import checks, and optional dry run."""
+
+    def __init__(self, sandbox: Optional[RenderSandboxConfig] = None):
+        self.sandbox = sandbox or RenderSandboxConfig()
 
     def execute(self, input_data: ManimValidatorInput) -> AgentOutput:
         if not self.validate_input(input_data):
@@ -748,21 +752,27 @@ class ManimCodeValidatorAgent(Agent):
             return False
 
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False, encoding="utf-8"
-            ) as f:
+            # --dry_run still executes construct(): isolate it like a render,
+            # in a throwaway scratch dir that is also the subprocess cwd.
+            with tempfile.TemporaryDirectory(
+                prefix="manim_dry_run_", ignore_cleanup_errors=True
+            ) as scratch:
+                scratch_dir = Path(scratch)
+                scene_path = scratch_dir / "scene.py"
                 # Prepend manim import if not present
                 if "from manim import" not in source and "import manim" not in source:
-                    f.write("from manim import *\n\n")
-                f.write(source)
-                temp_path = f.name
+                    source = "from manim import *\n\n" + source
+                scene_path.write_text(source, encoding="utf-8")
 
-            result = subprocess.run(
-                ["manim", "-ql", "--dry_run", temp_path, class_name],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+                result = run_manim(
+                    scene_path=scene_path,
+                    scene_class=class_name,
+                    flags=["-ql", "--dry_run"],
+                    media_dir=scratch_dir / "media",
+                    scratch_dir=scratch_dir,
+                    timeout_seconds=60,
+                    sandbox=self.sandbox,
+                )
 
             if result.returncode != 0:
                 stderr_snippet = result.stderr[:500] if result.stderr else "No stderr."
@@ -772,7 +782,8 @@ class ManimCodeValidatorAgent(Agent):
             return True
 
         except FileNotFoundError:
-            errors.append("manim CLI not found — skipping dry_run.")
+            binary = "docker" if self.sandbox.is_docker else "manim"
+            errors.append(f"{binary} CLI not found — skipping dry_run.")
             return True  # Don't block on missing manim
         except subprocess.TimeoutExpired:
             errors.append("manim dry_run timed out (60s).")
@@ -780,10 +791,5 @@ class ManimCodeValidatorAgent(Agent):
         except Exception as e:
             errors.append(f"Unexpected dry_run error: {e}")
             return False
-        finally:
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
 
         return False  # Unreachable, but satisfies type checker

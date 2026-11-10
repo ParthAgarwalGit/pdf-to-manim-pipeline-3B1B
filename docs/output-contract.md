@@ -16,6 +16,8 @@ output/{pdf_stem}/{ISO-timestamp}/
 ├── video_review.json          # Final media quality review (if render enabled)
 ├── media/                     # Manim render artifacts (if render enabled)
 │   └── videos/…/*.mp4
+├── render_scratch/<scene>/    # Per-scene render cwd; holds the scene's media in
+│                              #   --render-sandbox docker mode (absent if unused)
 ├── scene_001.mp3 … scene_NNN.mp3  # TTS audio per scene (if TTS enabled)
 └── final_video.mp4            # Composed narrated video (if render + TTS enabled)
 ```

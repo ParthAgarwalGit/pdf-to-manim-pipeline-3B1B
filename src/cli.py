@@ -335,6 +335,21 @@ def pdf2manim():
     default=600.0,
     help='did-avatar spend cap: estimated narration seconds sent to D-ID per run (default: 600)'
 )
+@click.option(
+    '--render-sandbox',
+    type=click.Choice(['native', 'docker'], case_sensitive=False),
+    default='native',
+    envvar='RENDER_SANDBOX',
+    help='How generated Manim code runs: native (secrets scrubbed from the env, '
+         'scratch cwd) or docker (no network, non-root, read-only, resource-limited '
+         'container). Default: native'
+)
+@click.option(
+    '--sandbox-image',
+    default='pdf2manim:latest',
+    envvar='RENDER_SANDBOX_IMAGE',
+    help='Local image for --render-sandbox docker; never pulled (default: pdf2manim:latest)'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -366,6 +381,8 @@ def convert(
     render_backend: str = 'manim',
     avatar_image_url: Optional[str] = None,
     max_avatar_seconds: float = 600.0,
+    render_sandbox: str = 'native',
+    sandbox_image: str = 'pdf2manim:latest',
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -442,6 +459,7 @@ def convert(
         click.echo(f"  Strict Mode:  {strict}")
         click.echo(f"  TTS First:    {tts_first}")
         click.echo(f"  Verifier:     {verifier_mode}")
+        click.echo(f"  Sandbox:      {render_sandbox.lower()}")
         click.echo()
 
         # Create pipeline configuration
@@ -472,6 +490,8 @@ def convert(
             render_backend=render_backend,
             avatar_image_url=avatar_image_url,
             max_avatar_seconds=max_avatar_seconds,
+            render_sandbox=render_sandbox.lower(),
+            render_sandbox_image=sandbox_image,
         )
 
         # Initialize cost tracker
