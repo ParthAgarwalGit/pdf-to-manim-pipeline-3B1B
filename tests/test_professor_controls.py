@@ -227,6 +227,44 @@ class TestBriefInterpretation:
         d = ProfessorInputInterpreter(use_default_llm=False).interpret_brief("Make it sparkle.")
         assert d.notes == ["Make it sparkle."]
 
+    def test_reversed_terminology_and_term_as_analogy_are_reconciled(self):
+        # What a live LLM returned for this brief: preference backwards, and
+        # the avoided term filed as a rejected analogy.
+        garbled = {
+            "concepts": [{"concept": "singular values", "avoid_analogies": ["sigma values", "clock"]}],
+            "notation": [{"use": "singular values", "instead_of": "sigma values"}],
+            "global": {"terminology": {"singular values": "sigma values"}},
+        }
+        d = ProfessorInputInterpreter(llm=FakeLLM(garbled)).interpret_brief(
+            'Say "singular values" rather than "sigma values". No clock analogy.'
+        )
+        assert d.global_.terminology == {"sigma values": "singular values"}
+        assert d.avoided_analogies() == ["clock"]
+        assert "Say 'singular values' rather than 'sigma values'." in d.script_instructions()
+
+    def test_reversal_detected_from_the_brief_alone(self):
+        llm = FakeLLM({"global": {"terminology": {"eigenvector": "characteristic vector"}}})
+        d = ProfessorInputInterpreter(llm=llm).interpret_brief("Say eigenvector instead of characteristic vector.")
+        assert d.global_.terminology == {"characteristic vector": "eigenvector"}
+
+    def test_invented_run_settings_are_dropped(self):
+        # A live LLM added verbosity "medium" to a brief that never mentions
+        # it, overriding the command line's -v low.
+        llm = FakeLLM({"global": {"verbosity": "medium", "audience": "undergraduate", "target_minutes": 1}})
+        d = ProfessorInputInterpreter(llm=llm).interpret_brief(
+            "Audience: first-year undergraduates. Keep it to about one minute."
+        )
+        assert d.global_.verbosity is None
+        assert d.global_.audience == "undergraduate" and d.global_.target_minutes == 1
+        llm = FakeLLM({"global": {"verbosity": "low"}})
+        kept = ProfessorInputInterpreter(llm=llm).interpret_brief("Keep the narration concise.")
+        assert kept.global_.verbosity == "low"
+
+    def test_correct_terminology_is_left_alone(self):
+        llm = FakeLLM({"global": {"terminology": {"characteristic vector": "eigenvector"}}})
+        d = ProfessorInputInterpreter(llm=llm).interpret_brief("Say eigenvector rather than characteristic vector.")
+        assert d.global_.terminology == {"characteristic vector": "eigenvector"}
+
 
 class TestFeedbackInterpretation:
     def _timeline(self):

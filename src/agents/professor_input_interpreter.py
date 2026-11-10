@@ -114,6 +114,65 @@ def _sentences(text: str) -> List[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+_QUOTE = "[\"'“”‘’]?"
+
+
+def _prefers(brief: str, first: str, second: str) -> bool:
+    """The brief says to use ``first`` rather than / instead of ``second``."""
+    pattern = (
+        rf"{_QUOTE}{re.escape(first)}{_QUOTE}\s*,?\s+(?:rather than|instead of|not)\s+"
+        rf"{_QUOTE}{re.escape(second)}{_QUOTE}"
+    )
+    return re.search(pattern, brief or "", re.IGNORECASE) is not None
+
+
+def _reconcile_terms(directives: ProfessorDirectives, brief: str) -> None:
+    """Fix the two ways an interpreter garbles vocabulary preferences.
+
+    1. A terminology entry {avoid: preferred} written backwards: flipped when
+       the brief's own words ("A rather than B") or a notation directive
+       (use A instead of B) say the opposite.
+    2. A term listed as a rejected analogy: dropped, since vocabulary and
+       notation are not analogies.
+    """
+    terminology = {}
+    for avoid, preferred in (directives.global_.terminology or {}).items():
+        reversed_by_notation = any(
+            (n.use or "").lower() == avoid.lower() and (n.instead_of or "").lower() == preferred.lower()
+            for n in directives.notation
+        )
+        reversed_by_brief = _prefers(brief, avoid, preferred) and not _prefers(brief, preferred, avoid)
+        if reversed_by_notation or reversed_by_brief:
+            logger.info("Brief terminology was reversed; using '%s' rather than '%s'.", avoid, preferred)
+            avoid, preferred = preferred, avoid
+        terminology[avoid] = preferred
+    directives.global_.terminology = terminology
+
+    terms = {t.lower() for pair in terminology.items() for t in pair}
+    terms |= {t.lower() for n in directives.notation for t in (n.use, n.instead_of) if t}
+    for concept in directives.concepts:
+        concept.avoid_analogies = [a for a in concept.avoid_analogies if a.lower() not in terms]
+
+    # Run-wide settings override the command line, so an interpreter must not
+    # invent them: keep one only if the brief actually talks about it.
+    if directives.global_.verbosity and not _VERBOSITY_CUE.search(brief or ""):
+        logger.info("Ignoring verbosity '%s': the brief does not mention it.", directives.global_.verbosity)
+        directives.global_.verbosity = None
+    if directives.global_.audience and not _AUDIENCE_CUE.search(brief or ""):
+        logger.info("Ignoring audience '%s': the brief does not mention it.", directives.global_.audience)
+        directives.global_.audience = None
+
+
+_VERBOSITY_CUE = re.compile(
+    r"(?i)\b(verbos\w*|concise\w*|terse|succinct\w*|wordy|detail\w*|thorough\w*|in depth|"
+    r"brief(?:ly)?\s+narration|short narration|fewer words|more words|elaborat\w*)\b"
+)
+_AUDIENCE_CUE = re.compile(
+    r"(?i)\b(audience|students?|undergrad\w*|graduate\w*|high[- ]school\w*|freshm[ae]n|"
+    r"first[- ]year|second[- ]year|\d(?:st|nd|rd|th)[- ]year|phd|masters?|beginners?|experts?)\b"
+)
+
+
 class ProfessorInputInterpreter:
     def __init__(self, llm: Optional[LLM] = None, use_default_llm: bool = True):
         self.llm = llm if llm is not None else (default_llm() if use_default_llm else None)
@@ -133,6 +192,7 @@ class ProfessorInputInterpreter:
                 logger.warning("Brief interpretation by LLM failed (%s); using rules.", exc)
         if directives is None:
             directives = self._brief_rules(brief)
+        _reconcile_terms(directives, brief)
         directives.source_brief = brief
         if directives.is_empty():
             directives.notes = [brief]  # never drop the professor's words
@@ -148,9 +208,14 @@ class ProfessorInputInterpreter:
             ' "scope": {"skip_sections": ["4.3"], "skip_pages": [7], "only_pages": []},\n'
             ' "notation": [{"use": "j", "instead_of": "i", "note": ""}],\n'
             ' "global": {"target_minutes": 10, "audience": "high-school|undergraduate|graduate|null", '
-            '"verbosity": "low|medium|high|null", "tone": "", "terminology": {"said": "preferred"}},\n'
+            '"verbosity": "low|medium|high|null", "tone": "", '
+            '"terminology": {"term to avoid": "term to use instead"}},\n'
             ' "presenter": {"bridges": "on|off|null", "layout": "full|pip|null", "notes": ""},\n'
             ' "notes": ["anything that fits no field, verbatim"]}\n'
+            "Rules: terminology maps the word the professor does NOT want to the word they DO "
+            'want ("Say eigenvector rather than characteristic vector" -> '
+            '{"characteristic vector": "eigenvector"}). avoid_analogies lists rejected analogies '
+            'or metaphors (e.g. "clock", "pizza"), never vocabulary or notation.\n'
             "Use null for anything the brief does not say. Never invent directives. Copy any "
             "sentence you cannot map into notes word for word.\n\nBRIEF:\n" + brief
         )
