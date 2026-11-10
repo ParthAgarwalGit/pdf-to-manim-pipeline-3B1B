@@ -15,6 +15,7 @@ Scoring Criteria:
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -72,11 +73,15 @@ class StoryboardGraderInput(AgentInput):
         source_text_summary: str = "",
         source_segments: Optional[List[SourceSegment]] = None,
         pass_threshold: float = 6.0,
+        ignore_visuals: bool = False,
     ):
         self.storyboard = storyboard
         self.source_text_summary = source_text_summary
         self.source_segments = source_segments or []
         self.pass_threshold = pass_threshold
+        # did-avatar runs render no scene visuals: grade narration, flow and
+        # coverage only, and pass on no visual critique to the planner.
+        self.ignore_visuals = ignore_visuals
 
 
 class StoryboardGraderOutput(AgentOutput):
@@ -162,6 +167,8 @@ class StoryboardGraderAgent(Agent):
                 storyboard,
                 source_segments=input_data.source_segments,
             )
+        if getattr(input_data, "ignore_visuals", False):
+            report = self._without_visuals(report)
 
         report.passed = report.overall_score >= input_data.pass_threshold
 
@@ -174,6 +181,22 @@ class StoryboardGraderAgent(Agent):
                 f"< threshold={input_data.pass_threshold})."
             )
             return StoryboardGraderFailure(storyboard=storyboard, report=report)
+
+    _VISUAL_WORDS = re.compile(r"(?i)\b(visual|animat|diagram|graphic|object|transform)")
+
+    def _without_visuals(self, report: GradingReport) -> GradingReport:
+        """The report re-weighted without ``visual_richness``."""
+        kept = [c for c in report.criteria if c.name != "visual_richness"]
+        total = sum(c.weight for c in kept) or 1.0
+        return GradingReport(
+            overall_score=round(sum(c.score * c.weight for c in kept) / total, 2),
+            passed=False,
+            criteria=kept,
+            summary=report.summary,
+            improvement_suggestions=[
+                s for s in report.improvement_suggestions if not self._VISUAL_WORDS.search(s)
+            ],
+        )
 
     def validate_input(self, input_data: AgentInput) -> bool:
         return isinstance(input_data, StoryboardGraderInput) and hasattr(input_data, "storyboard")

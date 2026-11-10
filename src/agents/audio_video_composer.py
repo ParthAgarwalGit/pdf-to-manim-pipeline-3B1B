@@ -62,6 +62,9 @@ class SceneMediaPair:
     scene_id: str
     video_path: str
     audio_path: Optional[str] = None  # None = scene has no narration
+    # The video already carries its narration (did-avatar clips): keep that
+    # track, loudness-normalized, instead of muxing TTS audio or silence.
+    embedded_audio: bool = False
 
 
 class AudioVideoComposerInput(AgentInput):
@@ -246,6 +249,29 @@ class AudioVideoComposerAgent(Agent):
 
         output_path = os.path.join(composed_dir, f"{scene_id}_composed.mp4")
 
+        if pair.embedded_audio:
+            try:
+                self._normalize_embedded_audio(pair.video_path, output_path)
+                duration = self._get_media_duration(output_path)
+                return SceneCompositionResult(
+                    scene_id=scene_id,
+                    success=True,
+                    composed_video_path=output_path,
+                    video_duration=duration,
+                    audio_duration=duration,
+                    final_duration=duration,
+                )
+            except subprocess.TimeoutExpired:
+                return SceneCompositionResult(
+                    scene_id=scene_id, success=False,
+                    error=f"FFmpeg timed out after {self.COMPOSE_TIMEOUT}s.",
+                )
+            except Exception as e:
+                return SceneCompositionResult(
+                    scene_id=scene_id, success=False,
+                    error=f"Could not keep the clip's own audio: {e}",
+                )
+
         # If no audio, the video goes in silent. It still gets a silent audio
         # track: a clip without one breaks stream-copy concatenation.
         if not pair.audio_path or not os.path.isfile(pair.audio_path):
@@ -359,6 +385,24 @@ class AudioVideoComposerAgent(Agent):
             "-map", "0:v:0",
             "-map", "[aout]",
             "-shortest",
+            output,
+        ]
+        self._run_ffmpeg(cmd, timeout=self.COMPOSE_TIMEOUT)
+
+    def _normalize_embedded_audio(self, video: str, output: str) -> None:
+        """Keep the clip's own voice track, loudness-normalized like narration.
+
+        Video is stream-copied; only the audio is re-encoded, so every clip
+        leaves with the same audio format and concatenates cleanly.
+        """
+        cmd = [
+            get_ffmpeg(), "-y",
+            "-i", video,
+            "-filter_complex", f"[0:a:0]{self.NARRATION_FILTER}[aout]",
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
             output,
         ]
         self._run_ffmpeg(cmd, timeout=self.COMPOSE_TIMEOUT)

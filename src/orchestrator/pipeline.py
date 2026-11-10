@@ -14,6 +14,12 @@ in a 10-stage linear pipeline:
     9. TTS Generation       — Generate narration audio via OpenAI TTS → .mp3
    10. Audio-Video Compose  — Merge per-scene .mp4 + .mp3, concatenate final video
 
+Render backends (``PipelineConfig.render_backend``):
+- ``manim`` (default): stages 6-10 as above.
+- ``did-avatar``: after the storyboard, D-ID renders a talking-professor clip
+  per scene from the scene narration (DIDAvatarRendererAgent) in place of
+  stages 6, 8 and 9; the composer concatenates the clips keeping their audio.
+
 Error Handling Strategy:
 - **Abort**: Validation and sanitization errors terminate pipeline immediately
   (non-retryable, deterministic failures indicating invalid input)
@@ -126,6 +132,18 @@ class PipelineConfig:
     professor_profile: Optional[str] = None  # consent record (JSON) for clones
     max_presenter_seconds: float = 180.0
     approve_bridges: bool = False
+    # Render backend. "manim" (default) renders scene code and narrates it
+    # with TTS. "did-avatar" replaces both: D-ID renders a talking-professor
+    # clip per scene from an explicit public portrait URL and speaks the
+    # scene narration itself (no TTS); the clips are concatenated.
+    render_backend: str = "manim"           # manim | did-avatar
+    avatar_image_url: Optional[str] = None  # did-avatar: public HTTPS portrait
+    did_voice_id: str = "en-US-JennyNeural"  # D-ID stock voice (no cloning)
+    did_poll_interval_seconds: float = 5.0
+    did_max_poll_attempts: int = 120
+    did_request_timeout_seconds: float = 60.0
+    # Spend cap: estimated narration seconds sent to D-ID per run.
+    max_avatar_seconds: float = 600.0
 
     def to_storyboard_config(self) -> Configuration:
         """Convert to Configuration schema for storyboard generation."""
@@ -226,6 +244,9 @@ class Orchestrator:
         self.audio_video_composer_agent = AudioVideoComposerAgent()
         self.video_quality_reviewer_agent = VideoQualityReviewerAgent()
         self.persistence_agent = PersistenceAgent(base_output_dir=self.config.base_output_dir)
+        # did-avatar backend only; built on first use so manim runs never
+        # look up a D-ID key.
+        self.did_avatar_agent = None
         self._quality_reports: Dict[str, Any] = {}
 
         # Setup logging
@@ -368,6 +389,324 @@ class Orchestrator:
         self._quality_reports["presenter"] = {**report, "seconds": round(used, 2)}
         return video_output
 
+    # ── render backend (manim | did-avatar) ─────────────────────────────
+
+    RENDER_BACKENDS = ("manim", "did-avatar")
+
+    def _avatar_backend(self) -> bool:
+        return str(self.config.render_backend or "manim").lower() == "did-avatar"
+
+    def _did_avatar_settings(self) -> Dict[str, Any]:
+        """What an avatar clip depends on besides its text (fingerprints)."""
+        return {
+            "backend": "did-avatar",
+            "image_url": self.config.avatar_image_url or "",
+            "voice_id": self.config.did_voice_id,
+        }
+
+    def _preflight_render_backend(self) -> None:
+        """Reject a bad backend configuration before any paid stage runs."""
+        backend = str(self.config.render_backend or "manim").lower()
+        if backend not in self.RENDER_BACKENDS:
+            raise PipelineAbortError(
+                "RenderBackend", "INVALID_CONFIGURATION",
+                f"Unknown render backend '{backend}'; use one of {', '.join(self.RENDER_BACKENDS)}.",
+            )
+        if backend != "did-avatar":
+            return
+        from src.agents.did_avatar_renderer import resolve_did_api_key, validate_avatar_image_url
+
+        try:
+            self.config.avatar_image_url = validate_avatar_image_url(self.config.avatar_image_url)
+        except ValueError as exc:
+            raise PipelineAbortError("DIDAvatarRenderer", "INVALID_AVATAR_IMAGE_URL", str(exc))
+        if self.config.tts_first:
+            logger.info("--tts-first has no effect with the did-avatar backend (D-ID times its own speech).")
+        if self.config.dry_run or not self.config.enable_render:
+            return
+        if self.did_avatar_agent is not None:
+            has_key = bool(getattr(self.did_avatar_agent, "api_key", None))
+        else:
+            has_key = bool(resolve_did_api_key())
+        if not has_key:
+            message = "DID_API_KEY (or D_ID_API_KEY) is not set; the did-avatar backend needs it."
+            if self.config.strict:
+                raise PipelineAbortError("DIDAvatarRenderer", "MISSING_API_KEY", message)
+            logger.warning(message + " Avatar scenes will fail and the run will have no video.")
+
+    def _get_did_avatar_agent(self):
+        if self.did_avatar_agent is None:
+            from src.agents.did_avatar_renderer import DIDAvatarRendererAgent
+
+            self.did_avatar_agent = DIDAvatarRendererAgent(
+                strict=self.config.strict,
+                request_timeout=self.config.did_request_timeout_seconds,
+            )
+        return self.did_avatar_agent
+
+    def _avatar_scenes(self, storyboard, only=None):
+        """Scenes D-ID speaks, in video order, with the pronunciation lexicon
+        applied. Unapproved presenter-bridge proposals are left out."""
+        from src.agents.did_avatar_renderer import AvatarScene
+        from src.utils.fingerprints import apply_lexicon, lexicon_for
+
+        lexicon = getattr(getattr(self, "_lesson_script", None), "pronunciations", None)
+        scenes = []
+        for scene in getattr(storyboard, "scenes", []) or []:
+            if only is not None and scene.scene_id not in only:
+                continue
+            if getattr(scene, "is_presenter", False) and not getattr(scene, "presenter_approved", False):
+                continue
+            text = apply_lexicon(scene.narration or "", lexicon_for(scene.narration, lexicon))
+            scenes.append(AvatarScene(scene_id=scene.scene_id, text=text))
+        return scenes
+
+    def _run_did_avatar_stage(self, storyboard, scene_ids=None):
+        """Render avatar clips (all scenes, or ``scene_ids``) as render results.
+
+        Returns VideoRendererOutput / VideoRendererFailure whose scene results
+        point at the clips, so finalize, scene records and revisions treat
+        them like renders. Configuration errors abort; scene errors do not.
+        """
+        from src.agents.did_avatar_renderer import DIDAvatarRendererInput, redact
+        from src.agents.video_renderer import SceneRenderResult
+
+        agent = self._get_did_avatar_agent()
+        scenes = self._avatar_scenes(storyboard, only=scene_ids)
+        input_data = DIDAvatarRendererInput(
+            scenes=scenes,
+            output_dir=self._run_output_dir,
+            image_url=self.config.avatar_image_url,
+            voice_id=self.config.did_voice_id,
+            poll_interval_seconds=self.config.did_poll_interval_seconds,
+            max_poll_attempts=self.config.did_max_poll_attempts,
+            max_estimated_seconds=self.config.max_avatar_seconds,
+        )
+        input_data.constraints = StepConstraints(timeout_seconds=int(
+            max(1, len(scenes)) * self.config.did_poll_interval_seconds * self.config.did_max_poll_attempts
+        ))
+        try:
+            output = self._execute_with_retry(
+                agent=agent,
+                input_data=input_data,
+                stage_name="DIDAvatarRenderer",
+                structured_logger=self.structured_logger,
+            )
+        except AgentExecutionError as exc:
+            raise PipelineAbortError(
+                "DIDAvatarRenderer", exc.error_code, redact(exc.message, [getattr(agent, "api_key", None)]),
+            )
+        self._quality_reports["did_avatar"] = output.report
+        results = []
+        for result in output.scene_results:
+            results.append(SceneRenderResult(
+                scene_id=result.scene_id,
+                success=result.success,
+                video_path=result.video_path,
+                error=None if result.success else f"[{result.error_code or result.status}] {result.error or ''}".strip(),
+                duration_seconds=float(result.duration_seconds or 0.0),
+            ))
+            if result.success:
+                logger.info(
+                    f"Avatar clip rendered: {result.scene_id} -> {result.video_path}",
+                    extra={"event": "scene_rendered", "scene_id": result.scene_id},
+                )
+            else:
+                logger.warning(
+                    f"Avatar clip FAILED (skipped): {result.scene_id} - {results[-1].error}",
+                    extra={"event": "scene_render_failed", "scene_id": result.scene_id},
+                )
+        if not any(r.success for r in results):
+            return VideoRendererFailure(scene_results=results, error="No avatar clip was rendered")
+        return VideoRendererOutput(
+            final_video_path="",  # the narrated concat comes from the composer
+            scene_results=results,
+            total_duration=sum(r.duration_seconds for r in results if r.success),
+        )
+
+    def _compose_avatar_clips(self, video_output, manifest: OutputManifest):
+        """Concatenate the clips keeping their own voices; check the result has sound."""
+        composition = self._run_audio_video_composition(
+            video_output, None, manifest, self.structured_logger, embedded_audio=True,
+        )
+        summary: Dict[str, Any] = {"path": None, "has_audio": False}
+        if isinstance(composition, AudioVideoComposerOutput):
+            from src.utils.media_probe import probe
+
+            info = probe(composition.final_video_path)
+            try:
+                rel = Path(composition.final_video_path).relative_to(manifest.output_directory).as_posix()
+            except ValueError:
+                rel = Path(composition.final_video_path).name
+            summary = {
+                "path": rel,
+                "duration_seconds": round(float(info.duration), 3) if info and info.duration else None,
+                "has_audio": bool(info and info.audio),
+                "scenes_composed": composition.scenes_composed,
+                "scenes_skipped": composition.scenes_skipped,
+            }
+            if not summary["has_audio"]:
+                logger.warning("The avatar video has no audio track: %s", composition.final_video_path)
+        else:
+            summary["error"] = getattr(composition, "error", None)
+        report = self._quality_reports.get("did_avatar")
+        if report is not None:
+            report["final_video"] = summary
+        lost = [r for r in getattr(video_output, "scene_results", []) or [] if not r.success]
+        complete = (
+            summary["has_audio"]
+            and not lost
+            and not getattr(composition, "scenes_skipped", 1)
+        )
+        manifest.delivery_status = "ready" if complete else "needs_review"
+        return composition
+
+    def _run_did_avatar_backend(self, storyboard, ocr_output, file_ref):
+        """The did-avatar branch of a run: persist the script, render the
+        avatar clips (no codegen, no TTS) and concatenate them."""
+        from types import SimpleNamespace
+        from src.schemas.scene_processing import SceneProcessingReport
+
+        planned = self._avatar_scenes(storyboard)
+        placeholder = SimpleNamespace(
+            report=SceneProcessingReport(
+                total_scenes=len(planned),
+                successful_scenes=len(planned),
+                failed_scenes=[],
+                output_directory=self._run_output_dir or "",
+            ),
+            animation_code_objects=[],  # no Manim code in this backend
+        )
+        manifest = self._run_persistence(
+            placeholder,
+            storyboard,
+            ocr_output if self.config.enable_ocr_debug else None,
+            file_ref,
+            self.structured_logger,
+        )
+        self._write_lesson_script(manifest, storyboard)
+        if not self.config.enable_render:
+            logger.info("Avatar render skipped (enable_render=False)")
+            return manifest, None, None
+        logger.info("Render backend: did-avatar (%d scene(s); TTS and Manim skipped)", len(planned))
+        video_output = self._run_did_avatar_stage(storyboard)
+        composition_output = self._compose_avatar_clips(video_output, manifest)
+        return manifest, video_output, composition_output
+
+    def _revise_did_avatar(self, base, storyboard, file_ref, reuse_video: Dict[str, Any], regenerate: List[str]):
+        """did-avatar revision: reuse unchanged clips, re-render the rest."""
+        import shutil
+        from types import SimpleNamespace
+        from src.agents.did_avatar_renderer import AVATAR_DIRNAME, display_url
+        from src.agents.video_renderer import SceneRenderResult
+        from src.schemas.scene_processing import SceneProcessingReport
+
+        planned = self._avatar_scenes(storyboard)
+        placeholder = SimpleNamespace(
+            report=SceneProcessingReport(
+                total_scenes=len(planned), successful_scenes=len(planned),
+                failed_scenes=[], output_directory=self._run_output_dir,
+            ),
+            animation_code_objects=[],
+        )
+        manifest = self._run_persistence(placeholder, storyboard, None, file_ref, self.structured_logger)
+        self._write_lesson_script(manifest, storyboard)
+        if not self.config.enable_render:
+            return manifest, None, None
+
+        carried: Dict[str, Any] = {}
+        reused_dir = Path(self._run_output_dir) / AVATAR_DIRNAME / "reused"
+        for scene_id, record in reuse_video.items():
+            reused_dir.mkdir(parents=True, exist_ok=True)
+            target = reused_dir / f"{scene_id}.mp4"
+            shutil.copy2(base.artifact(record.video_path), target)
+            carried[scene_id] = SceneRenderResult(
+                scene_id=scene_id, success=True, video_path=str(target),
+                duration_seconds=float(record.video_duration_seconds or 0.0),
+            )
+        wanted = {s.scene_id for s in planned}
+        fresh_ids = {sid for sid in regenerate if sid not in carried and sid in wanted}
+        fresh = self._run_did_avatar_stage(storyboard, scene_ids=fresh_ids) if fresh_ids else None
+        report = self._quality_reports.setdefault("did_avatar", {
+            "backend": "did-avatar",
+            "provider": "d-id",
+            "image_url": display_url(self.config.avatar_image_url),
+            "voice_id": self.config.did_voice_id,
+            "rendered": 0, "failed": 0, "skipped": 0, "scenes": [],
+        })
+        report["reused_from_parent"] = {sid: record.scene_id for sid, record in reuse_video.items()}
+
+        fresh_map = {r.scene_id: r for r in getattr(fresh, "scene_results", []) or []}
+        results = [
+            carried.get(s.scene_id) or fresh_map.get(s.scene_id)
+            for s in storyboard.scenes
+            if (carried.get(s.scene_id) or fresh_map.get(s.scene_id)) is not None
+        ]
+        if any(r.success for r in results):
+            video_output = VideoRendererOutput(
+                final_video_path="", scene_results=results,
+                total_duration=sum(r.duration_seconds for r in results if r.success),
+            )
+        else:
+            video_output = VideoRendererFailure(scene_results=results, error="No avatar clip available")
+        composition_output = self._compose_avatar_clips(video_output, manifest)
+        return manifest, video_output, composition_output
+
+    def _complete_run(
+        self,
+        manifest: OutputManifest,
+        storyboard,
+        video_output,
+        tts_output,
+        composition_output,
+        gate_result,
+        video_review_output,
+        pipeline_start_time: float,
+    ) -> OutputManifest:
+        """Shared tail of every backend: delivery report, manifest, run log."""
+        self._record_delivery(manifest, gate_result, video_review_output)
+
+        manifest = self._finalize_manifest(
+            manifest,
+            video_output,
+            tts_output,
+            composition_output,
+            video_review_output,
+            storyboard=storyboard,
+        )
+
+        # Log pipeline completion. The rate means DELIVERED scenes (in the
+        # rendered video) when rendering ran; codegen success otherwise.
+        pipeline_duration = time.time() - pipeline_start_time
+        effective_success = (
+            manifest.delivered_scenes
+            if manifest.delivered_scenes is not None
+            else manifest.successful_scenes
+        )
+        scene_success_rate = (
+            effective_success / manifest.total_scenes
+            if manifest.total_scenes > 0 else 1.0
+        )
+
+        self.structured_logger.log_pipeline_complete(
+            duration_seconds=pipeline_duration,
+            output_directory=manifest.output_directory,
+            status=manifest.status,
+            scene_success_rate=scene_success_rate
+        )
+
+        logger.info(
+            f"Pipeline completed successfully in {pipeline_duration:.2f}s",
+            extra={
+                "event": "pipeline_complete",
+                "duration_seconds": pipeline_duration,
+                "output_directory": manifest.output_directory,
+                "status": manifest.status
+            }
+        )
+
+        return manifest
+
     def _setup_logging(self) -> None:
         """Setup structured logging for the pipeline."""
         # Configure root logger
@@ -451,9 +790,10 @@ class Orchestrator:
                 }
             )
 
-            # Fail fast: verifier repair runs after all codegen spend, so a
-            # missing key must abort before any paid stage, not after.
-            if str(self.config.verifier_mode or "off").lower() == "repair":
+            # Fail fast on the render backend (portrait URL, D-ID key) and on
+            # the verifier key: both are needed after paid stages have run.
+            self._preflight_render_backend()
+            if str(self.config.verifier_mode or "off").lower() == "repair" and not self._avatar_backend():
                 self._verifier_repair_key()
 
             # Step 1: Ingestion
@@ -523,6 +863,17 @@ class Orchestrator:
                 )
                 logger.info(f"Dry run completed in {pipeline_duration:.2f}s")
                 return manifest
+
+            # ── did-avatar backend: D-ID renders and voices every scene, in
+            # place of codegen, Manim, TTS and the Manim-specific reviews.
+            if self._avatar_backend():
+                manifest, video_output, composition_output = self._run_did_avatar_backend(
+                    sanitized_storyboard, ocr_output, validated_ref,
+                )
+                return self._complete_run(
+                    manifest, sanitized_storyboard, video_output, None, composition_output,
+                    None, None, pipeline_start_time,
+                )
 
             # Step 6: Scene Processing
             tts_output = None
@@ -639,48 +990,10 @@ class Orchestrator:
                     composition_output,
                     self.structured_logger
                 )
-            self._record_delivery(manifest, gate_result, video_review_output)
-
-            manifest = self._finalize_manifest(
-                manifest,
-                video_output,
-                tts_output,
-                composition_output,
-                video_review_output,
-                storyboard=sanitized_storyboard,
+            return self._complete_run(
+                manifest, sanitized_storyboard, video_output, tts_output, composition_output,
+                gate_result, video_review_output, pipeline_start_time,
             )
-
-            # Log pipeline completion. The rate means DELIVERED scenes (in the
-            # rendered video) when rendering ran; codegen success otherwise.
-            pipeline_duration = time.time() - pipeline_start_time
-            effective_success = (
-                manifest.delivered_scenes
-                if manifest.delivered_scenes is not None
-                else manifest.successful_scenes
-            )
-            scene_success_rate = (
-                effective_success / manifest.total_scenes
-                if manifest.total_scenes > 0 else 1.0
-            )
-
-            self.structured_logger.log_pipeline_complete(
-                duration_seconds=pipeline_duration,
-                output_directory=manifest.output_directory,
-                status=manifest.status,
-                scene_success_rate=scene_success_rate
-            )
-
-            logger.info(
-                f"Pipeline completed successfully in {pipeline_duration:.2f}s",
-                extra={
-                    "event": "pipeline_complete",
-                    "duration_seconds": pipeline_duration,
-                    "output_directory": manifest.output_directory,
-                    "status": manifest.status
-                }
-            )
-
-            return manifest
 
         except PipelineAbortError as e:
             # Log pipeline error
@@ -872,8 +1185,13 @@ class Orchestrator:
             REVISION_FILENAME,
         )
         from src.utils.cost_tracker import CostTracker
-        from src.utils.fingerprints import scene_narration_fingerprint, scene_visual_fingerprint
+        from src.utils.fingerprints import (
+            avatar_clip_fingerprint, scene_narration_fingerprint, scene_visual_fingerprint,
+        )
 
+        self._preflight_render_backend()
+        avatar = self._avatar_backend()
+        avatar_settings = self._did_avatar_settings() if avatar else None
         presenter_settings = self._presenter_settings()
 
         start = time.time()
@@ -892,7 +1210,7 @@ class Orchestrator:
         self._attach_run_logging()
         try:
             planned, reuse_plan = self.script_architect_agent.revise_storyboard(
-                base.storyboard, script,
+                base.storyboard, script, plan_visuals=not avatar,
             )
             storyboard = self._run_json_sanitizer(planned, self.structured_logger)
             self._lesson_script = script
@@ -906,6 +1224,13 @@ class Orchestrator:
             for scene in storyboard.scenes:
                 record = base.records.get(reuse_plan.get(scene.scene_id, ""))
                 if record is None:
+                    continue
+                if avatar:
+                    # An avatar clip carries its own voice: reuse it whole or re-render it.
+                    if base.artifact(record.video_path) and record.visual_fp == avatar_clip_fingerprint(
+                        scene, avatar_settings, getattr(script, "pronunciations", None),
+                    ):
+                        reuse_video[scene.scene_id] = record
                     continue
                 if (
                     base.artifact(record.audio_path)
@@ -926,6 +1251,12 @@ class Orchestrator:
                     reuse_video[scene.scene_id] = record
             # Visual feedback: the scene holding a fixed beat gets new code
             # (instruction as feedback); its narration and audio stay.
+            if avatar and visual_fixes:
+                logger.warning(
+                    "Visual fixes do not apply to the did-avatar backend (it has no scene "
+                    "visuals); ignored for beat(s): %s", ", ".join(sorted(visual_fixes)),
+                )
+                visual_fixes = {}
             fix_feedback: Dict[str, List[str]] = {}
             for scene in storyboard.scenes:
                 notes = [
@@ -944,7 +1275,7 @@ class Orchestrator:
             # narration is re-recorded keeps its code. The new timing track is
             # injected into it and it is re-rendered, with no codegen call.
             retime_only: Dict[str, Any] = {}
-            if self.config.tts_first:
+            if self.config.tts_first and not avatar:
                 for sid, base_id in reuse_plan.items():
                     record = base.records.get(base_id)
                     if (
@@ -973,6 +1304,12 @@ class Orchestrator:
                 manifest = self._run_persistence(None, storyboard, None, file_ref, self.structured_logger)
                 self._write_lesson_script(manifest, storyboard)
                 video_output = tts_output = composition_output = video_review_output = None
+            elif avatar:
+                manifest, video_output, composition_output = self._revise_did_avatar(
+                    base, storyboard, file_ref, reuse_video, regenerate,
+                )
+                tts_output = video_review_output = None
+                self._record_delivery(manifest, None, None)
             else:
                 tts_output = self._carry_over_audio(base, reuse_audio)
                 if self.config.tts_first and narrate:
@@ -1385,6 +1722,7 @@ class Orchestrator:
                 review_feedback=review_feedback,
                 directives=directives,
                 concept_plan=getattr(self, "_concept_plan", None),
+                plan_visuals=not self._avatar_backend(),
             )
             input_data.constraints = StepConstraints(budget_tokens=16000, timeout_seconds=180)
 
@@ -1410,6 +1748,7 @@ class Orchestrator:
                 source_text_summary=self._summarize_segments_for_review(source_segments),
                 source_segments=source_segments,
                 pass_threshold=self.config.storyboard_quality_threshold,
+                ignore_visuals=self._avatar_backend(),
             )
             grader_input.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=60)
             grade_result = self._execute_agent(
@@ -2250,7 +2589,8 @@ class Orchestrator:
         video_output,
         tts_output,
         manifest: OutputManifest,
-        structured_logger: StructuredJSONLogger
+        structured_logger: StructuredJSONLogger,
+        embedded_audio: bool = False,
     ):
         """Run Audio-Video Composer Agent with per-scene error recovery.
 
@@ -2263,6 +2603,8 @@ class Orchestrator:
             tts_output: List of TTSOutput/TTSError from stage 9
             manifest: OutputManifest from Persistence (for output directory)
             structured_logger: Logger for structured JSON logging
+            embedded_audio: The clips already carry their narration
+                (did-avatar); keep it instead of muxing TTS audio.
 
         Returns:
             AudioVideoComposerOutput on success,
@@ -2285,6 +2627,7 @@ class Orchestrator:
                         scene_id=scene_result.scene_id,
                         video_path=scene_result.video_path,
                         audio_path=audio_map.get(scene_result.scene_id),
+                        embedded_audio=embedded_audio,
                     ))
         elif isinstance(video_output, VideoRendererFailure):
             # Even on partial failure, some scenes may have rendered
@@ -2295,6 +2638,7 @@ class Orchestrator:
                             scene_id=scene_result.scene_id,
                             video_path=scene_result.video_path,
                             audio_path=audio_map.get(scene_result.scene_id),
+                            embedded_audio=embedded_audio,
                         ))
 
         if not scene_media:
@@ -2705,6 +3049,10 @@ class Orchestrator:
         """
         from src.schemas.output_manifest import RunConfig
 
+        avatar = self._avatar_backend()
+        if avatar:
+            from src.agents.did_avatar_renderer import display_url
+
         # Record effective runtime configuration
         manifest.run_config = RunConfig(
             dry_run=self.config.dry_run,
@@ -2716,6 +3064,9 @@ class Orchestrator:
             tts_provider=self.config.tts_provider,
             avatar_provider=self.config.avatar_provider,
             presenter_layout=self.config.presenter_layout,
+            render_backend="did-avatar" if avatar else "manim",
+            avatar_image_url=display_url(self.config.avatar_image_url) if avatar else None,
+            avatar_voice_id=self.config.did_voice_id if avatar else None,
         )
 
         self._register_runtime_artifact(
@@ -2749,7 +3100,7 @@ class Orchestrator:
                 self._register_runtime_artifact(
                     manifest,
                     scene_result.video_path,
-                    "scene_video",
+                    "avatar_clip" if avatar else "scene_video",
                 )
 
         for tts_result in tts_output or []:
@@ -2840,6 +3191,7 @@ class Orchestrator:
                 reused_audio=reuse.get("audio"),
                 lexicon=getattr(getattr(self, "_lesson_script", None), "pronunciations", None),
                 presenter_settings=self._presenter_settings(),
+                avatar_settings=self._did_avatar_settings() if avatar else None,
             )
 
         self._populate_cost_summary(manifest)
@@ -2888,6 +3240,7 @@ class Orchestrator:
             "presenter": "presenter.json",
             "professor_omissions": "professor_omissions.json",
             "directives": "directive_checks.json",
+            "did_avatar": "did_avatar.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:
@@ -2938,7 +3291,9 @@ class Orchestrator:
 
         output_root = Path(manifest.output_directory)
         try:
-            relative_path = path_obj.relative_to(output_root)
+            # Resolve both: revision runs pass a relative run dir while the
+            # manifest records an absolute one.
+            relative_path = path_obj.resolve().relative_to(output_root.resolve())
         except ValueError:
             relative_path = Path(path_obj.name)
 

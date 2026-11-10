@@ -104,6 +104,8 @@ If you only want runtime dependencies, `pip install -r requirements.txt` still w
 
 Copy `keys.example.env` to `keys.env` (or use `.env`) and set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY`. Gemini 3.7 Flash generates the final Manim Python; without its key that stage degrades to deterministic mock output.
 
+The optional D-ID talking-professor backend reads `DID_API_KEY` (`D_ID_API_KEY` is accepted as a legacy alias) from the same file. See [D-ID Avatar Backend](#d-id-avatar-backend).
+
 ## Usage
 
 ### Process a Single PDF
@@ -260,6 +262,38 @@ own likeness or voice is used. That requires a profile with your signed
 consent and the vendor's identity verification. Keys come from
 `HEYGEN_API_KEY` / `ELEVENLABS_API_KEY`. Every synthetic clip is labelled
 "AI-generated presenter" and credited at the end.
+
+### D-ID Avatar Backend
+
+```bash
+# keys.env: DID_API_KEY=...   (plus the LLM keys for scripting)
+pdf2manim convert notes.pdf --render-backend did-avatar \
+  --avatar-image-url https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg \
+  --target-minutes 2 --max-avatar-seconds 180
+```
+
+`--render-backend did-avatar` replaces Manim rendering for the run: a talking
+professor (D-ID `POST /talks`) speaks each scene's existing narration, and the
+clips are concatenated into `final_with_narration.mp4`. D-ID produces the
+voice itself (a stock Microsoft voice), so **TTS is skipped** and no OpenAI
+TTS cost is incurred; codegen and the Manim reviews are skipped too.
+
+- The portrait must be a **public HTTPS image of a fictional or licensed
+  avatar** (for example D-ID's own sample presenters). Do not use a photo of a
+  real person without their consent; this backend never generates portraits
+  or clones voices.
+- Clips land in `<run>/avatar/<scene_id>.mp4` and are listed in
+  `manifest.json` as `avatar_clip` (Manim runs list `scene_video`);
+  `run_config.render_backend` records which backend made the run.
+- `did_avatar.json` records each scene's status, clip path, duration, D-ID
+  talk id, credits before/after and error summaries. Keys, auth headers and
+  the signed download URLs are never written anywhere.
+- A rejected or timed-out scene fails on its own; the rest of the video is
+  still built. `--max-avatar-seconds` caps the estimated narration sent to
+  D-ID per run. `--strict` aborts before any paid stage if the key is missing.
+- `pdf2manim revise` works on avatar runs: only scenes whose narration changed
+  are re-rendered; unchanged clips are reused. Visual-fix feedback does not
+  apply (there are no scene visuals) and is ignored with a warning.
 
 ### Feedback in Plain Words
 

@@ -397,6 +397,7 @@ class ScriptArchitectInput(AgentInput):
         review_feedback: Optional[List[str]] = None,
         directives: Optional[Any] = None,
         concept_plan: Optional[Any] = None,
+        plan_visuals: bool = True,
     ):
         """Initialize input
 
@@ -406,6 +407,9 @@ class ScriptArchitectInput(AgentInput):
             segments: Ordered source segments covering the OCR output
             review_feedback: Optional critique to apply on a regeneration pass
             directives: ProfessorDirectives from the brief, enforced on the script
+            plan_visuals: False for backends that render no scene visuals
+                (did-avatar): scenes get a narration-derived placeholder
+                plan with no LLM call instead of a Manim visual plan.
         """
 
         self.ocr_output = ocr_output
@@ -414,6 +418,7 @@ class ScriptArchitectInput(AgentInput):
         self.review_feedback = review_feedback or []
         self.directives = directives
         self.concept_plan = concept_plan  # ConceptPlan: per-concept depth/analogy
+        self.plan_visuals = plan_visuals
 
 
 class ScriptArchitectAgent(Agent):
@@ -598,7 +603,10 @@ class ScriptArchitectAgent(Agent):
 
             # Phase 3: per-chunk visual intent. F6: any per-chunk failure is
             # isolated and never aborts the whole storyboard.
-            self._plan_visual_intents(scenes, video_script, config, review_feedback)
+            if getattr(script_input, "plan_visuals", True):
+                self._plan_visual_intents(scenes, video_script, config, review_feedback)
+            else:
+                self._placeholder_visual_intents(scenes)
             self._renumber_scenes(scenes)
 
             storyboard = self._assemble_storyboard_from_script(
@@ -750,10 +758,20 @@ class ScriptArchitectAgent(Agent):
                 len(text_only_scenes), len(scenes), ", ".join(text_only_scenes),
             )
 
+    def _placeholder_visual_intents(self, scenes: List[Scene], keep_ids: frozenset = frozenset()) -> None:
+        """Narration-derived plans, no LLM: for backends that render no scene
+        visuals (did-avatar), where a Manim plan would only cost a call and
+        could fail Manim-only constraints. Keeps the storyboard schema valid."""
+        for scene in scenes:
+            if scene.scene_id in keep_ids or getattr(scene, "scene_type", "manim") == "presenter":
+                continue
+            scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
+
     def revise_storyboard(
         self,
         base_storyboard: StoryboardJSON,
         script,
+        plan_visuals: bool = True,
     ) -> Tuple[StoryboardJSON, Dict[str, str]]:
         """Re-derive a storyboard from an edited lesson script.
 
@@ -812,10 +830,13 @@ class ScriptArchitectAgent(Agent):
                     chunk.scene_id = f"rev_{len(scenes):03d}"
                     scenes.append(chunk)
 
-        self._plan_visual_intents(
-            scenes, script, config, review_feedback=[],
-            keep_ids=frozenset(reused_from),
-        )
+        if plan_visuals:
+            self._plan_visual_intents(
+                scenes, script, config, review_feedback=[],
+                keep_ids=frozenset(reused_from),
+            )
+        else:
+            self._placeholder_visual_intents(scenes, keep_ids=frozenset(reused_from))
         pairs = [(s, reused_from.get(s.scene_id)) for s in scenes]
         self._renumber_scenes(scenes)
         reuse_map = {s.scene_id: base_id for s, base_id in pairs if base_id}

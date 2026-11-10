@@ -69,8 +69,36 @@ def setup_logging(verbosity: str) -> logging.Logger:
     return logging.getLogger(__name__)
 
 
+def _echo_avatar(output_path: Path) -> None:
+    """Print the did-avatar summary (did_avatar.json is already redacted)."""
+    report_path = output_path / "did_avatar.json"
+    if not report_path.is_file():
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    final = report.get("final_video") or {}
+    click.echo(click.style("D-ID Avatar:", bold=True))
+    click.echo(
+        f"  Clips:            {report.get('rendered', 0)} rendered, {report.get('failed', 0)} failed, "
+        f"{report.get('skipped', 0)} skipped, {len(report.get('reused_from_parent') or {})} reused"
+    )
+    click.echo(f"  Final has audio:  {'yes' if final.get('has_audio') else 'NO'}")
+    if report.get("credits_before") is not None:
+        click.echo(f"  D-ID credits:     {report.get('credits_before')} -> {report.get('credits_after')}")
+    for scene in [s for s in report.get("scenes") or [] if s.get("status") != "done"][:5]:
+        click.echo(click.style(
+            f"  {scene.get('scene_id')}: {scene.get('status')} [{scene.get('error_code')}] {scene.get('error')}",
+            fg="yellow",
+        ))
+    click.echo(f"  Details: {report_path}")
+    click.echo()
+
+
 def _echo_delivery(output_path: Path) -> None:
     """Print the delivery gate's verdict, if the run produced one."""
+    _echo_avatar(output_path)
     report_path = output_path / "delivery_report.json"
     if not report_path.is_file():
         return
@@ -287,6 +315,25 @@ def pdf2manim():
     default=180.0,
     help='Cap on presenter video seconds per run (default: 180)'
 )
+@click.option(
+    '--render-backend',
+    type=click.Choice(['manim', 'did-avatar'], case_sensitive=False),
+    default='manim',
+    help='manim (default): animated scenes narrated by TTS. did-avatar: a D-ID talking '
+         'professor speaks each scene with its own voice (needs DID_API_KEY and '
+         '--avatar-image-url; skips Manim and TTS)'
+)
+@click.option(
+    '--avatar-image-url',
+    default=None,
+    help='did-avatar: public HTTPS URL of a fictional or licensed portrait'
+)
+@click.option(
+    '--max-avatar-seconds',
+    type=click.FloatRange(min=0),
+    default=600.0,
+    help='did-avatar spend cap: estimated narration seconds sent to D-ID per run (default: 600)'
+)
 def convert(
     input_pdf: str,
     output_dir: str,
@@ -315,6 +362,9 @@ def convert(
     profile_path: Optional[str] = None,
     max_presenter_seconds: float = 180.0,
     directives_path: Optional[str] = None,
+    render_backend: str = 'manim',
+    avatar_image_url: Optional[str] = None,
+    max_avatar_seconds: float = 600.0,
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -330,7 +380,21 @@ def convert(
         pdf2manim convert slides.pdf -o ./videos -q high --voice nova
 
         pdf2manim convert notes.pdf --dry-run
+
+        pdf2manim convert notes.pdf --render-backend did-avatar
+            --avatar-image-url https://example.com/licensed-professor.jpg
     """
+    render_backend = render_backend.lower()
+    if render_backend == 'did-avatar':
+        from src.agents.did_avatar_renderer import validate_avatar_image_url
+
+        try:
+            avatar_image_url = validate_avatar_image_url(avatar_image_url)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="'--avatar-image-url'")
+    elif avatar_image_url:
+        click.echo(click.style("Note: --avatar-image-url is ignored without --render-backend did-avatar.", fg="yellow"))
+        avatar_image_url = None
     try:
         # Setup logging
         logger = setup_logging(verbosity)
@@ -363,6 +427,12 @@ def convert(
         click.echo()
 
         click.echo(click.style("Rendering Configuration:", bold=True))
+        click.echo(f"  Backend:      {render_backend}")
+        if render_backend == 'did-avatar':
+            from src.agents.did_avatar_renderer import display_url
+
+            click.echo(f"  Avatar Image: {display_url(avatar_image_url)}")
+            click.echo("  Narration:    D-ID native avatar voice (TTS and Manim skipped)")
         click.echo(f"  Quality:      {quality}")
         click.echo(f"  Voice:        {voice}")
         click.echo(f"  TTS Enabled:  {not skip_tts}")
@@ -398,6 +468,9 @@ def convert(
             tts_provider=tts_provider.lower(),
             professor_profile=profile_path,
             max_presenter_seconds=max_presenter_seconds,
+            render_backend=render_backend,
+            avatar_image_url=avatar_image_url,
+            max_avatar_seconds=max_avatar_seconds,
         )
 
         # Initialize cost tracker
@@ -549,7 +622,10 @@ def convert(
                     click.echo()
                 else:
                     click.echo(click.style("Warning: No video files were produced.", fg="yellow", bold=True))
-                    click.echo("  Check: manim installed? ffmpeg available? Scene code errors?")
+                    if render_backend == 'did-avatar':
+                        click.echo("  Check: DID_API_KEY set? credits left? did_avatar.json for per-scene errors.")
+                    else:
+                        click.echo("  Check: manim installed? ffmpeg available? Scene code errors?")
                     click.echo()
 
             if audio_entries:
@@ -789,6 +865,23 @@ def cost(input_pdf: str) -> None:
     default=None,
     help='Approved edit bundle (JSON: script, visual_fixes, ops) applied exactly as reviewed'
 )
+@click.option(
+    '--render-backend',
+    type=click.Choice(['manim', 'did-avatar'], case_sensitive=False),
+    default=None,
+    help="Render backend (default: the run's own)"
+)
+@click.option(
+    '--avatar-image-url',
+    default=None,
+    help="did-avatar portrait URL (default: the run's own)"
+)
+@click.option(
+    '--max-avatar-seconds',
+    type=click.FloatRange(min=0),
+    default=600.0,
+    help='did-avatar spend cap: estimated narration seconds sent to D-ID (default: 600)'
+)
 def revise(
     run_dir: str,
     script_path: Optional[str],
@@ -807,6 +900,9 @@ def revise(
     approve_bridges: bool = False,
     profile_path: Optional[str] = None,
     edits_path: Optional[str] = None,
+    render_backend: Optional[str] = None,
+    avatar_image_url: Optional[str] = None,
+    max_avatar_seconds: float = 600.0,
 ) -> None:
     """
     Rebuild a finished run from an edited lesson script, edit ops or feedback.
@@ -869,7 +965,19 @@ def revise(
     # Keep the parent run's voice, quality and timing mode unless overridden:
     # changing any of them invalidates every scene's reusable artifacts.
     run_config = base.run_config
+    backend = (render_backend or getattr(run_config, "render_backend", None) or "manim").lower()
+    avatar_kwargs: dict = {}
+    if backend == "did-avatar":
+        from src.agents.did_avatar_renderer import DEFAULT_VOICE_ID
+
+        avatar_kwargs = {
+            "avatar_image_url": avatar_image_url or getattr(run_config, "avatar_image_url", None),
+            "did_voice_id": getattr(run_config, "avatar_voice_id", None) or DEFAULT_VOICE_ID,
+            "max_avatar_seconds": max_avatar_seconds,
+        }
     pipeline_config = PipelineConfig(
+        render_backend=backend,
+        **avatar_kwargs,
         base_output_dir=str(Path(run_dir).parent),
         strict=strict,
         enable_tts=not skip_tts,

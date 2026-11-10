@@ -21,6 +21,7 @@ from src.schemas.output_manifest import OutputFile, OutputManifest, RunConfig, S
 from src.schemas.storyboard import Scene, StoryboardJSON
 from src.schemas.video_script import Analogy, VideoScript
 from src.utils.fingerprints import (
+    avatar_clip_fingerprint,
     beat_fingerprint,
     beats_fingerprint,
     scene_narration_fingerprint,
@@ -202,8 +203,14 @@ def build_scene_records(
     reused_audio: Optional[Dict[str, str]] = None,
     lexicon: Optional[Dict[str, str]] = None,
     presenter_settings: Optional[Dict[str, Any]] = None,
+    avatar_settings: Optional[Dict[str, Any]] = None,
 ) -> List[SceneRecord]:
-    """One record per scene: its fingerprints and where its artifacts are."""
+    """One record per scene: its fingerprints and where its artifacts are.
+
+    With ``avatar_settings`` (the ``did-avatar`` backend) each scene's video
+    is a talking-avatar clip carrying its own voice, so its visual
+    fingerprint is the avatar-clip fingerprint.
+    """
     output_dir = Path(output_dir)
     code_paths = {
         f.path[len("scene_"):-len(".py")]: f.path
@@ -230,7 +237,11 @@ def build_scene_records(
             beat_ids=[b.beat_id for b in scene.source_beats],
             beats_fp=beats_fingerprint(scene.source_beats),
             narration_fp=scene_narration_fingerprint(scene, voice, lexicon),
-            visual_fp=scene_visual_fingerprint(scene, render_quality, tts_first, presenter_settings),
+            visual_fp=(
+                avatar_clip_fingerprint(scene, avatar_settings, lexicon)
+                if avatar_settings is not None
+                else scene_visual_fingerprint(scene, render_quality, tts_first, presenter_settings)
+            ),
             code_path=code_paths.get(sid),
             video_path=_relative(Path(render.video_path), output_dir) if render else None,
             video_duration_seconds=getattr(render, "duration_seconds", None) if render else None,

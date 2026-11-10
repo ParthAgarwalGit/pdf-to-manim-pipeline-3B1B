@@ -90,6 +90,22 @@ def scene_visual_fingerprint(
     return visual_fingerprint(scene, render_quality, tts_first)
 
 
+def avatar_clip_fingerprint(
+    scene: Any,
+    settings: Dict[str, Any],
+    lexicon: Optional[Dict[str, str]] = None,
+) -> str:
+    """Inputs of a talking-avatar clip (``did-avatar`` backend): the text the
+    avatar speaks and the avatar settings (backend, portrait, stock voice).
+    The clip carries its own voice, so this is also its narration print."""
+    return _digest({
+        "v": FINGERPRINT_VERSION,
+        "avatar_clip": True,
+        "text": apply_lexicon(scene.narration or "", lexicon_for(scene.narration, lexicon)),
+        "settings": dict(sorted((settings or {}).items())),
+    })
+
+
 def scene_narration_fingerprint(scene: Any, voice: str, lexicon: Optional[Dict[str, str]] = None) -> str:
     """Narration fingerprint of a storyboard scene, with only the pauses and
     lexicon entries that actually affect its audio."""

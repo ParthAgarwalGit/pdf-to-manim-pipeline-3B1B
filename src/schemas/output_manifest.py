@@ -40,6 +40,7 @@ class OutputFile(BaseModel):
             'composed_video',
             'final_video',
             'lesson_script',
+            'avatar_clip',  # did-avatar backend: talking-professor clip with its own voice
         }
         if v not in allowed_types:
             raise ValueError(
@@ -78,6 +79,15 @@ class RunConfig(BaseModel):
     tts_provider: str = Field(default="openai", description="openai | elevenlabs (voice clone)")
     avatar_provider: str = Field(default="none", description="none | heygen")
     presenter_layout: str = Field(default="full", description="full | pip")
+    render_backend: str = Field(
+        default="manim",
+        description="manim (scene_video renders + TTS) | did-avatar (avatar_clip with native voice, no TTS)",
+    )
+    avatar_image_url: Optional[str] = Field(
+        default=None,
+        description="did-avatar portrait URL, stored without query string or fragment",
+    )
+    avatar_voice_id: Optional[str] = Field(default=None, description="did-avatar stock voice id")
 
 
 class SceneRecord(BaseModel):
