@@ -471,6 +471,13 @@ class ScriptArchitectAgent(Agent):
     # Smaller beats => more beats per document => more, shorter videos that
     # cover the same breadth without compressing topics together.
     WORDS_PER_BEAT = 45
+    # Length budget (--target-minutes, or a brief's length). Measured speech
+    # (TTS and D-ID voices) runs ~2.4-2.5 words/s, slower than the 3.0 used
+    # for scene estimates, so the budget uses the real pace.
+    SPOKEN_WORDS_PER_SECOND = 2.5
+    BUDGET_WORDS_PER_BEAT = 40
+    MIN_SEGMENT_WORDS = 25  # one short beat: every segment keeps a voice
+    LENGTH_TOLERANCE = 1.25  # trim only when the script overshoots by more
     GRANULARITY_WORD_TARGETS = {
         "coarse": 300,
         "balanced": 150,
@@ -493,6 +500,7 @@ class ScriptArchitectAgent(Agent):
         self.strict = strict
         self.last_video_script = None
         self.last_compliance = []
+        self.last_length_repair = None  # beats trimmed to meet a length budget
         super().__init__()
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
@@ -583,6 +591,10 @@ class ScriptArchitectAgent(Agent):
                 video_script, self.last_compliance = enforce_script_directives(
                     video_script, directives,
                 )
+
+            # A requested length is a budget, not a hint: trim deeper beats
+            # deterministically when the writer still overshoots it.
+            video_script, self.last_length_repair = self._enforce_length_budget(video_script, config)
 
             # Presenter bridges are proposals: unlocked beats the professor
             # must approve before anything is rendered or narrated.
@@ -1503,6 +1515,14 @@ class ScriptArchitectAgent(Agent):
             "high": "Be detailed; explain why each step matters.",
         }.get(config.verbosity, "Balanced explanation.")
 
+        word_budget = self._length_budget_words(config)
+        coverage_rule = (
+            "Cover every formula and definition in the source material exactly once."
+            if word_budget is None
+            else "Cover the central formulas and definitions once; within the LENGTH BUDGET "
+                 "below, leave out secondary material."
+        )
+
         prompt = f"""You are a Grant Sanderson–style educational scriptwriter (3Blue1Brown).
 
 --- SOURCE MATERIAL ---
@@ -1523,8 +1543,8 @@ CRITICAL RULES:
    taught in that beat (e.g. "sine", "unit_circle"). Use lowercase, underscored.
 4. Mark `references_prior_beats` with the beat_ids whose visuals/ideas this
    beat builds on.
-5. Cover every formula and definition in the source material exactly once.
-6. Produce approximately {self._target_beat_count(source_text)} beats (plus or minus 20%). Each beat MUST be 30-60 words of narration.
+5. {coverage_rule}
+6. Produce approximately {self._budgeted_beat_count(source_text, word_budget)} beats (plus or minus 20%). Each beat MUST be 30-60 words of narration.
    if a topic needs more, split into multiple beats with references_prior_beats.
 
 {TYPED_BEAT_PROMPT_RULES}
@@ -1534,7 +1554,7 @@ STYLE:
 - Verbosity ({config.verbosity}): {verbosity_line}
 - Tone: Friendly, intuitive, conversational.
 - Visual hint per beat: 1–2 sentences describing what is on screen.
-{self._professor_block(config)}{self._concept_plan_block(concept_plan.entries if concept_plan else None)}{review_block}
+{self._professor_block(config)}{self._concept_plan_block(concept_plan.entries if concept_plan else None)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
 
 Return JSON in this EXACT shape:
 {{
@@ -1633,6 +1653,7 @@ Return JSON in this EXACT shape:
         covered_concepts: List[str] = []
         known_analogies: Dict[str, Analogy] = {}
         title = ""
+        word_budgets = self._segment_word_budgets(segments, config)
 
         for segment in segments:
             prompt = self._build_segment_script_prompt(
@@ -1642,6 +1663,7 @@ Return JSON in this EXACT shape:
                 review_feedback=review_feedback,
                 known_analogies=list(known_analogies.values()),
                 plan_entries=concept_plan.for_segment(segment.segment_id) if concept_plan else None,
+                word_budget=word_budgets.get(segment.segment_id),
             )
             # Failure isolation: a single bad segment response (API error, invalid
             # JSON, or a malformed beat) must never abort the whole storyboard —
@@ -1772,6 +1794,7 @@ Return JSON in this EXACT shape:
         review_feedback: List[str],
         known_analogies: Optional[List[Analogy]] = None,
         plan_entries: Optional[List[Any]] = None,
+        word_budget: Optional[int] = None,
     ) -> str:
         audience_line = {
             "high-school": "Use real-world analogies; avoid jargon.",
@@ -1812,7 +1835,12 @@ Return JSON in this EXACT shape:
                 + "\n"
             )
 
-        target_beats = max(1, self._target_beat_count(segment.text))
+        target_beats = self._budgeted_beat_count(segment.text, word_budget)
+        task = (
+            "Explain THIS segment fully as part of a larger continuous video."
+            if word_budget is None
+            else "Explain the core of THIS segment, within its length budget, as part of a larger continuous video."
+        )
 
         return f"""You are a Grant Sanderson-style educational scriptwriter (3Blue1Brown).
 
@@ -1824,8 +1852,8 @@ SOURCE SEGMENT:
 
 TEXT:
 {segment.text}
-{math_block}{already_block}{analogies_block}{self._professor_block(config)}{self._concept_plan_block(plan_entries)}{review_block}
-TASK: Explain THIS segment fully as part of a larger continuous video.
+{math_block}{already_block}{analogies_block}{self._professor_block(config)}{self._concept_plan_block(plan_entries)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
+TASK: {task}
 Do not preview or re-explain other sections. If a concept was already covered,
 reference it by name without redefining it.
 
@@ -1892,6 +1920,90 @@ Return JSON in this exact shape:
 
     def _target_beat_count(self, source_text: str) -> int:
         return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))
+
+    # ── length budget ───────────────────────────────────────────────────
+
+    def _length_budget_words(self, config) -> Optional[int]:
+        """Narration words a requested length allows, or None (no target)."""
+        target_minutes = getattr(config, "target_minutes", None)
+        if not target_minutes:
+            return None
+        return max(self.MIN_SEGMENT_WORDS, round(float(target_minutes) * 60.0 * self.SPOKEN_WORDS_PER_SECOND))
+
+    def _segment_word_budgets(self, segments, config) -> Dict[str, int]:
+        """The run's word budget split across segments by their source size.
+
+        Each segment keeps at least one short beat, so on documents with many
+        tiny segments coverage wins and the trim repair handles the overshoot.
+        """
+        total = self._length_budget_words(config)
+        if total is None or not segments:
+            return {}
+        weights = {s.segment_id: max(1, len((s.text or "").split())) for s in segments}
+        whole = sum(weights.values())
+        return {
+            segment_id: max(self.MIN_SEGMENT_WORDS, round(total * weight / whole))
+            for segment_id, weight in weights.items()
+        }
+
+    def _budgeted_beat_count(self, source_text: str, word_budget: Optional[int]) -> int:
+        """Beats to ask for: source-sized, capped by the word budget if any."""
+        count = self._target_beat_count(source_text)
+        if word_budget is None:
+            return count
+        return max(1, min(count, round(word_budget / self.BUDGET_WORDS_PER_BEAT)))
+
+    @staticmethod
+    def _length_block(word_budget: Optional[int], target_minutes: Optional[float]) -> str:
+        if word_budget is None:
+            return ""
+        return (
+            f"\nLENGTH BUDGET (binding; the whole video must run about {float(target_minutes):g} min): "
+            f"at most about {word_budget} words of narration here, in total. Cover the central "
+            "definition and the main idea first; leave out secondary results, asides, derivations "
+            "and repetition rather than exceed the budget.\n"
+        )
+
+    def _enforce_length_budget(self, video_script, config):
+        """Deterministic length repair after scripting.
+
+        When the script still overshoots its budget by more than
+        LENGTH_TOLERANCE, the density "essential" edit drops the deeper
+        (depth > 0), unlocked beats; the concept ledger and professor-locked
+        beats are protected by the script editor. Never makes a script
+        longer and never calls an LLM. Returns (script, report or None).
+        """
+        budget = self._length_budget_words(config)
+        if budget is None:
+            return video_script, None
+        before = sum(len(b.narration.split()) for b in video_script.beats)
+        if before <= budget * self.LENGTH_TOLERANCE:
+            return video_script, None
+        from src.agents.script_editor import ScriptEditorAgent
+        from src.schemas.edit_ops import SetDensity
+
+        result = ScriptEditorAgent(use_default_llm=False).apply(video_script, [SetDensity(level="essential")])
+        if result.errors:
+            logger.warning("Length trim not applied: %s", "; ".join(result.errors))
+            return video_script, None
+        kept = {b.beat_id for b in result.script.beats}
+        removed = [b.beat_id for b in video_script.beats if b.beat_id not in kept]
+        if not removed:
+            return video_script, None
+        after = sum(len(b.narration.split()) for b in result.script.beats)
+        report = {
+            "budget_words": budget,
+            "words_before": before,
+            "words_after": after,
+            "removed_beats": removed,
+            "within_budget": after <= budget * self.LENGTH_TOLERANCE,
+            "warnings": list(result.warnings),
+        }
+        logger.info(
+            "Length budget %d words: trimmed %d deeper beat(s), %d -> %d words%s.",
+            budget, len(removed), before, after, "" if report["within_budget"] else " (still over)",
+        )
+        return result.script, report
 
     def _effective_max_scenes(self, config) -> int:
         """Scene ceiling for this run: the static MAX_SCENES unless the user

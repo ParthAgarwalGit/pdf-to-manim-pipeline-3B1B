@@ -195,8 +195,9 @@ def pdf2manim():
     '--target-minutes',
     type=click.FloatRange(min=0, min_open=True),
     default=None,
-    help='Requested finished-video length in minutes; caps the scene budget '
-         'so length is a chosen input (default: ungoverned by length)'
+    help='Requested finished-video length in minutes: budgets the narration words '
+         '(trimming deeper beats if the script overshoots) and caps the scene count '
+         '(default: ungoverned by length)'
 )
 @click.option(
     '-q', '--quality',

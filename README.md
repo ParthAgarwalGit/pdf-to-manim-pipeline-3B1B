@@ -291,6 +291,10 @@ TTS cost is incurred; codegen and the Manim reviews are skipped too.
 - A rejected or timed-out scene fails on its own; the rest of the video is
   still built. `--max-avatar-seconds` caps the estimated narration sent to
   D-ID per run. `--strict` aborts before any paid stage if the key is missing.
+- D-ID bills by video seconds, so set `--target-minutes`: it gives the script
+  writer a word budget (about 150 words per minute, split across sections by
+  their size) and trims deeper beats if the script still runs long; the trim
+  is recorded in `length_budget.json`.
 - `pdf2manim revise` works on avatar runs: only scenes whose narration changed
   are re-rendered; unchanged clips are reused. Visual-fix feedback does not
   apply (there are no scene visuals) and is ignored with a warning.

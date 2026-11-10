@@ -759,6 +759,7 @@ class Orchestrator:
         pipeline_start_time = time.time()
         self._quality_reports = {}
         self._lesson_script = None
+        self._length_repair = None
         self._scene_reuse = {}
         self._begin_directives(directives)
         self._begin_concept_plan(concept_plan)
@@ -1108,8 +1109,18 @@ class Orchestrator:
         if directives is None:
             return
         check = length_check(storyboard, directives.global_.target_minutes)
-        if check is not None:
-            self._directive_checks.append(check)
+        if check is None:
+            return
+        trim = getattr(self, "_length_repair", None)
+        if trim:
+            check.repair = "trim"
+            check.measured["trim"] = trim
+            if not check.passed:
+                check.message += (
+                    f" {len(trim['removed_beats'])} deeper beat(s) were already trimmed; "
+                    "shorten the scope or lower the density to cut more."
+                )
+        self._directive_checks.append(check)
 
     def _check_notation_directive(self, scene_output) -> None:
         from src.agents.directive_compliance import notation_check
@@ -1735,6 +1746,12 @@ class Orchestrator:
             self._script_directive_checks = list(
                 getattr(self.script_architect_agent, "last_compliance", None) or []
             )
+            trim = getattr(self.script_architect_agent, "last_length_repair", None)
+            self._length_repair = trim if isinstance(trim, dict) else None
+            if self._length_repair:
+                self._quality_reports["length_budget"] = self._length_repair
+            else:
+                self._quality_reports.pop("length_budget", None)
 
             if not self.config.enable_quality_loops:
                 self._quality_reports["storyboard_review"] = {
@@ -3241,6 +3258,7 @@ class Orchestrator:
             "professor_omissions": "professor_omissions.json",
             "directives": "directive_checks.json",
             "did_avatar": "did_avatar.json",
+            "length_budget": "length_budget.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:
