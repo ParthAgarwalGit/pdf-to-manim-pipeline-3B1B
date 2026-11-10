@@ -1,10 +1,8 @@
-"""Phase 5 — prompt caching structure + review de-noising.
+"""Phase 5 — prompt prefix stability + review de-noising.
 
-Cost control for students: the code-gen static contract rides Anthropic's
-prompt cache (block 1 with cache_control), and the visual-intent prompt puts
-its static contract FIRST so OpenAI prefix caching fires across the ~45
-planner calls of a run. Plus: vignette-friendly timing minimums and the
-aggregated breathing-room finding (a real run drowned in 180 per-gap ones).
+Cost control for students: codegen and visual-intent prompts put their static
+contracts first so provider prefix caching can reuse them across a run. Plus:
+vignette-friendly timing minimums and the aggregated breathing-room finding.
 """
 
 import json as _json
@@ -30,7 +28,7 @@ from tests.test_animation_generator import (
 
 
 # ---------------------------------------------------------------------------
-# Codegen: cached static block + dynamic tail
+# Codegen: byte-identical static prefix + dynamic tail
 # ---------------------------------------------------------------------------
 
 class TestCodegenSystemSplit:
@@ -41,26 +39,26 @@ class TestCodegenSystemSplit:
             build_test_context(),
         )
 
-    def test_system_is_two_blocks_with_cache_control(self, monkeypatch):
+    def test_system_starts_with_static_contract(self, monkeypatch):
         captured = self._captured(monkeypatch)
         raw = captured["system_raw"]
-        assert isinstance(raw, list) and len(raw) == 2
-        assert raw[0].get("cache_control") == {"type": "ephemeral"}
-        assert "cache_control" not in raw[1]
+        assert isinstance(raw, str)
+        assert raw.startswith(_codegen_static_system_prompt())
 
     def test_static_block_has_no_per_scene_data(self, monkeypatch):
         captured = self._captured(monkeypatch, scene_id="uniquescene")
         raw = captured["system_raw"]
-        assert "CLASS NAME" not in raw[0]["text"]
-        assert "Uniquescene" not in raw[0]["text"]
-        assert "CLASS NAME" in raw[1]["text"]
+        static = _codegen_static_system_prompt()
+        assert "CLASS NAME" not in static
+        assert "Uniquescene" not in static
+        assert "CLASS NAME" in raw[len(static):]
 
     def test_static_block_identical_across_scenes(self, monkeypatch):
         a = self._captured(monkeypatch, "scene_a", "First narration.")
-        first = a["system_raw"][0]["text"]
         b = self._captured(monkeypatch, "scene_b", "Totally different words here.")
-        second = b["system_raw"][0]["text"]
-        assert first == second  # byte-identical => cacheable
+        static = _codegen_static_system_prompt()
+        assert a["system_raw"][:len(static)] == static
+        assert b["system_raw"][:len(static)] == static
 
     def test_static_block_carries_the_contracts(self):
         s = _codegen_static_system_prompt()

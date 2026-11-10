@@ -102,6 +102,32 @@ class TestRenderSalvage:
         # Single salvaged scene → concat degenerates to a copy of that video.
         assert (tmp_path / "final_output.mp4").exists()
 
+    def test_salvage_rebuilds_concat_of_all_rendered_scenes(self, tmp_path, monkeypatch):
+        orch = _orchestrator(tmp_path)
+        salvage_video = tmp_path / "media" / "scene_scene_001.mp4"
+        salvage_video.parent.mkdir(parents=True, exist_ok=True)
+        salvage_video.write_bytes(b"fake video")
+        monkeypatch.setattr(
+            orch.video_renderer_agent, "_render_scene",
+            lambda *a: SceneRenderResult("scene_001", True, str(salvage_video), None, 6.0),
+        )
+        concatenated = []
+        monkeypatch.setattr(
+            orch.video_renderer_agent, "_concatenate_videos",
+            lambda clips, out: concatenated.append((list(clips), out)),
+        )
+        ok = SceneRenderResult("scene_000", True, str(tmp_path / "a.mp4"), None, 5.0)
+        failed = SceneRenderResult("scene_001", False, None, "manim exit code 1: x")
+
+        out = orch._salvage_failed_renders(
+            _video_output(tmp_path, [ok, failed]), _full_storyboard(),
+        )
+
+        assert out.scene_results[1].success is True
+        assert concatenated == [
+            ([str(tmp_path / "a.mp4"), str(salvage_video)], str(tmp_path / "final_output.mp4"))
+        ]
+
     def test_no_failures_is_a_noop(self, tmp_path, monkeypatch):
         orch = _orchestrator(tmp_path)
         called = []

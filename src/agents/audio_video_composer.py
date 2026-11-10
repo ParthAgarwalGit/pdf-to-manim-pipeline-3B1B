@@ -20,9 +20,8 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 from src.agents.base import (
     Agent,
@@ -63,6 +62,9 @@ class SceneMediaPair:
     scene_id: str
     video_path: str
     audio_path: Optional[str] = None  # None = scene has no narration
+    # The video already carries its narration (did-avatar clips): keep that
+    # track, loudness-normalized, instead of muxing TTS audio or silence.
+    embedded_audio: bool = False
 
 
 class AudioVideoComposerInput(AgentInput):
@@ -145,6 +147,13 @@ class AudioVideoComposerAgent(Agent):
     # Timeout for FFmpeg operations (seconds)
     COMPOSE_TIMEOUT = 120
     CONCAT_TIMEOUT = 180
+    # Narration may end at most this much after the video before the video
+    # is extended rather than the narration trimmed (AAC frame slack).
+    NARRATION_CLIP_TOLERANCE = 0.05
+    # Every narration track is normalized to the delivery loudness target
+    # (single-pass; the delivery gate re-normalizes any clip that misses it).
+    # Output is resampled to one rate so concatenated clips stay uniform.
+    NARRATION_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
 
     def execute(self, input_data: AudioVideoComposerInput) -> AgentOutput:
         if not self.validate_input(input_data):
@@ -240,11 +249,39 @@ class AudioVideoComposerAgent(Agent):
 
         output_path = os.path.join(composed_dir, f"{scene_id}_composed.mp4")
 
-        # If no audio, just copy the video (silent scene)
-        if not pair.audio_path or not os.path.isfile(pair.audio_path):
-            logger.info(f"Scene {scene_id}: no audio, copying video as-is")
+        if pair.embedded_audio:
             try:
-                shutil.copy2(pair.video_path, output_path)
+                self._normalize_embedded_audio(pair.video_path, output_path)
+                duration = self._get_media_duration(output_path)
+                return SceneCompositionResult(
+                    scene_id=scene_id,
+                    success=True,
+                    composed_video_path=output_path,
+                    video_duration=duration,
+                    audio_duration=duration,
+                    final_duration=duration,
+                )
+            except subprocess.TimeoutExpired:
+                return SceneCompositionResult(
+                    scene_id=scene_id, success=False,
+                    error=f"FFmpeg timed out after {self.COMPOSE_TIMEOUT}s.",
+                )
+            except Exception as e:
+                return SceneCompositionResult(
+                    scene_id=scene_id, success=False,
+                    error=f"Could not keep the clip's own audio: {e}",
+                )
+
+        # If no audio, the video goes in silent. It still gets a silent audio
+        # track: a clip without one breaks stream-copy concatenation.
+        if not pair.audio_path or not os.path.isfile(pair.audio_path):
+            logger.info(f"Scene {scene_id}: no audio, adding a silent track")
+            try:
+                try:
+                    self._add_silent_track(pair.video_path, output_path)
+                except Exception as exc:
+                    logger.warning("Scene %s: silent track failed (%s); copying video", scene_id, exc)
+                    shutil.copy2(pair.video_path, output_path)
                 video_dur = self._get_media_duration(pair.video_path)
                 return SceneCompositionResult(
                     scene_id=scene_id,
@@ -271,8 +308,10 @@ class AudioVideoComposerAgent(Agent):
             )
 
         try:
-            # Choose merge strategy based on duration comparison
-            if abs(video_dur - audio_dur) < 0.5:
+            # Choose merge strategy based on duration comparison. Narration
+            # is never cut: any audio longer than the video (beyond 50 ms of
+            # encoder slack) extends the video instead of being trimmed.
+            if audio_dur - video_dur <= self.NARRATION_CLIP_TOLERANCE and video_dur - audio_dur < 0.5:
                 # Durations are close enough — simple merge
                 self._merge_simple(pair.video_path, pair.audio_path, output_path)
                 final_dur = max(video_dur, audio_dur)
@@ -340,10 +379,44 @@ class AudioVideoComposerAgent(Agent):
             get_ffmpeg(), "-y",
             "-i", video,
             "-i", audio,
+            "-filter_complex", f"[1:a]{self.NARRATION_FILTER}[aout]",
             "-c:v", "copy",
             "-c:a", "aac", "-b:a", "192k",
             "-map", "0:v:0",
+            "-map", "[aout]",
+            "-shortest",
+            output,
+        ]
+        self._run_ffmpeg(cmd, timeout=self.COMPOSE_TIMEOUT)
+
+    def _normalize_embedded_audio(self, video: str, output: str) -> None:
+        """Keep the clip's own voice track, loudness-normalized like narration.
+
+        Video is stream-copied; only the audio is re-encoded, so every clip
+        leaves with the same audio format and concatenates cleanly.
+        """
+        cmd = [
+            get_ffmpeg(), "-y",
+            "-i", video,
+            "-filter_complex", f"[0:a:0]{self.NARRATION_FILTER}[aout]",
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
+            output,
+        ]
+        self._run_ffmpeg(cmd, timeout=self.COMPOSE_TIMEOUT)
+
+    def _add_silent_track(self, video: str, output: str) -> None:
+        """Copy the video and add a silent audio track matching narrated clips."""
+        cmd = [
+            get_ffmpeg(), "-y",
+            "-i", video,
+            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+            "-map", "0:v:0",
             "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
             "-shortest",
             output,
         ]
@@ -367,9 +440,10 @@ class AudioVideoComposerAgent(Agent):
             "-i", video,
             "-i", audio,
             "-filter_complex",
-            f"[0:v]tpad=stop_mode=clone:stop_duration={extend_secs:.2f}[vout]",
+            f"[0:v]tpad=stop_mode=clone:stop_duration={extend_secs:.2f}[vout];"
+            f"[1:a]{self.NARRATION_FILTER}[aout]",
             "-map", "[vout]",
-            "-map", "1:a:0",
+            "-map", "[aout]",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-shortest",
@@ -388,7 +462,7 @@ class AudioVideoComposerAgent(Agent):
             "-i", video,
             "-i", audio,
             "-filter_complex",
-            "[1:a]apad[aout]",
+            f"[1:a]{self.NARRATION_FILTER},apad[aout]",
             "-map", "0:v:0",
             "-map", "[aout]",
             "-c:v", "copy",
@@ -447,21 +521,35 @@ class AudioVideoComposerAgent(Agent):
     def _concatenate_with_reencode(
         self, video_paths: List[str], output_path: str
     ) -> None:
-        """Fallback: concatenate by re-encoding all inputs to uniform format."""
-        # Build input args
+        """Fallback: concatenate by re-encoding all inputs to uniform format.
+
+        The concat filter needs identical frame sizes, rates and audio
+        layouts, so every clip is scaled (letterboxed) to the most common
+        format first. That mismatch is exactly why this fallback runs.
+        """
+        from src.utils.media_probe import probe
+
+        formats = []
+        for vp in video_paths:
+            info = probe(vp)
+            if info and info.video and info.video.width and info.video.height:
+                formats.append((info.video.width, info.video.height, info.video.fps or 30.0))
+        width, height, fps = max(set(formats), key=formats.count) if formats else (1280, 720, 30.0)
+
         input_args = []
-        filter_parts_v = []
-        filter_parts_a = []
+        filters = []
+        pairs = []
         for i, vp in enumerate(video_paths):
             input_args.extend(["-i", vp])
-            filter_parts_v.append(f"[{i}:v:0]")
-            filter_parts_a.append(f"[{i}:a:0]")
+            filters.append(
+                f"[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p[v{i}]"
+            )
+            filters.append(f"[{i}:a:0]aformat=sample_rates=48000:channel_layouts=mono[a{i}]")
+            pairs.append(f"[v{i}][a{i}]")
 
         n = len(video_paths)
-        filter_complex = (
-            f"{''.join(filter_parts_v)}concat=n={n}:v=1:a=0[vout]; "
-            f"{''.join(filter_parts_a)}concat=n={n}:v=0:a=1[aout]"
-        )
+        filter_complex = "; ".join(filters) + f"; {''.join(pairs)}concat=n={n}:v=1:a=1[vout][aout]"
 
         cmd = [
             get_ffmpeg(), "-y",

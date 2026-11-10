@@ -11,11 +11,9 @@ Tests cover:
 """
 
 import os
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -123,8 +121,8 @@ class TestCompositionStrategies:
     def test_simple_merge_when_durations_close(
         self, mock_duration, mock_run, agent, fake_video, fake_audio, tmp_path
     ):
-        """When video and audio are within 0.5s, use simple merge."""
-        mock_duration.side_effect = [10.0, 10.2, 10.2]  # video, audio, output
+        """When the video is up to 0.5s longer, use simple merge."""
+        mock_duration.side_effect = [10.2, 10.0, 10.2]  # video, audio, output
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
 
         composed_dir = str(tmp_path / "composed")
@@ -142,6 +140,27 @@ class TestCompositionStrategies:
         # Verify _merge_simple was called (contains -shortest without tpad/apad)
         call_args = mock_run.call_args_list[0][0][0]
         assert "-shortest" in call_args
+        joined = " ".join(call_args)
+        assert "tpad" not in joined and "apad" not in joined
+        assert "loudnorm" in joined  # narration normalized to the delivery target
+
+    @patch("src.agents.audio_video_composer.subprocess.run")
+    @patch.object(AudioVideoComposerAgent, "_get_media_duration")
+    def test_slightly_longer_narration_is_never_trimmed(
+        self, mock_duration, mock_run, agent, fake_video, fake_audio, tmp_path
+    ):
+        """Narration 0.2s longer than the video extends the video (the old
+        simple merge cut the last 0.2s of speech with -shortest)."""
+        mock_duration.side_effect = [10.0, 10.2, 10.2]
+        mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+        composed_dir = str(tmp_path / "composed")
+        os.makedirs(composed_dir, exist_ok=True)
+        (Path(composed_dir) / "s1_composed.mp4").write_bytes(b"\x00" * 100)
+
+        result = agent._compose_scene(SceneMediaPair("s1", fake_video, fake_audio), composed_dir)
+
+        assert result.success is True
+        assert "tpad" in " ".join(mock_run.call_args_list[0][0][0])
 
     @patch("src.agents.audio_video_composer.subprocess.run")
     @patch.object(AudioVideoComposerAgent, "_get_media_duration")
@@ -325,8 +344,9 @@ class TestConcatenation:
         assert "-f" in call_args
         assert "concat" in call_args
 
+    @patch("src.utils.media_probe.probe", return_value=None)  # format probe before re-encode
     @patch("src.agents.audio_video_composer.subprocess.run")
-    def test_reencode_fallback_on_concat_failure(self, mock_run, agent, tmp_path):
+    def test_reencode_fallback_on_concat_failure(self, mock_run, _probe, agent, tmp_path):
         """If concat demuxer fails, fall back to re-encode."""
         # First call fails (concat demuxer), second succeeds (re-encode)
         mock_run.side_effect = [

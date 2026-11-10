@@ -37,7 +37,7 @@ finds a spot that doesn't overlap any registered object.
 from __future__ import annotations
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 # Manim imports — these are available at runtime in generated scene code
 from manim import Mobject, UP, DOWN, LEFT, RIGHT, UR, UL, DR, DL
@@ -152,7 +152,6 @@ class LayoutTracker:
                 directions.append(d)
 
         best_pos = None
-        best_dir = preferred
 
         for d in directions:
             # Candidate position: next_to anchor in direction d
@@ -183,7 +182,6 @@ class LayoutTracker:
 
             if not has_overlap:
                 best_pos = label.get_center().copy()
-                best_dir = d
                 break
         else:
             # All directions overlapped — use preferred anyway (least bad)

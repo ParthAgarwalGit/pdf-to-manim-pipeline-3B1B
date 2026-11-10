@@ -77,6 +77,12 @@ PRICING_TABLE: Dict[Tuple[str, str], Tuple[float, float]] = {
     ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),    # Corrected: Haiku 4.5 = $1/$5
     # Introductory Gemini 3.7 Flash pricing through 2026-12-31.
     ("google", "gemini-3.7-flash"): (0.75, 3.75),
+    # Presenter vendors (approximate public list prices; set yours from
+    # your contract). Voice: per 1M characters. Avatar: "tokens" are seconds
+    # of presenter video, so the rate is per 1M seconds (~$2/minute).
+    ("elevenlabs", "tts"): (300.00, 0.00),
+    ("heygen", "presenter-seconds"): (33_333.00, 0.00),
+    ("none", "presenter-seconds"): (0.00, 0.00),
 }
 
 # Per-provider fallback rate when an exact (provider, model) pair is missing.

@@ -1,10 +1,16 @@
+import shutil
+
 import pytest
 manim = pytest.importorskip("manim")
 
-from src.utils.coordinate_system_helpers import (
+from src.utils.coordinate_system_helpers import (  # noqa: E402
     attach_axis_labels,
     create_coordinate_system,
     plot_function_on_system,
+)
+
+needs_latex = pytest.mark.skipif(
+    shutil.which("latex") is None, reason="axis labels render with LaTeX"
 )
 
 
@@ -27,6 +33,7 @@ def test_create_coordinate_system_supports_axes_and_number_plane():
     assert plane.__class__.__name__ == "NumberPlane"
 
 
+@needs_latex
 def test_attach_axis_labels_returns_group_with_labels():
     axes = create_coordinate_system(kind="axes")
     labelled = attach_axis_labels(axes, x_label="x", y_label="y")

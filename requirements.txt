@@ -15,6 +15,7 @@ hypothesis>=6.82.0
 # Additional dependencies
 jsonschema>=4.19.0
 python-dateutil>=2.8.2
+PyYAML>=6.0
 
 # PDF processing and OCR
 PyMuPDF>=1.23.0

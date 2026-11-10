@@ -19,14 +19,14 @@ from src.utils.manim_engine_contract import (
 
 class PDFMetadataStoryboard(BaseModel):
     """Metadata about the source PDF (simplified for storyboard)."""
-    
+
     filename: str = Field(..., description="Name of the PDF file")
     page_count: int = Field(..., ge=1, description="Total number of pages in the PDF")
 
 
 class Configuration(BaseModel):
     """Configuration parameters for storyboard generation."""
-    
+
     verbosity: str = Field(
         ...,
         description="Narration verbosity level (low|medium|high)"
@@ -52,6 +52,18 @@ class Configuration(BaseModel):
             "an emergent property of document size. None = ungoverned."
         ),
     )
+    professor_notes: List[str] = Field(
+        default_factory=list,
+        description="Binding instructions from the professor's brief for the script prompts",
+    )
+    notation_rules: List[str] = Field(
+        default_factory=list,
+        description="Binding notation directives for code generation, e.g. 'Write j, not i.'",
+    )
+    presenter_bridges: str = Field(
+        default="off",
+        description="'propose' inserts presenter bridge beats (await approval); 'off' none",
+    )
 
     @field_validator('verbosity')
     @classmethod
@@ -61,7 +73,7 @@ class Configuration(BaseModel):
         if v not in allowed:
             raise ValueError(f"verbosity must be one of {allowed}, got '{v}'")
         return v
-    
+
     @field_validator('depth')
     @classmethod
     def validate_depth(cls, v: str) -> str:
@@ -70,7 +82,7 @@ class Configuration(BaseModel):
         if v not in allowed:
             raise ValueError(f"depth must be one of {allowed}, got '{v}'")
         return v
-    
+
     @field_validator('audience')
     @classmethod
     def validate_audience(cls, v: str) -> str:
@@ -92,7 +104,7 @@ class Configuration(BaseModel):
 
 class ConceptHierarchy(BaseModel):
     """Concept in the pedagogical hierarchy."""
-    
+
     concept_id: str = Field(..., description="Unique identifier for the concept")
     concept_name: str = Field(..., description="Human-readable name of the concept")
     dependencies: List[str] = Field(
@@ -170,6 +182,14 @@ class MathematicalObject(BaseModel):
     object_role: Optional[str] = Field(
         None,
         description="Semantic role such as main_equation, shared_axes, teacher, or label"
+    )
+    purpose: str = Field(
+        default="",
+        description="Concise explanation of why this visible object is needed",
+    )
+    supports_beat_ids: List[str] = Field(
+        default_factory=list,
+        description="Narration/visual beat ids this object directly supports",
     )
     object_type: str = Field(
         ...,
@@ -322,7 +342,7 @@ class Transformation(BaseModel):
         ge=0.0,
         description="Seconds from scene start when transformation begins"
     )
-    
+
     @field_validator('transformation_type')
     @classmethod
     def validate_transformation_type(cls, v: str) -> str:
@@ -402,7 +422,7 @@ class Transformation(BaseModel):
 
 class EmphasisPoint(BaseModel):
     """Point in time where specific content should be emphasized."""
-    
+
     timestamp: float = Field(
         ...,
         ge=0.0,
@@ -470,7 +490,7 @@ class VisualBeat(BaseModel):
 
 class VisualIntent(BaseModel):
     """Visual intent specification for a scene."""
-    
+
     mathematical_objects: List[MathematicalObject] = Field(
         ...,
         description="Mathematical objects to create and animate"
@@ -516,6 +536,11 @@ class Scene(BaseModel):
         gt=0.0,
         description="Estimated scene duration in seconds"
     )
+    audio_duration_seconds: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Measured TTS duration when narration-first timing is enabled",
+    )
     dependencies: List[str] = Field(
         default_factory=list,
         description="Array of scene_ids that this scene depends on"
@@ -534,6 +559,25 @@ class Scene(BaseModel):
         default_factory=list,
         description="SourceSegment ids covered by this scene."
     )
+    beat_timings: Dict[str, List[float]] = Field(
+        default_factory=dict,
+        description="Timing track: beat_id -> [start, end] seconds within the "
+                    "scene's narration audio (per-beat TTS)."
+    )
+    scene_type: str = Field(
+        default="manim",
+        description="'manim' (generated animation) or 'presenter' (a bridge "
+                    "beat spoken by the professor's presenter, no Manim code)."
+    )
+
+    @property
+    def is_presenter(self) -> bool:
+        return self.scene_type == "presenter"
+
+    @property
+    def presenter_approved(self) -> bool:
+        """Bridge text is rendered only once the professor approved (locked) it."""
+        return self.is_presenter and bool(self.source_beats) and all(b.locked for b in self.source_beats)
 
     @field_validator('scene_id')
     @classmethod

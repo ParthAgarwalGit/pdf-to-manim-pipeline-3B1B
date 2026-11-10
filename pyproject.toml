@@ -37,6 +37,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "jsonschema>=4.19.0",
     "python-dateutil>=2.8.2",
+    "PyYAML>=6.0",
     "aiofiles>=23.0.0",
     "python-dotenv>=1.0.0",
 ]
@@ -58,6 +59,7 @@ demo = [
 
 [project.scripts]
 pdf2manim = "src.cli:main"
+manim-verifier = "src.manim_verifier.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

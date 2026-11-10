@@ -5,7 +5,6 @@ shared context and isolating failures to individual scenes.
 """
 
 import copy
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
@@ -36,11 +35,15 @@ class SceneControllerInput(AgentInput):
         output_directory: str,
         animation_generator: Optional[Any] = None,
         scene_feedback: Optional[Dict[str, List[str]]] = None,
+        only_scene_ids: Optional[List[str]] = None,
     ):
         self.storyboard = storyboard
         self.output_directory = output_directory
         self.animation_generator = animation_generator
         self.scene_feedback = scene_feedback or {}
+        # Revision runs generate code only for these scenes; the others still
+        # feed the shared context so later scenes see what came before.
+        self.only_scene_ids = None if only_scene_ids is None else set(only_scene_ids)
 
 
 class SceneControllerOutput(AgentOutput):
@@ -65,7 +68,7 @@ class SceneControllerOutput(AgentOutput):
 
 class SceneControllerAgent(Agent):
     """Agent responsible for managing deterministic scene iteration.
-    
+
     The Scene Controller:
     - Extracts scene array from sanitized Storyboard JSON
     - Initializes shared context (concept_definitions, visual_style, variable_bindings)
@@ -75,7 +78,7 @@ class SceneControllerAgent(Agent):
     - Isolates failures (continues to next scene on failure)
     - Generates scene processing report with success/failure statistics
     """
-    
+
     def __init__(self, max_retries_per_scene: int = 3):
         """Initialize Scene Controller Agent.
 
@@ -83,16 +86,16 @@ class SceneControllerAgent(Agent):
             max_retries_per_scene: Maximum retry attempts for individual scene generation
         """
         self.max_retries_per_scene = max_retries_per_scene
-    
+
     def execute(self, input_data: SceneControllerInput) -> SceneControllerOutput:
         """Execute scene iteration and processing.
-        
+
         Args:
             input_data: SceneControllerInput with storyboard and output directory
-            
+
         Returns:
             SceneControllerOutput with processing report and animation code objects
-            
+
         Raises:
             AgentExecutionError: For unrecoverable failures
         """
@@ -102,15 +105,22 @@ class SceneControllerAgent(Agent):
                 "Input must be SceneControllerInput with storyboard and output_directory",
                 {"input_type": type(input_data).__name__}
             )
-        
+
         storyboard = input_data.storyboard
         output_directory = input_data.output_directory
         animation_generator = input_data.animation_generator
         scene_feedback = input_data.scene_feedback or {}
+        only_scene_ids = getattr(input_data, "only_scene_ids", None)
 
         # Extract scene array
         scenes = storyboard.scenes
-        total_scenes = len(scenes)
+        def wanted(s) -> bool:
+            # Presenter scenes are rendered by the presenter stage, not Manim.
+            return getattr(s, "scene_type", "manim") != "presenter" and (
+                only_scene_ids is None or s.scene_id in only_scene_ids
+            )
+
+        total_scenes = sum(1 for s in scenes if wanted(s))
 
         # Initialize shared context
         shared_context = self._initialize_context(storyboard)
@@ -121,6 +131,11 @@ class SceneControllerAgent(Agent):
 
         # Iterate over scenes in deterministic order (Requirements 10.2, 10.3)
         for scene_index, scene in enumerate(scenes):
+            if getattr(scene, "scene_type", "manim") == "presenter":
+                continue
+            if not wanted(scene):
+                self._update_context(shared_context, scene, self._scene_to_spec(scene))
+                continue
             try:
                 scene_spec = self._scene_to_spec(scene)
 
@@ -164,13 +179,13 @@ class SceneControllerAgent(Agent):
             animation_code_objects=animation_code_objects,
             shared_context=shared_context,
         )
-    
+
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is SceneControllerInput with required fields.
-        
+
         Args:
             input_data: Input to validate
-            
+
         Returns:
             True if valid, False otherwise
         """
@@ -181,10 +196,10 @@ class SceneControllerAgent(Agent):
         if not isinstance(input_data.output_directory, str):
             return False
         return True
-    
+
     def get_retry_policy(self) -> RetryPolicy:
         """Return retry policy for Scene Controller.
-        
+
         Returns:
             RetryPolicy with exponential backoff for transient failures
         """
@@ -195,13 +210,13 @@ class SceneControllerAgent(Agent):
             max_delay_seconds=30.0,
             retryable_errors=["ANIMATION_GENERATOR_UNAVAILABLE", "TRANSIENT_FAILURE"]
         )
-    
+
     def _initialize_context(self, storyboard: StoryboardJSON) -> SharedContext:
         """Initialize shared context from storyboard configuration.
-        
+
         Args:
             storyboard: StoryboardJSON object
-            
+
         Returns:
             Initialized SharedContext
         """
@@ -213,25 +228,28 @@ class SceneControllerAgent(Agent):
             "text": "#FFFFFF",         # White
             "emphasis": "#FC6255"      # Red
         }
-        
+
         visual_style = VisualStyle(
             colors=default_colors,
             font_size=24,
             animation_speed=1.0
         )
-        
+
         return SharedContext(
             concept_definitions={},
             visual_style=visual_style,
-            variable_bindings={}
+            variable_bindings={},
+            notation_rules=list(
+                getattr(getattr(storyboard, "configuration", None), "notation_rules", None) or []
+            ),
         )
-    
+
     def _scene_to_spec(self, scene: Scene) -> SceneSpec:
         """Convert Scene from storyboard to SceneSpec.
-        
+
         Args:
             scene: Scene object from storyboard
-            
+
         Returns:
             SceneSpec object
         """
@@ -239,9 +257,11 @@ class SceneControllerAgent(Agent):
             scene_id=scene.scene_id,
             narration=scene.narration,
             visual_intent=scene.visual_intent.model_dump(),
-            duration_estimate=scene.duration_estimate
+            duration_estimate=scene.duration_estimate,
+            audio_duration_seconds=scene.audio_duration_seconds,
+            beat_timings=dict(getattr(scene, "beat_timings", None) or {}),
         )
-    
+
     def _process_scene_with_generator(
         self,
         animation_generator: Any,
@@ -274,7 +294,7 @@ class SceneControllerAgent(Agent):
                     review_feedback=review_feedback or [],
                 )
                 result = animation_generator.execute(gen_input)
-                
+
                 # Check if result is an error object
                 if hasattr(result, 'error'):
                     raise Exception(result.error)
@@ -284,33 +304,33 @@ class SceneControllerAgent(Agent):
                 if isinstance(result, AnimationGeneratorOutput):
                     return result.animation_code
                 return result
-                
+
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries_per_scene - 1:
                     # Will retry
                     continue
-        
+
         # All retries exhausted
         raise Exception(f"Scene generation failed after {self.max_retries_per_scene} attempts: {last_error}")
-    
+
     def _mock_process_scene(
         self,
         processing_input: SceneProcessingInput
     ) -> AnimationCodeObject:
         """Mock scene processing for testing without Animation Generator.
-        
+
         Args:
             processing_input: SceneProcessingInput for the scene
-            
+
         Returns:
             Mock AnimationCodeObject
         """
         from datetime import datetime
-        
+
         scene_spec = processing_input.scene_spec
         scene_id = scene_spec.scene_id
-        
+
         # Generate mock Manim code
         class_name = f"Scene_{scene_id.replace('-', '_')}"
         code = f'''class {class_name}(Scene):
@@ -320,7 +340,7 @@ class SceneControllerAgent(Agent):
         self.play(Write(text))
         self.wait({scene_spec.duration_estimate})
 '''
-        
+
         return AnimationCodeObject(
             scene_id=scene_id,
             code=code,
@@ -330,7 +350,7 @@ class SceneControllerAgent(Agent):
             duration_estimate=scene_spec.duration_estimate,
             generation_timestamp=datetime.now()
         )
-    
+
     def _update_context(
         self,
         context: SharedContext,
@@ -338,7 +358,7 @@ class SceneControllerAgent(Agent):
         scene_spec: SceneSpec
     ) -> None:
         """Update shared context after successful scene generation.
-        
+
         Args:
             context: SharedContext to update (modified in place)
             scene: Scene object from storyboard
@@ -349,7 +369,7 @@ class SceneControllerAgent(Agent):
             # Extract definition from narration (simplified heuristic)
             if "is defined as" in scene.narration.lower() or "we define" in scene.narration.lower():
                 context.concept_definitions[scene.concept_id] = scene.narration[:200]
-        
+
         # Update variable bindings from mathematical objects
         visual_intent = scene.visual_intent
         for math_obj in visual_intent.mathematical_objects:

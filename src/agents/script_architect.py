@@ -12,7 +12,8 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
 import openai
 
@@ -28,6 +29,7 @@ from src.agents.base import (
 from src.agents.document_segmenter import DocumentSegmenterAgent, DocumentSegmenterInput
 from src.schemas.ocr_output import OCROutput
 from src.schemas.source_segment import SourceSegment
+from src.schemas.video_script import MAX_BEAT_DEPTH, Analogy
 from src.schemas.storyboard import (
     Configuration,
     ConceptHierarchy,
@@ -42,7 +44,8 @@ from src.schemas.storyboard import (
     VisualBeat,
     VisualIntent,
 )
-from src.utils.manim_engine_contract import build_visual_intent_contract_prompt, CANONICAL_RENDER_HINTS, normalize_render_hint
+from src.utils.fingerprints import beat_fingerprint, beats_fingerprint
+from src.utils.manim_engine_contract import build_visual_intent_contract_prompt
 from src.utils.manim_primitives import catalog_for_prompt
 from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 
@@ -94,6 +97,98 @@ def _canonicalize_concept(label: str) -> str:
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     return _CONCEPT_ALIASES.get(s, s)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Typed beats — role / depth / analogy tags from the script LLM. They let a
+# professor edit "the pizza analogy" or "the optional depth" instead of raw
+# beat ids. "bridge" beats belong to the presenter layer, never this LLM.
+# ─────────────────────────────────────────────────────────────────────────
+
+_LLM_BEAT_ROLES = frozenset({"core", "analogy", "example", "derivation", "intuition", "recap"})
+
+TYPED_BEAT_PROMPT_RULES = """BEAT TAGS:
+- "role": core | analogy | example | derivation | intuition | recap.
+  core = the essential argument; analogy = introduces or calls back an analogy;
+  example = a worked instance; derivation = step-by-step working;
+  intuition = an informal "why"; recap = a short summary.
+- "depth": 0 when the beat is essential to the argument; 1-3 for increasingly
+  optional elaboration.
+- "analogy_id": id of the analogy this beat introduces or calls back, else null.
+  Declare every new analogy in "analogies" (analogy_id, label, target_concepts,
+  mapping from analogy term to concept). Callbacks reuse the existing id.
+  Return "analogies": [] when there is no new analogy."""
+
+
+def _analogy_id_slug(raw: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(raw or "").strip().lower()).strip("_")
+    if not slug:
+        return ""
+    return slug if slug.startswith("analogy_") else f"analogy_{slug}"
+
+
+def _parse_analogies(raw_items: Any, known: Dict[str, Analogy]) -> Dict[str, str]:
+    """Register the analogies one LLM response declared.
+
+    Mutates ``known`` (analogy_id -> Analogy, declaration order) and returns a
+    map from the ids the response used to registered ids. Re-declaring a known
+    id with the same (or no) label is a callback; a different label under the
+    same id is a different analogy and gets a numeric suffix.
+    """
+    id_map: Dict[str, str] = {}
+    for item in raw_items if isinstance(raw_items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        local = str(item.get("analogy_id") or item.get("label") or "")
+        base = _analogy_id_slug(local)
+        if not base:
+            continue
+        label = str(item.get("label") or "").strip()
+        existing = known.get(base)
+        if existing is not None and (not label or existing.label.lower() == label.lower()):
+            id_map[local] = base
+            continue
+        analogy_id, suffix = base, 2
+        while analogy_id in known:
+            analogy_id, suffix = f"{base}_{suffix}", suffix + 1
+        concepts = [
+            canonical
+            for concept in (item.get("target_concepts") or [])
+            if isinstance(concept, str) and (canonical := _canonicalize_concept(concept))
+        ]
+        raw_mapping = item.get("mapping")
+        mapping = (
+            {str(k): str(v) for k, v in raw_mapping.items()}
+            if isinstance(raw_mapping, dict) else {}
+        )
+        known[analogy_id] = Analogy(
+            analogy_id=analogy_id,
+            label=label or base.removeprefix("analogy_").replace("_", " "),
+            target_concepts=concepts,
+            mapping=mapping,
+        )
+        id_map[local] = analogy_id
+    return id_map
+
+
+def _typed_beat_fields(raw: Dict[str, Any], analogy_id_map: Dict[str, str]) -> Dict[str, Any]:
+    """Coerce the LLM's role/depth/analogy tags; bad values fall back to defaults."""
+    role = str(raw.get("role") or "core").strip().lower()
+    if role not in _LLM_BEAT_ROLES:
+        role = "core"
+    try:
+        depth = int(raw.get("depth") or 0)
+    except (TypeError, ValueError):
+        depth = 0
+    analogy_id = None
+    local = raw.get("analogy_id")
+    if isinstance(local, str) and local.strip():
+        analogy_id = analogy_id_map.get(local) or _analogy_id_slug(local) or None
+    return {
+        "role": role,
+        "depth": min(max(depth, 0), MAX_BEAT_DEPTH),
+        "analogy_id": analogy_id,
+    }
 
 
 def _extract_json_object(text: str) -> str:
@@ -224,8 +319,6 @@ def _resolve_bbox_overlaps(objs: List[Any], iterations: int = 4) -> None:
             return
 
 
-from functools import lru_cache
-
 
 @lru_cache(maxsize=1)
 def _visual_intent_static_prompt() -> str:
@@ -253,14 +346,18 @@ def _visual_intent_static_prompt() -> str:
         "the MOBJECT names above and `args` to its kwargs. Free-form "
         "`content` is ONLY permitted for MathTex / Tex / Text (where it "
         "goes into the `tex` or `text` arg).\n\n"
+        "PURPOSE (required): every object must include a concise `purpose` "
+        "explaining what the viewer learns from it and `supports_beat_ids` "
+        "listing the narration/visual beat ids it serves. Never emit generic "
+        "decoration, filler, or an object with no beat-level job.\n\n"
         "VISUAL IMPACT (non-negotiable): this is a VISUALIZATION tool, not "
         "a slideshow. At least ONE object MUST be a non-text primitive "
         "(Axes, NumberLine, Vector, Arrow, Circle, Polygon, Line, Dot, ...) "
         "that visually DEPICTS the concept. Text/MathTex are for labels and "
         "the key formula only — never the whole scene.\n"
-        "AT MOST 7 objects total — a short scene with 16 objects is an "
-        "unreadable collage. One anchor visual + a few labels beats many "
-        "competing shapes.\n\n"
+        "AT MOST 15 objects across the whole scene and AT MOST 7 visible at "
+        "the same time. Sequence reveals and reuse existing objects rather "
+        "than creating an unreadable collage.\n\n"
         "LAYOUT (x, y, t):\n"
         "  - For every object also emit `bbox` = {x, y, w, h} centred on the\n"
         "    object's intended position in Manim units AND `interval` =\n"
@@ -291,27 +388,37 @@ def _validate_items(items: Any, model: Any) -> list:
 
 class ScriptArchitectInput(AgentInput):
     """Input for Script/Storyboard Architect Agent"""
-    
+
     def __init__(
         self,
         ocr_output: OCROutput,
         configuration: Configuration,
         segments: Optional[List[SourceSegment]] = None,
         review_feedback: Optional[List[str]] = None,
+        directives: Optional[Any] = None,
+        concept_plan: Optional[Any] = None,
+        plan_visuals: bool = True,
     ):
         """Initialize input
-        
+
         Args:
             ocr_output: OCR output from Vision+OCR Agent
             configuration: Configuration parameters for storyboard generation
             segments: Ordered source segments covering the OCR output
             review_feedback: Optional critique to apply on a regeneration pass
+            directives: ProfessorDirectives from the brief, enforced on the script
+            plan_visuals: False for backends that render no scene visuals
+                (did-avatar): scenes get a narration-derived placeholder
+                plan with no LLM call instead of a Manim visual plan.
         """
-        
+
         self.ocr_output = ocr_output
         self.configuration = configuration
         self.segments = segments or []
         self.review_feedback = review_feedback or []
+        self.directives = directives
+        self.concept_plan = concept_plan  # ConceptPlan: per-concept depth/analogy
+        self.plan_visuals = plan_visuals
 
 
 class ScriptArchitectAgent(Agent):
@@ -332,7 +439,7 @@ class ScriptArchitectAgent(Agent):
     Determinism: scene ids are sequential (scene_001, scene_002, ...). The
     chunker is fully deterministic given the same VideoScript.
     """
-    
+
     # Configuration constants
     # Visual-first pacing (ADR-005): scenes are short, dense vignettes — one
     # focused visual idea each — not lecture-length segments. MIN matches the
@@ -364,17 +471,24 @@ class ScriptArchitectAgent(Agent):
     # Smaller beats => more beats per document => more, shorter videos that
     # cover the same breadth without compressing topics together.
     WORDS_PER_BEAT = 45
+    # Length budget (--target-minutes, or a brief's length). Measured speech
+    # (TTS and D-ID voices) runs ~2.4-2.5 words/s, slower than the 3.0 used
+    # for scene estimates, so the budget uses the real pace.
+    SPOKEN_WORDS_PER_SECOND = 2.5
+    BUDGET_WORDS_PER_BEAT = 40
+    MIN_SEGMENT_WORDS = 25  # one short beat: every segment keeps a voice
+    LENGTH_TOLERANCE = 1.25  # trim only when the script overshoots by more
     GRANULARITY_WORD_TARGETS = {
         "coarse": 300,
         "balanced": 150,
         "fine": 90,
     }
-    
+
     # Default configuration values
     DEFAULT_VERBOSITY = "medium"
     DEFAULT_DEPTH = "intermediate"
     DEFAULT_AUDIENCE = "undergraduate"
-    
+
     def __init__(self, strict: bool = False):
         """Initialize the Script/Storyboard Architect Agent.
 
@@ -384,6 +498,9 @@ class ScriptArchitectAgent(Agent):
         """
         self.retry_count = 0
         self.strict = strict
+        self.last_video_script = None
+        self.last_compliance = []
+        self.last_length_repair = None  # beats trimmed to meet a length budget
         super().__init__()
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
@@ -410,7 +527,7 @@ class ScriptArchitectAgent(Agent):
                 self.anthropic_client = anthropic.Anthropic()
             except Exception as exc:  # pragma: no cover — optional dependency / init
                 logger.warning("Anthropic client unavailable for unified script: %s", exc)
-    
+
     def execute(self, input_data: AgentInput) -> AgentOutput:
         """Execute storyboard generation via the unified-script + chunker flow.
 
@@ -458,11 +575,37 @@ class ScriptArchitectAgent(Agent):
                 config,
                 review_feedback,
                 segments=segments,
+                concept_plan=getattr(script_input, "concept_plan", None),
             )
             logger.info(
                 f"Generated video script: {len(video_script.beats)} beats, "
                 f"{len(video_script.concept_ledger())} unique concepts"
             )
+            # Professor directives are binding: repair violations in the
+            # script (only the offending beats) before any visual is planned.
+            self.last_compliance = []
+            directives = getattr(script_input, "directives", None)
+            if directives is not None and not directives.is_empty():
+                from src.agents.directive_compliance import enforce_script_directives
+
+                video_script, self.last_compliance = enforce_script_directives(
+                    video_script, directives,
+                )
+
+            # A requested length is a budget, not a hint: trim deeper beats
+            # deterministically when the writer still overshoots it.
+            video_script, self.last_length_repair = self._enforce_length_budget(video_script, config)
+
+            # Presenter bridges are proposals: unlocked beats the professor
+            # must approve before anything is rendered or narrated.
+            if getattr(config, "presenter_bridges", "off") == "propose":
+                from src.agents.bridge_planner import BridgePlannerAgent
+
+                video_script = BridgePlannerAgent().propose(video_script)
+
+            # The orchestrator persists this as lesson_script.json — the
+            # professor-editable source a revision run starts from.
+            self.last_video_script = video_script
 
             # Phase 2: deterministic chunker (Task 4).
             scenes = self._chunk_script_into_scenes(
@@ -470,63 +613,13 @@ class ScriptArchitectAgent(Agent):
             )
             logger.info(f"Chunked script into {len(scenes)} scenes")
 
-            # Phase 3: per-chunk visual intent.
-            # Until Task 7 lands the chunk-aware visual planner, we use the
-            # narration-derived fallback so the pipeline produces a valid
-            # storyboard end-to-end. F6: any per-chunk failure is isolated
-            # and never aborts the whole storyboard.
-            visual_failures: List[Dict[str, str]] = []
-            text_only_scenes: List[str] = []
-            # Visual continuity: intents are generated in scene order so each
-            # scene can be told what the previous one left on screen.
-            carried_objects: List[MathematicalObject] = []
-            for scene in scenes:
-                try:
-                    scene.visual_intent = self._generate_visual_intent_for_chunk(
-                        scene=scene,
-                        video_script=video_script,
-                        config=config,
-                        review_feedback=review_feedback,
-                        carried_objects=carried_objects,
-                    )
-                    # Visual-impact invariant: a scene of nothing but text /
-                    # equations is a slideshow, not a visualization. Retry the
-                    # planner ONCE with explicit feedback. Only meaningful on
-                    # the LLM path — the no-key fallback is deterministic, so
-                    # retrying it would reproduce the same intent.
-                    if (
-                        self._is_text_only_intent(scene.visual_intent)
-                        and self.client is not None
-                        and os.getenv("OPENAI_API_KEY")
-                    ):
-                        scene.visual_intent = self._generate_visual_intent_for_chunk(
-                            scene=scene,
-                            video_script=video_script,
-                            config=config,
-                            review_feedback=review_feedback + [self.TEXT_ONLY_RETRY_FEEDBACK],
-                            carried_objects=carried_objects,
-                        )
-                        if self._is_text_only_intent(scene.visual_intent):
-                            text_only_scenes.append(scene.scene_id)
-                except Exception as exc:
-                    logger.warning(
-                        "Visual intent failed for %s: %s — falling back to narration-derived intent",
-                        scene.scene_id, exc,
-                    )
-                    scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
-                    visual_failures.append({"scene_id": scene.scene_id, "error": str(exc)})
-                carried_objects = self._carried_objects_from_intent(scene.visual_intent)
-
-            if visual_failures:
-                logger.warning(
-                    "Visual intent fallback used for %d/%d scenes",
-                    len(visual_failures), len(scenes),
-                )
-            if text_only_scenes:
-                logger.warning(
-                    "Text-only visual intent persisted after retry for %d/%d scenes: %s",
-                    len(text_only_scenes), len(scenes), ", ".join(text_only_scenes),
-                )
+            # Phase 3: per-chunk visual intent. F6: any per-chunk failure is
+            # isolated and never aborts the whole storyboard.
+            if getattr(script_input, "plan_visuals", True):
+                self._plan_visual_intents(scenes, video_script, config, review_feedback)
+            else:
+                self._placeholder_visual_intents(scenes)
+            self._renumber_scenes(scenes)
 
             storyboard = self._assemble_storyboard_from_script(
                 ocr_output, config, video_script, scenes, segments,
@@ -546,6 +639,295 @@ class ScriptArchitectAgent(Agent):
                 },
             )
 
+    def _plan_visual_intents(
+        self,
+        scenes: List[Scene],
+        video_script,
+        config: Configuration,
+        review_feedback: List[str],
+        keep_ids: frozenset = frozenset(),
+    ) -> None:
+        """Attach a VisualIntent to each scene, in order, mutating ``scenes``.
+
+        Overloaded multi-beat scenes may be split in place. Scenes whose id is
+        in ``keep_ids`` already carry a plan (a revision run reuses them): they
+        are not re-planned, but still hand their on-screen objects to the next
+        scene so continuity is preserved.
+        """
+        visual_failures: List[Dict[str, str]] = []
+        text_only_scenes: List[str] = []
+        # Visual continuity: intents are generated in scene order so each
+        # scene can be told what the previous one left on screen.
+        carried_objects: List[MathematicalObject] = []
+        scene_index = 0
+        while scene_index < len(scenes):
+            scene = scenes[scene_index]
+            if getattr(scene, "scene_type", "manim") == "presenter":
+                # Presenter scenes have no Manim plan; the visual thread
+                # (carried objects) continues across them.
+                scene_index += 1
+                continue
+            if scene.scene_id in keep_ids:
+                carried_objects = self._carried_objects_from_intent(scene.visual_intent)
+                scene_index += 1
+                continue
+            try:
+                constraint_errors: List[str] = []
+                for purpose_attempt in range(self.MAX_PURPOSE_RETRIES + 1):
+                    purpose_feedback = list(review_feedback)
+                    if constraint_errors:
+                        purpose_feedback.append(
+                            "The prior visual plan failed object-purpose validation:\n"
+                            + "\n".join(f"- {item}" for item in constraint_errors)
+                            + "\nReturn a corrected plan; do not drop narrated content."
+                        )
+                    scene.visual_intent = self._generate_visual_intent_for_chunk(
+                        scene=scene,
+                        video_script=video_script,
+                        config=config,
+                        review_feedback=purpose_feedback,
+                        carried_objects=carried_objects,
+                    )
+                    constraint_errors = self._visual_intent_constraint_errors(
+                        scene,
+                        scene.visual_intent,
+                    )
+                    if not constraint_errors:
+                        break
+                if constraint_errors:
+                    # Splitting adds a scene, so it must respect the
+                    # same ceiling the chunker enforces (target_minutes /
+                    # MAX_SCENES); past it, fall back instead.
+                    if (
+                        self._has_object_budget_error(constraint_errors)
+                        and len(scene.source_beats) > 1
+                        and len(scenes) < self._effective_max_scenes(config)
+                    ):
+                        replacements = self._split_scene_at_beat_boundary(scene)
+                        scenes[scene_index:scene_index + 1] = replacements
+                        logger.info(
+                            "Split overloaded %s into two beat-aligned scenes.",
+                            scene.scene_id,
+                        )
+                        continue
+                    raise ValueError("; ".join(constraint_errors))
+                # Visual-impact invariant: a scene of nothing but text /
+                # equations is a slideshow, not a visualization. Retry the
+                # planner ONCE with explicit feedback. Only meaningful on
+                # the LLM path — the no-key fallback is deterministic, so
+                # retrying it would reproduce the same intent.
+                if (
+                    self._is_text_only_intent(scene.visual_intent)
+                    and self.client is not None
+                    and os.getenv("OPENAI_API_KEY")
+                ):
+                    validated_intent = scene.visual_intent
+                    retry_intent = self._generate_visual_intent_for_chunk(
+                        scene=scene,
+                        video_script=video_script,
+                        config=config,
+                        review_feedback=review_feedback + [self.TEXT_ONLY_RETRY_FEEDBACK],
+                        carried_objects=carried_objects,
+                    )
+                    retry_errors = self._visual_intent_constraint_errors(
+                        scene,
+                        retry_intent,
+                    )
+                    if retry_errors:
+                        # Keep the plan that already passed validation; a
+                        # failed retry must not discard it for the generic
+                        # narration fallback.
+                        logger.warning(
+                            "Text-only retry for %s failed validation (%s); "
+                            "keeping the validated first plan.",
+                            scene.scene_id, "; ".join(retry_errors),
+                        )
+                        scene.visual_intent = validated_intent
+                    else:
+                        scene.visual_intent = retry_intent
+                    if self._is_text_only_intent(scene.visual_intent):
+                        text_only_scenes.append(scene.scene_id)
+            except Exception as exc:
+                if self.strict:
+                    raise
+                logger.warning(
+                    "Visual intent failed for %s: %s — falling back to narration-derived intent",
+                    scene.scene_id, exc,
+                )
+                scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
+                visual_failures.append({"scene_id": scene.scene_id, "error": str(exc)})
+            carried_objects = self._carried_objects_from_intent(scene.visual_intent)
+            scene_index += 1
+
+        if visual_failures:
+            logger.warning(
+                "Visual intent fallback used for %d/%d scenes",
+                len(visual_failures), len(scenes),
+            )
+        if text_only_scenes:
+            logger.warning(
+                "Text-only visual intent persisted after retry for %d/%d scenes: %s",
+                len(text_only_scenes), len(scenes), ", ".join(text_only_scenes),
+            )
+
+    def _placeholder_visual_intents(self, scenes: List[Scene], keep_ids: frozenset = frozenset()) -> None:
+        """Narration-derived plans, no LLM: for backends that render no scene
+        visuals (did-avatar), where a Manim plan would only cost a call and
+        could fail Manim-only constraints. Keeps the storyboard schema valid."""
+        for scene in scenes:
+            if scene.scene_id in keep_ids or getattr(scene, "scene_type", "manim") == "presenter":
+                continue
+            scene.visual_intent = self._generate_fallback_visual_intent(scene.narration)
+
+    def revise_storyboard(
+        self,
+        base_storyboard: StoryboardJSON,
+        script,
+        plan_visuals: bool = True,
+    ) -> Tuple[StoryboardJSON, Dict[str, str]]:
+        """Re-derive a storyboard from an edited lesson script.
+
+        Beats are grouped into runs of consecutive beats from one source
+        segment. A run whose beats fingerprint-match a base run keeps that
+        run's scenes verbatim, visual plans included. Any other run is
+        re-chunked on its own (the chunker never crosses a segment boundary,
+        so no other run moves), and a re-chunked scene whose beats exactly
+        match a base scene still reuses it. Only the remaining scenes are
+        re-planned.
+
+        Returns the storyboard and a map from new scene_id to the base
+        scene_id each reused scene came from.
+        """
+        from types import SimpleNamespace
+
+        config = base_storyboard.configuration
+        base_by_fp: Dict[str, Scene] = {}
+        base_runs: Dict[Tuple[str, Tuple[str, ...]], List[Scene]] = {}
+        for segment_id, run_scenes in self._scene_runs(base_storyboard.scenes):
+            fps = tuple(
+                beat_fingerprint(b) for s in run_scenes for b in s.source_beats
+            )
+            base_runs.setdefault((segment_id, fps), run_scenes)
+            for s in run_scenes:
+                if s.source_beats:
+                    base_by_fp.setdefault(beats_fingerprint(s.source_beats), s)
+
+        scenes: List[Scene] = []
+        reused_from: Dict[str, str] = {}  # temporary scene_id -> base scene_id
+
+        def take(base_scene: Scene, beats) -> None:
+            reused = base_scene.model_copy(deep=True)
+            # Fingerprints match, so only provenance fields (author, locked)
+            # can differ; carry the edited script's beats.
+            reused.source_beats = list(beats)
+            reused.scene_id = f"rev_{len(scenes):03d}"
+            reused_from[reused.scene_id] = base_scene.scene_id
+            scenes.append(reused)
+
+        for segment_id, run_beats in self._beat_runs(script.beats):
+            fps = tuple(beat_fingerprint(b) for b in run_beats)
+            matched = base_runs.pop((segment_id, fps), None)
+            if matched is not None:
+                cursor = 0
+                for base_scene in matched:
+                    count = len(base_scene.source_beats)
+                    take(base_scene, run_beats[cursor:cursor + count])
+                    cursor += count
+                continue
+            for chunk in self._chunk_script_into_scenes(SimpleNamespace(beats=run_beats)):
+                base_scene = base_by_fp.get(beats_fingerprint(chunk.source_beats))
+                if base_scene is not None:
+                    take(base_scene, chunk.source_beats)
+                else:
+                    chunk.scene_id = f"rev_{len(scenes):03d}"
+                    scenes.append(chunk)
+
+        if plan_visuals:
+            self._plan_visual_intents(
+                scenes, script, config, review_feedback=[],
+                keep_ids=frozenset(reused_from),
+            )
+        else:
+            self._placeholder_visual_intents(scenes, keep_ids=frozenset(reused_from))
+        pairs = [(s, reused_from.get(s.scene_id)) for s in scenes]
+        self._renumber_scenes(scenes)
+        reuse_map = {s.scene_id: base_id for s, base_id in pairs if base_id}
+
+        ledger = script.concept_ledger()
+        self._repair_scene_concepts(scenes, ledger)
+        storyboard = StoryboardJSON(
+            pdf_metadata=base_storyboard.pdf_metadata,
+            configuration=config,
+            concept_hierarchy=self._concept_hierarchy_from_ledger(ledger),
+            scenes=scenes,
+        )
+        logger.info(
+            "Revised storyboard: %d scenes, %d reused, %d re-planned",
+            len(scenes), len(reuse_map), len(scenes) - len(reuse_map),
+        )
+        return storyboard, reuse_map
+
+    @staticmethod
+    def _beat_runs(beats) -> List[Tuple[str, List[Any]]]:
+        """Group consecutive beats that share a source segment."""
+        runs: List[Tuple[str, List[Any]]] = []
+        for beat in beats:
+            segment_id = getattr(beat, "source_segment_id", "") or ""
+            if runs and runs[-1][0] == segment_id:
+                runs[-1][1].append(beat)
+            else:
+                runs.append((segment_id, [beat]))
+        return runs
+
+    @staticmethod
+    def _scene_runs(scenes: List[Scene]) -> List[Tuple[str, List[Scene]]]:
+        """Group consecutive scenes whose beats come from one source segment."""
+        runs: List[Tuple[str, List[Scene]]] = []
+        for scene in scenes:
+            beats = scene.source_beats or []
+            segment_id = (getattr(beats[0], "source_segment_id", "") or "") if beats else ""
+            if runs and runs[-1][0] == segment_id:
+                runs[-1][1].append(scene)
+            else:
+                runs.append((segment_id, [scene]))
+        return runs
+
+    @staticmethod
+    def _repair_scene_concepts(scenes: List[Scene], ledger: List[str]) -> None:
+        """Point every scene's concept_id at a concept the script still introduces.
+
+        A reused scene can name a concept whose introducing beat was edited
+        away, and a re-chunked run with no introductions falls back to a beat
+        id; both would fail StoryboardJSON's concept cross-check.
+        """
+        valid = set(ledger)
+        if not valid:
+            return
+        previous = ledger[0]
+        for scene in scenes:
+            if scene.concept_id not in valid:
+                scene.concept_id = next(
+                    (
+                        c for b in scene.source_beats
+                        for c in b.introduces_concepts if c in valid
+                    ),
+                    previous,
+                )
+            previous = scene.concept_id
+
+    @staticmethod
+    def _concept_hierarchy_from_ledger(ledger: List[str]) -> List[ConceptHierarchy]:
+        """One entry per concept in first-introduction order; each depends on
+        every concept introduced before it (mirrors the linear narrative)."""
+        return [
+            ConceptHierarchy(
+                concept_id=concept,
+                concept_name=concept.replace("_", " ").title(),
+                dependencies=ledger[:i],
+            )
+            for i, concept in enumerate(ledger)
+        ]
+
     def _assemble_storyboard_from_script(
         self,
         ocr_output: OCROutput,
@@ -557,23 +939,15 @@ class ScriptArchitectAgent(Agent):
         """Build a StoryboardJSON from a unified VideoScript + chunked scenes.
 
         ``concept_hierarchy`` is derived from the script's deduped concept
-        ledger — one entry per canonical concept in first-introduction order,
-        with each concept depending on every concept introduced before it
-        (a flat dependency line that mirrors the linear narrative).
+        ledger (see ``_concept_hierarchy_from_ledger``).
         """
         pdf_metadata = PDFMetadataStoryboard(
             filename=ocr_output.pdf_metadata.filename,
             page_count=ocr_output.pdf_metadata.page_count,
         )
-        ledger = video_script.concept_ledger()
-        concept_hierarchy = [
-            ConceptHierarchy(
-                concept_id=concept,
-                concept_name=concept.replace("_", " ").title(),
-                dependencies=ledger[:i],
-            )
-            for i, concept in enumerate(ledger)
-        ]
+        concept_hierarchy = self._concept_hierarchy_from_ledger(
+            video_script.concept_ledger()
+        )
         self._log_segment_coverage(scenes, segments or [])
         return StoryboardJSON(
             pdf_metadata=pdf_metadata,
@@ -655,7 +1029,9 @@ class ScriptArchitectAgent(Agent):
     MAX_CARRY_OVER_OBJECTS = 3
     # Hard cap on planned objects per vignette scene — a real run averaged
     # 16.7 objects/scene, which drove both the overlaps and the text walls.
-    MAX_OBJECTS_PER_SCENE = 7
+    MAX_OBJECTS_PER_SCENE = 15
+    MAX_CONCURRENT_OBJECTS = 7
+    MAX_PURPOSE_RETRIES = 2
 
     @classmethod
     def _derive_carry_out_ids(cls, objs: List[MathematicalObject]) -> List[str]:
@@ -762,9 +1138,10 @@ class ScriptArchitectAgent(Agent):
                     earlier_concepts.append(c)
 
         visual_hints = (
-            "\n".join(f"- {b.visual_hint}" for b in chunk_beats)
+            "\n".join(f"- {b.beat_id}: {b.visual_hint}" for b in chunk_beats)
             or "- (no specific hints)"
         )
+        valid_beat_ids = [beat.beat_id for beat in chunk_beats]
 
         word_count = len(scene.narration.split())
         target = round(word_count / self.WORDS_PER_SECOND, 1)
@@ -830,6 +1207,8 @@ class ScriptArchitectAgent(Agent):
             "--- END NARRATION ---\n\n"
             f"NEW CONCEPTS INTRODUCED IN THIS CHUNK: "
             f"{', '.join(chunk_concepts) or '(none)'}\n"
+            f"VALID BEAT IDS FOR supports_beat_ids: "
+            f"{', '.join(valid_beat_ids) or 'beat_001'}\n"
             f"{earlier_block}"
             f"{carry_block}"
             "VISUAL HINTS FROM THE SCRIPT WRITER:\n"
@@ -864,7 +1243,7 @@ class ScriptArchitectAgent(Agent):
         back to ``_generate_fallback_visual_intent`` so the pipeline never
         ships a blank scene (F6 mitigation).
         """
-        from src.schemas.storyboard import EmphasisPoint, SceneState, VisualBeat
+        from src.schemas.storyboard import SceneState, VisualBeat
 
         if not isinstance(data, dict):
             return self._generate_fallback_visual_intent(fallback_narration)
@@ -893,16 +1272,6 @@ class ScriptArchitectAgent(Agent):
                 "Visual-intent objects all failed validation; using fallback."
             )
             return self._generate_fallback_visual_intent(fallback_narration)
-
-        # Clutter guard: a vignette can't hold 16 objects (the overlap engine
-        # of a real run). Keep the earliest-appearing MAX_OBJECTS_PER_SCENE.
-        if len(objs) > self.MAX_OBJECTS_PER_SCENE:
-            logger.warning(
-                "Visual intent planned %d objects; keeping the first %d by t_in.",
-                len(objs), self.MAX_OBJECTS_PER_SCENE,
-            )
-            objs.sort(key=lambda o: o.interval.t_in if o.interval else 0.0)
-            objs = objs[: self.MAX_OBJECTS_PER_SCENE]
 
         # Deterministic de-overlap of the planned layout (time-aware).
         _resolve_bbox_overlaps(objs)
@@ -934,13 +1303,138 @@ class ScriptArchitectAgent(Agent):
             scene_state_out=state_out,
             emphasis_points=emphasis,
         )
-    
+
+    def _visual_intent_constraint_errors(
+        self,
+        scene: Scene,
+        intent: VisualIntent,
+    ) -> List[str]:
+        """Return precise feedback for unjustified or overloaded visual plans."""
+        errors: List[str] = []
+        source_beat_ids = {
+            beat.beat_id for beat in (getattr(scene, "source_beats", None) or [])
+        }
+        visual_beat_ids = {beat.beat_id for beat in intent.beats}
+        valid_beat_ids = source_beat_ids | visual_beat_ids
+        object_ids = {obj.object_id for obj in intent.mathematical_objects if obj.object_id}
+        vague_purposes = {"decoration", "decorative", "filler", "visual", "shape"}
+
+        for obj in intent.mathematical_objects:
+            label = obj.object_id or "<missing object_id>"
+            if not obj.object_id:
+                errors.append("Every object needs a stable object_id.")
+            purpose = obj.purpose.strip()
+            if not purpose or purpose.lower() in vague_purposes:
+                errors.append(f"Object {label} needs a specific instructional purpose.")
+            if not obj.supports_beat_ids:
+                errors.append(f"Object {label} must support at least one beat id.")
+            unknown = sorted(set(obj.supports_beat_ids) - valid_beat_ids)
+            if unknown:
+                errors.append(f"Object {label} references unknown beat ids: {unknown}.")
+
+        if len(intent.mathematical_objects) > self.MAX_OBJECTS_PER_SCENE:
+            errors.append(
+                f"Scene has {len(intent.mathematical_objects)} objects; maximum is "
+                f"{self.MAX_OBJECTS_PER_SCENE}. Sequence or reuse them."
+            )
+
+        concurrent = self._max_concurrent_objects(intent.mathematical_objects)
+        if concurrent > self.MAX_CONCURRENT_OBJECTS:
+            errors.append(
+                f"Scene has {concurrent} concurrently visible objects; maximum is "
+                f"{self.MAX_CONCURRENT_OBJECTS}. Stagger their intervals."
+            )
+
+        for trans in intent.transformations:
+            if trans.source_object_id not in object_ids:
+                errors.append(
+                    f"Transformation references missing source object {trans.source_object_id}."
+                )
+            if trans.target_object_id and trans.target_object_id not in object_ids:
+                errors.append(
+                    f"Transformation references missing target object {trans.target_object_id}."
+                )
+        return errors
+
+    @staticmethod
+    def _max_concurrent_objects(objects: List[MathematicalObject]) -> int:
+        if not objects:
+            return 0
+        boundaries = {0.0}
+        for obj in objects:
+            if obj.interval:
+                boundaries.add(obj.interval.t_in)
+                boundaries.add(max(obj.interval.t_in, obj.interval.t_out - 1e-6))
+        maximum = 0
+        for timestamp in boundaries:
+            visible = sum(
+                1
+                for obj in objects
+                if obj.interval is None
+                or obj.interval.t_in <= timestamp < obj.interval.t_out
+            )
+            maximum = max(maximum, visible)
+        return maximum
+
+    @staticmethod
+    def _has_object_budget_error(errors: List[str]) -> bool:
+        return any(
+            "objects; maximum" in error or "concurrently visible objects" in error
+            for error in errors
+        )
+
+    def _split_scene_at_beat_boundary(self, scene: Scene) -> List[Scene]:
+        """Split an overloaded multi-beat scene without rewriting narration."""
+        midpoint = max(1, len(scene.source_beats) // 2)
+        groups = [scene.source_beats[:midpoint], scene.source_beats[midpoint:]]
+        replacements: List[Scene] = []
+        for suffix, beats in zip(("a", "b"), groups):
+            narration = "\n\n".join(beat.narration for beat in beats)
+            word_count = sum(len(beat.narration.split()) for beat in beats)
+            concept_id = next(
+                (
+                    concept
+                    for beat in beats
+                    for concept in beat.introduces_concepts
+                ),
+                scene.concept_id,
+            )
+            segment_ids: List[str] = []
+            for beat in beats:
+                segment_id = getattr(beat, "source_segment_id", "")
+                if segment_id and segment_id not in segment_ids:
+                    segment_ids.append(segment_id)
+            replacements.append(Scene(
+                scene_id=f"{scene.scene_id}_{suffix}",
+                scene_index=scene.scene_index,
+                concept_id=concept_id,
+                narration=narration,
+                visual_intent=self._empty_visual_intent_placeholder(),
+                duration_estimate=round(
+                    max(self.MIN_SCENE_DURATION, word_count / self.WORDS_PER_SECOND),
+                    1,
+                ),
+                dependencies=list(scene.dependencies),
+                difficulty_level=scene.difficulty_level,
+                source_beats=list(beats),
+                source_segment_ids=segment_ids,
+            ))
+        return replacements
+
+    @staticmethod
+    def _renumber_scenes(scenes: List[Scene]) -> None:
+        for index, scene in enumerate(scenes):
+            scene.scene_index = index
+            scene.scene_id = f"scene_{index + 1:03d}"
+            scene.dependencies = [f"scene_{index:03d}"] if index > 0 else []
+
     def _generate_video_script(
         self,
         ocr_output: OCROutput,
         config: Configuration,
         review_feedback: Optional[List[str]] = None,
         segments: Optional[List[SourceSegment]] = None,
+        concept_plan: Optional[Any] = None,
     ):
         """Generate ONE continuous video script with a concept-introduction ledger.
 
@@ -972,6 +1466,7 @@ class ScriptArchitectAgent(Agent):
                 segments=segments,
                 config=config,
                 review_feedback=review_feedback or [],
+                concept_plan=concept_plan,
             )
 
         # Build full source-material context — only this call sees the full PDF.
@@ -1020,6 +1515,14 @@ class ScriptArchitectAgent(Agent):
             "high": "Be detailed; explain why each step matters.",
         }.get(config.verbosity, "Balanced explanation.")
 
+        word_budget = self._length_budget_words(config)
+        coverage_rule = (
+            "Cover every formula and definition in the source material exactly once."
+            if word_budget is None
+            else "Cover the central formulas and definitions once; within the LENGTH BUDGET "
+                 "below, leave out secondary material."
+        )
+
         prompt = f"""You are a Grant Sanderson–style educational scriptwriter (3Blue1Brown).
 
 --- SOURCE MATERIAL ---
@@ -1040,27 +1543,40 @@ CRITICAL RULES:
    taught in that beat (e.g. "sine", "unit_circle"). Use lowercase, underscored.
 4. Mark `references_prior_beats` with the beat_ids whose visuals/ideas this
    beat builds on.
-5. Cover every formula and definition in the source material exactly once.
-6. Produce approximately {self._target_beat_count(source_text)} beats (plus or minus 20%). Each beat MUST be 30-60 words of narration.
+5. {coverage_rule}
+6. Produce approximately {self._budgeted_beat_count(source_text, word_budget)} beats (plus or minus 20%). Each beat MUST be 30-60 words of narration.
    if a topic needs more, split into multiple beats with references_prior_beats.
+
+{TYPED_BEAT_PROMPT_RULES}
 
 STYLE:
 - Audience ({config.audience}): {audience_line}
 - Verbosity ({config.verbosity}): {verbosity_line}
 - Tone: Friendly, intuitive, conversational.
 - Visual hint per beat: 1–2 sentences describing what is on screen.
-{review_block}
+{self._professor_block(config)}{self._concept_plan_block(concept_plan.entries if concept_plan else None)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
 
 Return JSON in this EXACT shape:
 {{
   "title": "...",
+  "analogies": [
+    {{
+      "analogy_id": "analogy_short_name",
+      "label": "what the analogy is",
+      "target_concepts": ["concept_label"],
+      "mapping": {{"analogy term": "concept"}}
+    }}
+  ],
   "beats": [
     {{
       "beat_id": "beat_001",
       "narration": "spoken text...",
       "visual_hint": "what is on screen during this beat",
       "introduces_concepts": ["concept_label", ...],
-      "references_prior_beats": ["beat_001", ...]
+      "references_prior_beats": ["beat_001", ...],
+      "role": "core",
+      "depth": 0,
+      "analogy_id": null
     }}
   ]
 }}
@@ -1068,6 +1584,8 @@ Return JSON in this EXACT shape:
 
         data = self._complete_unified_script_json(prompt)
 
+        known_analogies: Dict[str, Analogy] = {}
+        analogy_id_map = _parse_analogies(data.get("analogies"), known_analogies)
         beats = []
         for b in data.get("beats", []):
             beats.append(Beat(
@@ -1081,9 +1599,14 @@ Return JSON in this EXACT shape:
                     if _canonicalize_concept(c)
                 ],
                 references_prior_beats=b.get("references_prior_beats", []),
+                **_typed_beat_fields(b, analogy_id_map),
             ))
 
-        return VideoScript(title=data.get("title", ""), beats=beats)
+        return VideoScript(
+            title=data.get("title", ""),
+            beats=beats,
+            analogies=list(known_analogies.values()),
+        )
 
     def _complete_unified_script_json(self, prompt: str) -> Dict[str, Any]:
         """Run the unified whole-document script call and return parsed JSON.
@@ -1121,13 +1644,16 @@ Return JSON in this EXACT shape:
         segments: List[SourceSegment],
         config: Configuration,
         review_feedback: List[str],
+        concept_plan: Optional[Any] = None,
     ):
         """Generate a global VideoScript through one LLM call per source segment."""
         from src.schemas.video_script import Beat, VideoScript
 
         all_beats: List[Beat] = []
         covered_concepts: List[str] = []
+        known_analogies: Dict[str, Analogy] = {}
         title = ""
+        word_budgets = self._segment_word_budgets(segments, config)
 
         for segment in segments:
             prompt = self._build_segment_script_prompt(
@@ -1135,6 +1661,9 @@ Return JSON in this EXACT shape:
                 config=config,
                 covered_concepts=covered_concepts,
                 review_feedback=review_feedback,
+                known_analogies=list(known_analogies.values()),
+                plan_entries=concept_plan.for_segment(segment.segment_id) if concept_plan else None,
+                word_budget=word_budgets.get(segment.segment_id),
             )
             # Failure isolation: a single bad segment response (API error, invalid
             # JSON, or a malformed beat) must never abort the whole storyboard —
@@ -1162,6 +1691,7 @@ Return JSON in this EXACT shape:
             pending_beats = data.get("beats")
             if not isinstance(pending_beats, list):
                 continue
+            analogy_id_map = _parse_analogies(data.get("analogies"), known_analogies)
 
             # Pass 1 — keep the usable beats and pre-assign global ids so
             # forward references WITHIN the segment resolve too (the old
@@ -1230,6 +1760,7 @@ Return JSON in this EXACT shape:
                         introduces_concepts=concepts,
                         references_prior_beats=refs,
                         source_segment_id=segment.segment_id,
+                        **_typed_beat_fields(raw, analogy_id_map),
                     ))
                 except Exception as exc:
                     logger.warning(
@@ -1249,7 +1780,11 @@ Return JSON in this EXACT shape:
                 source_segment_id=segments[0].segment_id if segments else "",
             )]
 
-        return VideoScript(title=title, beats=all_beats)
+        # Keep only analogies some surviving beat uses (a dropped segment or
+        # beat can orphan a declaration).
+        used = {b.analogy_id for b in all_beats if b.analogy_id}
+        analogies = [a for a in known_analogies.values() if a.analogy_id in used]
+        return VideoScript(title=title, beats=all_beats, analogies=analogies)
 
     def _build_segment_script_prompt(
         self,
@@ -1257,6 +1792,9 @@ Return JSON in this EXACT shape:
         config: Configuration,
         covered_concepts: List[str],
         review_feedback: List[str],
+        known_analogies: Optional[List[Analogy]] = None,
+        plan_entries: Optional[List[Any]] = None,
+        word_budget: Optional[int] = None,
     ) -> str:
         audience_line = {
             "high-school": "Use real-world analogies; avoid jargon.",
@@ -1289,8 +1827,20 @@ Return JSON in this EXACT shape:
                 + "\n".join(f"- {item}" for item in review_feedback[:8])
                 + "\n"
             )
+        analogies_block = ""
+        if known_analogies:
+            analogies_block = (
+                "\nANALOGIES ALREADY INTRODUCED (call back by analogy_id; do not re-declare):\n"
+                + "\n".join(f"- {a.analogy_id}: {a.label}" for a in known_analogies)
+                + "\n"
+            )
 
-        target_beats = max(1, self._target_beat_count(segment.text))
+        target_beats = self._budgeted_beat_count(segment.text, word_budget)
+        task = (
+            "Explain THIS segment fully as part of a larger continuous video."
+            if word_budget is None
+            else "Explain the core of THIS segment, within its length budget, as part of a larger continuous video."
+        )
 
         return f"""You are a Grant Sanderson-style educational scriptwriter (3Blue1Brown).
 
@@ -1302,14 +1852,16 @@ SOURCE SEGMENT:
 
 TEXT:
 {segment.text}
-{math_block}{already_block}{review_block}
-TASK: Explain THIS segment fully as part of a larger continuous video.
+{math_block}{already_block}{analogies_block}{self._professor_block(config)}{self._concept_plan_block(plan_entries)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
+TASK: {task}
 Do not preview or re-explain other sections. If a concept was already covered,
 reference it by name without redefining it.
 
 TARGET: Produce approximately {target_beats} beat(s). Each beat should be 30-60
 words of narration — one vignette-sized visual idea. Split only when this
 segment needs multiple visual/narrative steps.
+
+{TYPED_BEAT_PROMPT_RULES}
 
 STYLE:
 - Audience ({config.audience}): {audience_line}
@@ -1319,20 +1871,139 @@ STYLE:
 Return JSON in this exact shape:
 {{
   "title": "...",
+  "analogies": [
+    {{
+      "analogy_id": "analogy_short_name",
+      "label": "what the analogy is",
+      "target_concepts": ["concept_label"],
+      "mapping": {{"analogy term": "concept"}}
+    }}
+  ],
   "beats": [
     {{
       "beat_id": "beat_local_001",
       "narration": "spoken text...",
       "visual_hint": "what is on screen during this beat",
       "introduces_concepts": ["concept_label"],
-      "references_prior_beats": []
+      "references_prior_beats": [],
+      "role": "core",
+      "depth": 0,
+      "analogy_id": null
     }}
   ]
 }}
 """
 
+    @staticmethod
+    def _professor_block(config) -> str:
+        """The professor's brief, compiled into binding script instructions."""
+        notes = list(getattr(config, "professor_notes", None) or [])
+        if not notes:
+            return ""
+        return (
+            "\nPROFESSOR INSTRUCTIONS (binding; they override the style defaults):\n"
+            + "\n".join(f"- {note}" for note in notes)
+            + "\n"
+        )
+
+    @staticmethod
+    def _concept_plan_block(entries) -> str:
+        """Per-concept depth/analogy choices from the professor's concept plan."""
+        entries = list(entries or [])
+        if not entries:
+            return ""
+        return (
+            "\nCONCEPT PLAN (binding, per concept; tag deeper material with a higher depth):\n"
+            + "\n".join(f"- {entry.instruction()}" for entry in entries)
+            + "\n"
+        )
+
     def _target_beat_count(self, source_text: str) -> int:
         return max(1, round(len(source_text.split()) / self.WORDS_PER_BEAT))
+
+    # ── length budget ───────────────────────────────────────────────────
+
+    def _length_budget_words(self, config) -> Optional[int]:
+        """Narration words a requested length allows, or None (no target)."""
+        target_minutes = getattr(config, "target_minutes", None)
+        if not target_minutes:
+            return None
+        return max(self.MIN_SEGMENT_WORDS, round(float(target_minutes) * 60.0 * self.SPOKEN_WORDS_PER_SECOND))
+
+    def _segment_word_budgets(self, segments, config) -> Dict[str, int]:
+        """The run's word budget split across segments by their source size.
+
+        Each segment keeps at least one short beat, so on documents with many
+        tiny segments coverage wins and the trim repair handles the overshoot.
+        """
+        total = self._length_budget_words(config)
+        if total is None or not segments:
+            return {}
+        weights = {s.segment_id: max(1, len((s.text or "").split())) for s in segments}
+        whole = sum(weights.values())
+        return {
+            segment_id: max(self.MIN_SEGMENT_WORDS, round(total * weight / whole))
+            for segment_id, weight in weights.items()
+        }
+
+    def _budgeted_beat_count(self, source_text: str, word_budget: Optional[int]) -> int:
+        """Beats to ask for: source-sized, capped by the word budget if any."""
+        count = self._target_beat_count(source_text)
+        if word_budget is None:
+            return count
+        return max(1, min(count, round(word_budget / self.BUDGET_WORDS_PER_BEAT)))
+
+    @staticmethod
+    def _length_block(word_budget: Optional[int], target_minutes: Optional[float]) -> str:
+        if word_budget is None:
+            return ""
+        return (
+            f"\nLENGTH BUDGET (binding; the whole video must run about {float(target_minutes):g} min): "
+            f"at most about {word_budget} words of narration here, in total. Cover the central "
+            "definition and the main idea first; leave out secondary results, asides, derivations "
+            "and repetition rather than exceed the budget.\n"
+        )
+
+    def _enforce_length_budget(self, video_script, config):
+        """Deterministic length repair after scripting.
+
+        When the script still overshoots its budget by more than
+        LENGTH_TOLERANCE, the density "essential" edit drops the deeper
+        (depth > 0), unlocked beats; the concept ledger and professor-locked
+        beats are protected by the script editor. Never makes a script
+        longer and never calls an LLM. Returns (script, report or None).
+        """
+        budget = self._length_budget_words(config)
+        if budget is None:
+            return video_script, None
+        before = sum(len(b.narration.split()) for b in video_script.beats)
+        if before <= budget * self.LENGTH_TOLERANCE:
+            return video_script, None
+        from src.agents.script_editor import ScriptEditorAgent
+        from src.schemas.edit_ops import SetDensity
+
+        result = ScriptEditorAgent(use_default_llm=False).apply(video_script, [SetDensity(level="essential")])
+        if result.errors:
+            logger.warning("Length trim not applied: %s", "; ".join(result.errors))
+            return video_script, None
+        kept = {b.beat_id for b in result.script.beats}
+        removed = [b.beat_id for b in video_script.beats if b.beat_id not in kept]
+        if not removed:
+            return video_script, None
+        after = sum(len(b.narration.split()) for b in result.script.beats)
+        report = {
+            "budget_words": budget,
+            "words_before": before,
+            "words_after": after,
+            "removed_beats": removed,
+            "within_budget": after <= budget * self.LENGTH_TOLERANCE,
+            "warnings": list(result.warnings),
+        }
+        logger.info(
+            "Length budget %d words: trimmed %d deeper beat(s), %d -> %d words%s.",
+            budget, len(removed), before, after, "" if report["within_budget"] else " (still over)",
+        )
+        return result.script, report
 
     def _effective_max_scenes(self, config) -> int:
         """Scene ceiling for this run: the static MAX_SCENES unless the user
@@ -1356,7 +2027,7 @@ Return JSON in this exact shape:
         Source beats are stored on ``Scene.source_beats`` as a real Pydantic
         field so they survive ``model_dump()`` round-trips (F5 mitigation).
         """
-        from src.schemas.video_script import Beat, VideoScript
+        from src.schemas.video_script import Beat
 
         def beat_duration(b) -> float:
             return len(b.narration.split()) / self.WORDS_PER_SECOND
@@ -1367,6 +2038,13 @@ Return JSON in this exact shape:
             cur: List[Beat] = []
             cur_dur = 0.0
             for beat in script.beats:
+                if getattr(beat, "role", "core") == "bridge":
+                    # A presenter bridge is always its own (non-Manim) scene.
+                    if cur:
+                        packed.append(cur)
+                    packed.append([beat])
+                    cur, cur_dur = [], 0.0
+                    continue
                 bd = beat_duration(beat)
                 beat_segment = getattr(beat, "source_segment_id", "")
                 cur_segment_ids = {
@@ -1480,6 +2158,11 @@ Return JSON in this exact shape:
                 dependencies=[f"scene_{idx:03d}"] if idx > 0 else [],
                 source_beats=chunk_beats,
                 source_segment_ids=source_segment_ids,
+                scene_type=(
+                    "presenter"
+                    if len(chunk_beats) == 1 and getattr(chunk_beats[0], "role", "") == "bridge"
+                    else "manim"
+                ),
             ))
 
         return scenes
@@ -1587,6 +2270,8 @@ Return JSON in this exact shape:
             MathematicalObject(
                 object_id="intro_text",
                 object_role="title",
+                purpose="Introduce the scene's narrated idea in the first beat",
+                supports_beat_ids=["beat_001"],
                 object_type="text",
                 content=title_text,
                 primitive="Text",
@@ -1607,6 +2292,8 @@ Return JSON in this exact shape:
             objs.append(MathematicalObject(
                 object_id="main_equation",
                 object_role="main_equation",
+                purpose="Show the equation explicitly referenced by the narration",
+                supports_beat_ids=["beat_001"],
                 object_type="equation",
                 notation_key="main_equation",
                 content=tex,
@@ -1625,6 +2312,8 @@ Return JSON in this exact shape:
             objs.append(MathematicalObject(
                 object_id="archetype_visual",
                 object_role="concept_visual",
+                purpose="Depict the narrated concept with a non-text visual",
+                supports_beat_ids=["beat_001"],
                 object_type=object_type,
                 content=archetype.description,
                 primitive=primitive_name,
@@ -1665,31 +2354,31 @@ Return JSON in this exact shape:
             scene_state_out=SceneState(active_object_ids=active_object_ids),
             emphasis_points=[],
         )
-    
+
     def validate_input(self, input_data: AgentInput) -> bool:
         """Validate input is a ScriptArchitectInput object
-        
+
         Args:
             input_data: Input object to validate
-            
+
         Returns:
             True if input is valid, False otherwise
         """
         if not isinstance(input_data, ScriptArchitectInput):
             return False
-        
+
         # Validate OCR output and configuration are present
         if not hasattr(input_data, 'ocr_output') or not hasattr(input_data, 'configuration'):
             return False
-        
+
         return isinstance(input_data.ocr_output, OCROutput) and isinstance(input_data.configuration, Configuration)
-    
+
     def get_retry_policy(self) -> RetryPolicy:
         """Return retry policy for Script/Storyboard Architect Agent
-        
+
         LLM calls may fail due to invalid JSON generation or API issues.
         Use retry with schema enforcement for JSON issues.
-        
+
         Returns:
             RetryPolicy with limited retries
         """

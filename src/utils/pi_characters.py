@@ -32,7 +32,6 @@ from manim import (
     UP,
     WHITE,
     Arc,
-    Circle,
     Dot,
     Ellipse,
     Line,
