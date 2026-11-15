@@ -2,14 +2,12 @@
 
 import ast
 import pytest
-from datetime import datetime
 from hypothesis import given, settings, strategies as st
 
 from src.agents.animation_generator import (
     AnimationCodeGeneratorAgent,
     AnimationGeneratorInput,
     AnimationGeneratorOutput,
-    AnimationGeneratorError,
 )
 from src.schemas.animation_code import AnimationCodeObject
 from src.schemas.scene_processing import (
@@ -55,7 +53,7 @@ def build_test_scene_spec(
                 "style": {"color": "blue", "position": "center"}
             }
         ]
-    
+
     if transformations is None:
         transformations = [
             {
@@ -65,7 +63,7 @@ def build_test_scene_spec(
                 "timing": 0.5
             }
         ]
-    
+
     return SceneSpec(
         scene_id=scene_id,
         narration=narration,
@@ -102,7 +100,7 @@ def build_test_context() -> SharedContext:
 @st.composite
 def valid_scene_spec_strategy(draw):
     """Hypothesis strategy for generating valid scene specifications.
-    
+
     **Validates: Requirements 8.5**
     """
     # Generate printable ASCII characters only (no null bytes or control characters)
@@ -112,7 +110,7 @@ def valid_scene_spec_strategy(draw):
         max_size=20,
         alphabet=st.characters(min_codepoint=97, max_codepoint=122, whitelist_characters='_-')  # lowercase letters only
     ).filter(lambda s: s not in ['true', 'false', 'none']))
-    
+
     # Exclude backslash from narration to avoid escape sequence issues in docstrings
     narration = draw(st.text(
         min_size=10,
@@ -120,11 +118,11 @@ def valid_scene_spec_strategy(draw):
         alphabet=st.characters(min_codepoint=32, max_codepoint=126, blacklist_characters='\\')
     ))
     duration = draw(st.floats(min_value=10.0, max_value=180.0))
-    
+
     # Generate valid object types
     object_type = draw(st.sampled_from(["equation", "text", "axes", "graph", "geometric_shape"]))
     transformation_type = draw(st.sampled_from(["fade_in", "fade_out", "write", "morph", "highlight", "move", "scale"]))
-    
+
     # Generate content without null bytes, backslashes, quotes, or problematic characters
     # Exclude backslash and quotes to avoid raw string edge cases
     content = draw(st.text(
@@ -132,7 +130,7 @@ def valid_scene_spec_strategy(draw):
         max_size=50,
         alphabet=st.characters(min_codepoint=32, max_codepoint=126, blacklist_characters='\\"\'')
     ))
-    
+
     math_objects = [
         {
             "object_type": object_type,
@@ -140,7 +138,7 @@ def valid_scene_spec_strategy(draw):
             "style": {"color": "blue", "position": "center"}
         }
     ]
-    
+
     transformations = [
         {
             "transformation_type": transformation_type,
@@ -149,7 +147,7 @@ def valid_scene_spec_strategy(draw):
             "timing": draw(st.floats(min_value=0.0, max_value=5.0))
         }
     ]
-    
+
     return build_test_scene_spec(
         scene_id=scene_id,
         narration=narration,
@@ -164,28 +162,28 @@ def valid_scene_spec_strategy(draw):
 @given(scene_spec=valid_scene_spec_strategy())
 def test_property_generated_code_is_syntactically_valid(scene_spec):
     """Property 4: Generated code is syntactically valid Python.
-    
+
     **Validates: Requirements 8.5**
-    
+
     For any scene specification with valid visual_intent, the generated code
     should parse successfully with Python's AST parser.
     """
     agent = AnimationCodeGeneratorAgent()
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     # Should return AnimationGeneratorOutput, not error
     assert isinstance(result, AnimationGeneratorOutput), \
         f"Expected AnimationGeneratorOutput, got {type(result).__name__}"
-    
+
     # Generated code should be syntactically valid
     code = result.animation_code.code
     try:
@@ -203,19 +201,19 @@ def test_animation_generator_generates_valid_code():
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec()
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     assert isinstance(result.animation_code, AnimationCodeObject)
-    
+
     # Check animation code properties
     anim_code = result.animation_code
     assert anim_code.scene_id == "test_001"
@@ -231,20 +229,20 @@ def test_animation_generator_validates_syntax():
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec()
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     # Code should be syntactically valid
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should not raise SyntaxError
     ast.parse(code)
 
@@ -262,19 +260,19 @@ def test_animation_generator_generates_mathtex_for_equations():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain create_notation helper (helper layer replaces raw MathTex)
     assert "create_notation" in code
     assert "E = mc^2" in code or "mc" in code
@@ -293,19 +291,19 @@ def test_animation_generator_generates_text_objects():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain create_text_label helper (helper layer replaces raw Text)
     assert "create_text_label" in code
     assert "Hello World" in code
@@ -324,19 +322,19 @@ def test_animation_generator_generates_axes():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain create_coordinate_system helper (helper layer replaces raw Axes)
     assert "create_coordinate_system" in code
 
@@ -385,19 +383,19 @@ def test_animation_generator_generates_geometric_shapes():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain Circle
     assert "Circle" in code
 
@@ -416,19 +414,19 @@ def test_animation_generator_generates_fade_in_transformation():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain FadeIn
     assert "FadeIn" in code
     assert "self.play" in code
@@ -448,19 +446,19 @@ def test_animation_generator_generates_fade_out_transformation():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain FadeOut
     assert "FadeOut" in code
 
@@ -479,19 +477,19 @@ def test_animation_generator_generates_scale_transformation():
         ]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain scale
     assert "scale" in code
     assert "2.0" in code
@@ -501,7 +499,7 @@ def test_animation_generator_applies_visual_style():
     """Test that Animation Generator applies visual style from context."""
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec()
-    
+
     # Custom visual style
     context = SharedContext(
         concept_definitions={},
@@ -512,19 +510,19 @@ def test_animation_generator_applies_visual_style():
         ),
         variable_bindings={}
     )
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should apply animation speed (run_time should be affected)
     assert "run_time" in code
 
@@ -537,19 +535,19 @@ def test_animation_generator_includes_header_comment():
         narration="This is the introduction scene."
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should contain header comment
     assert '"""' in code
     assert "Scene: intro_001" in code
@@ -560,7 +558,7 @@ def test_animation_generator_includes_header_comment():
 def test_animation_generator_generates_valid_class_name():
     """Test that Animation Generator generates valid Python class names."""
     agent = AnimationCodeGeneratorAgent()
-    
+
     # Test various scene_id formats
     test_cases = [
         ("scene-001", "Scene_scene_001"),
@@ -569,26 +567,26 @@ def test_animation_generator_generates_valid_class_name():
         # NOTE: ids with dots/slashes are now rejected at the schema level
         # (path-safety fix) and can no longer reach the generator.
     ]
-    
+
     for scene_id, expected_prefix in test_cases:
         scene_spec = build_test_scene_spec(scene_id=scene_id)
         context = build_test_context()
-        
+
         processing_input = SceneProcessingInput(
             scene_spec=scene_spec,
             context=context,
             scene_index=0
         )
-        
+
         input_data = AnimationGeneratorInput(processing_input)
         result = agent.execute(input_data)
-        
+
         assert isinstance(result, AnimationGeneratorOutput)
-        
+
         # Class name should be valid Python identifier
         class_name = result.animation_code.class_name
         assert class_name.isidentifier(), f"Class name '{class_name}' is not a valid identifier"
-        
+
         # Code should contain the class definition
         assert f"class {class_name}(Scene):" in result.animation_code.code
 
@@ -601,19 +599,19 @@ def test_animation_generator_handles_empty_math_objects():
         transformations=[]
     )
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should still generate valid code
     ast.parse(code)
     assert "def construct(self):" in code
@@ -622,7 +620,7 @@ def test_animation_generator_handles_empty_math_objects():
 def test_animation_generator_validates_input():
     """Test input validation."""
     agent = AnimationCodeGeneratorAgent()
-    
+
     # Valid input
     scene_spec = build_test_scene_spec()
     context = build_test_context()
@@ -633,7 +631,7 @@ def test_animation_generator_validates_input():
     )
     valid_input = AnimationGeneratorInput(processing_input)
     assert agent.validate_input(valid_input)
-    
+
     # Invalid input type
     assert not agent.validate_input("not an input object")
 
@@ -642,7 +640,7 @@ def test_animation_generator_retry_policy():
     """Test that Animation Generator has retry policy with exponential backoff."""
     agent = AnimationCodeGeneratorAgent()
     policy = agent.get_retry_policy()
-    
+
     assert policy.max_attempts == 3
     assert policy.backoff_strategy.value == "exponential"
     assert "SYNTAX_ERROR" in policy.retryable_errors
@@ -653,19 +651,19 @@ def test_animation_generator_includes_wait_for_duration():
     agent = AnimationCodeGeneratorAgent()
     scene_spec = build_test_scene_spec(duration=45.5)
     context = build_test_context()
-    
+
     processing_input = SceneProcessingInput(
         scene_spec=scene_spec,
         context=context,
         scene_index=0
     )
-    
+
     input_data = AnimationGeneratorInput(processing_input)
     result = agent.execute(input_data)
-    
+
     assert isinstance(result, AnimationGeneratorOutput)
     code = result.animation_code.code
-    
+
     # Should include wait with duration
     assert "self.wait" in code
     assert "45.5" in code
@@ -784,7 +782,6 @@ def test_animation_generator_system_prompt_includes_quality_contract():
     assert "COLOR CONSISTENCY" in prompt
     assert "SMOOTH MORPHING" in prompt
     # Verify the import works in the animation generator module
-    from src.agents.animation_generator import AnimationCodeGeneratorAgent
 
 
 # ============================================================================

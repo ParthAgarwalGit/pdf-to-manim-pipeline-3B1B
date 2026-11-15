@@ -26,6 +26,15 @@ from src.manim_verifier.repair import normalize_complete_script
 from src.manim_verifier.vision_reviewer import VisionReviewer
 from src.utils.frame_analysis import analyze_keyframes
 
+# Warning codes that describe likely-but-unconfirmed code smells or our own
+# tooling failures, not a visible defect. They are reported but never, on
+# their own, trigger a repair.
+ADVISORY_ISSUE_CODES = {
+    "RAW_COORDINATE_WITH_AXES",
+    "FRAME_EXTRACTION_FAILED",
+    "FRAME_ANALYSIS_FAILED",
+}
+
 
 @dataclass
 class VerifierConfig:
@@ -110,13 +119,33 @@ class RawManimVerifierPipeline:
                 and self._needs_repair(best_report)
             ):
                 repairs_called += 1
-                repair = await self.reviewer.repair(
-                    brief=brief,
-                    storyboard=storyboard,
-                    code=best_code,
-                    report=best_report,
-                    frame_paths=[Path(path) for path in best_report.frame_paths],
-                )
+                try:
+                    repair = await self.reviewer.repair(
+                        brief=brief,
+                        storyboard=storyboard,
+                        code=best_code,
+                        report=best_report,
+                        frame_paths=[Path(path) for path in best_report.frame_paths],
+                    )
+                except Exception as exc:
+                    # A provider error (429, safety block, timeout) must not
+                    # abort the run: keep the best script so far and stop.
+                    message = f"Repair request failed: {type(exc).__name__}: {exc}"
+                    failure_report = VerificationReport(
+                        safe=False,
+                        syntax_valid=False,
+                        issues=[VerificationIssue(
+                            code="REPAIR_REQUEST_FAILED",
+                            severity="error",
+                            message=message,
+                        )],
+                        render_error=message,
+                    )
+                    self._write_attempt_report(run_dir, repairs_called, failure_report)
+                    attempts.append(self._attempt_record(
+                        run_dir, repairs_called, failure_report,
+                    ))
+                    break
                 total_input_tokens += repair.input_tokens or 0
                 total_output_tokens += repair.output_tokens or 0
                 try:
@@ -264,10 +293,16 @@ class RawManimVerifierPipeline:
 
     @staticmethod
     def _needs_repair(report: VerificationReport) -> bool:
+        # Advisory lint (and our own frame-tooling hiccups) must not trigger a
+        # paid rewrite that can replace a working script with a worse one.
+        # Visual warnings (empty/static/clipped frames) still do.
         return (
             not report.safe
             or not report.render_success
-            or bool(report.issues)
+            or any(
+                issue.severity == "error" or issue.code not in ADVISORY_ISSUE_CODES
+                for issue in report.issues
+            )
         )
 
     @staticmethod

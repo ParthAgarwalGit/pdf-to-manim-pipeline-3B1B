@@ -93,28 +93,34 @@ def convert(pdf_file, depth, audience, quality, skip_tts):
 
 
 def build_demo() -> "gr.Blocks":
+    from src.web.professor_app import build_studio
+
     with gr.Blocks(title="PDF -> 3Blue1Brown-style video") as demo:
         gr.Markdown(INTRO)
-        with gr.Row():
-            with gr.Column():
-                pdf = gr.File(label="PDF", file_types=[".pdf"], type="filepath")
-                depth = gr.Dropdown(
-                    ["introductory", "intermediate", "advanced"],
-                    value="intermediate", label="Depth",
-                )
-                audience = gr.Dropdown(
-                    ["high-school", "undergraduate", "graduate"],
-                    value="undergraduate", label="Audience",
-                )
-                quality = gr.Dropdown(
-                    ["low", "medium", "high"], value="medium", label="Render quality",
-                )
-                skip_tts = gr.Checkbox(value=False, label="Skip narration (faster)")
-                btn = gr.Button("Convert", variant="primary")
-            with gr.Column():
-                out_video = gr.Video(label="Result")
-                out_log = gr.Textbox(label="Pipeline log", lines=18)
-        btn.click(convert, [pdf, depth, audience, quality, skip_tts], [out_video, out_log])
+        with gr.Tab("Professor studio"):
+            # Brief -> read-back -> video + delivery report -> feedback -> revision.
+            build_studio(gr)
+        with gr.Tab("Quick convert"):
+            with gr.Row():
+                with gr.Column():
+                    pdf = gr.File(label="PDF", file_types=[".pdf"], type="filepath")
+                    depth = gr.Dropdown(
+                        ["introductory", "intermediate", "advanced"],
+                        value="intermediate", label="Depth",
+                    )
+                    audience = gr.Dropdown(
+                        ["high-school", "undergraduate", "graduate"],
+                        value="undergraduate", label="Audience",
+                    )
+                    quality = gr.Dropdown(
+                        ["low", "medium", "high"], value="medium", label="Render quality",
+                    )
+                    skip_tts = gr.Checkbox(value=False, label="Skip narration (faster)")
+                    btn = gr.Button("Convert", variant="primary")
+                with gr.Column():
+                    out_video = gr.Video(label="Result")
+                    out_log = gr.Textbox(label="Pipeline log", lines=18)
+            btn.click(convert, [pdf, depth, audience, quality, skip_tts], [out_video, out_log])
     return demo
 
 

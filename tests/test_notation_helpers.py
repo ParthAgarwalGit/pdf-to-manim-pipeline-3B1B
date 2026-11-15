@@ -1,22 +1,30 @@
 """Tests for notation_helpers — stable MathTex creation and transform targets."""
 
+import shutil
+
 import pytest
 
 manim = pytest.importorskip("manim")  # skip entire module when Manim not installed
 
-from src.utils.notation_helpers import (
+from src.utils.notation_helpers import (  # noqa: E402
     create_notation,
     create_notation_transform_target,
     create_text_label,
 )
 
+needs_latex = pytest.mark.skipif(
+    shutil.which("latex") is None, reason="MathTex needs a LaTeX install"
+)
 
+
+@needs_latex
 def test_create_notation_returns_mathtex_with_notation_key():
     expr = create_notation(tex=r"x^2 + y^2 = r^2", notation_key="circle_eq")
     assert expr.__class__.__name__ == "MathTex"
     assert expr.notation_key == "circle_eq"
 
 
+@needs_latex
 def test_create_notation_supports_isolated_substrings_and_color_map():
     expr = create_notation(
         tex=r"x' = \Sigma x",
@@ -27,11 +35,13 @@ def test_create_notation_supports_isolated_substrings_and_color_map():
     assert expr.tex_string == r"x' = \Sigma x"
 
 
+@needs_latex
 def test_create_notation_key_none_by_default():
     expr = create_notation(tex=r"E = mc^2")
     assert expr.notation_key is None
 
 
+@needs_latex
 def test_create_notation_transform_target_preserves_center():
     expr = create_notation(tex=r"x = Uy", notation_key="basis_equation")
     target = create_notation_transform_target(
@@ -45,6 +55,7 @@ def test_create_notation_transform_target_preserves_center():
     )
 
 
+@needs_latex
 def test_create_notation_transform_target_inherits_source_key():
     expr = create_notation(tex=r"A", notation_key="mat_a")
     target = create_notation_transform_target(expr, tex=r"B")

@@ -17,7 +17,6 @@ Available inside generated scene code (imported by the animation generator):
 
 import numpy as np
 from manim import (
-    PI,
     Arrow,
     DashedLine,
     Line,

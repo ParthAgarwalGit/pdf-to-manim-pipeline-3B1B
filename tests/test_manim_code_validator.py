@@ -258,7 +258,7 @@ class TestPlacementNormalize:
 
 
 class TestLatexMacroBlocklist:
-    """File/expansion LaTeX macros reach a local latex subprocess; \input can
+    r"""File/expansion LaTeX macros reach a local latex subprocess; \input can
     read arbitrary files INTO the rendered video. Reject, never auto-fix."""
 
     def _validate(self, body: str):
@@ -269,19 +269,60 @@ class TestLatexMacroBlocklist:
         return agent.execute(ManimValidatorInput(animation_code_objects=[obj]))
 
     def test_input_macro_rejected(self):
-        result = self._validate('        t = Tex(r"\input{secrets.txt}")\n')
+        result = self._validate('        t = Tex(r"\\input{secrets.txt}")\n')
         assert isinstance(result, ManimValidatorFailure)
         assert any("Security" in e and "input" in e for e in result.results[0].errors)
 
     def test_write18_rejected(self):
-        result = self._validate('        t = MathTex(r"\write18{whoami}")\n')
+        result = self._validate('        t = MathTex(r"\\write18{whoami}")\n')
         assert isinstance(result, ManimValidatorFailure)
 
     def test_openout_rejected(self):
-        result = self._validate('        t = Tex(r"\openout1=x.txt")\n')
+        result = self._validate('        t = Tex(r"\\openout1=x.txt")\n')
         assert isinstance(result, ManimValidatorFailure)
 
     def test_plain_math_macros_still_fine(self):
         # \int (integral) must not trip the \input blocklist prefix.
-        result = self._validate('        t = MathTex(r"\int_0^1 x\,dx")\n')
+        result = self._validate('        t = MathTex(r"\\int_0^1 x\\,dx")\n')
+        assert isinstance(result, ManimValidatorOutput)
+
+
+class TestSecurityGateBypasses:
+    """Constructs that slipped past the call-name check before."""
+
+    def _validate(self, body: str):
+        agent = ManimCodeValidatorAgent()
+        obj = make_code_obj(
+            "import numpy as np\n"
+            "class TestScene(Scene):\n    def construct(self):\n" + body
+        )
+        return agent.execute(ManimValidatorInput(animation_code_objects=[obj]))
+
+    def _errors(self, result):
+        return result.results[0].errors
+
+    def test_aliased_exec_rejected(self):
+        result = self._validate("        e = exec\n        e('imp' + 'ort os')\n")
+        assert isinstance(result, ManimValidatorFailure)
+        assert any("aliasing" in e for e in self._errors(result))
+
+    def test_getattr_reflection_rejected(self):
+        result = self._validate(
+            "        g = getattr(Scene.__init__, '__glob' + 'als__')\n"
+        )
+        assert isinstance(result, ManimValidatorFailure)
+
+    def test_numpy_file_read_rejected(self):
+        result = self._validate("        x = np.loadtxt('keys.env', dtype=str)\n")
+        assert isinstance(result, ManimValidatorFailure)
+
+    def test_code_mobject_file_read_rejected(self):
+        result = self._validate("        c = Code('keys.env')\n        self.add(c)\n")
+        assert isinstance(result, ManimValidatorFailure)
+        assert any("code_string" in e for e in self._errors(result))
+
+    def test_inline_code_string_still_allowed(self):
+        result = self._validate(
+            "        c = Code(code_string='x = 1', language='python')\n        self.add(c)\n"
+        )
         assert isinstance(result, ManimValidatorOutput)

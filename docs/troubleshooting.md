@@ -79,6 +79,16 @@ Check `manifest.json` → `failed_scenes` for per-scene error messages. Common c
 
 Run with `--dry-run` first to validate the storyboard without rendering.
 
+### Render sandbox (`--render-sandbox docker`) errors
+
+See [amd-deployment.md](amd-deployment.md#sandboxed-execution-of-generated-code) for what the mode does.
+
+- **"needs the docker CLI on PATH"**: install Docker and make sure the daemon is running (`docker version`).
+- **`manim exit code 125 [sandbox: docker could not start the container ...]`**: usually the image isn't built locally. The sandbox never pulls (`--pull never`), so run `docker build -t pdf2manim:latest .` or pass `--sandbox-image`.
+- **`manim exit code 137 [sandbox: render killed ...]`**: the scene hit the time limit or the 2 GB memory cap. Simplify the scene, or raise the limits in `RenderSandboxConfig`.
+- **Permission denied writing `/work` on Linux**: the container user can't write the bind-mounted scratch dir. Run the pipeline as a regular (non-root) user so the container uses your uid:gid, or set `RenderSandboxConfig.user`.
+- **A scene that reads files (`ImageMobject("...")`, `SVGMobject(...)`) fails only in docker mode**: expected. The container can only see that scene's scratch dir.
+
 ## Quality Review Issues
 
 ### Storyboard grading below threshold

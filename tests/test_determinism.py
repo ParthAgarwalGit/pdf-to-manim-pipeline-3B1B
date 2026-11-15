@@ -12,7 +12,7 @@ equivalent narration content).
 
 import tempfile
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 from hypothesis import given, settings, HealthCheck
@@ -108,13 +108,13 @@ def scene_strategy(draw, scene_index):
 def storyboard_strategy(draw):
     """Generate a storyboard with unique scene_ids."""
     num_scenes = draw(st.integers(min_value=1, max_value=5))
-    
+
     # Generate unique scenes with deterministic scene_ids
     scenes = []
     for i in range(num_scenes):
         scene = draw(scene_strategy(i + 1))  # Use 1-based indexing
         scenes.append(scene)
-    
+
     return StoryboardJSON(
         pdf_metadata=PDFMetadataStoryboard(
             filename=draw(pdf_filename_strategy),
@@ -139,9 +139,9 @@ def temp_pdf_file():
         f.write('0000000009 00000 n\n0000000056 00000 n\n0000000115 00000 n\n')
         f.write('trailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF\n')
         temp_path = f.name
-    
+
     yield temp_path
-    
+
     # Cleanup
     import os
     if os.path.exists(temp_path):
@@ -157,7 +157,7 @@ def temp_output_dir():
 
 class TestPipelineDeterminism:
     """Property-based tests for pipeline determinism."""
-    
+
     @pytest.mark.property
     @given(storyboard=storyboard_strategy())
     @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -166,59 +166,59 @@ class TestPipelineDeterminism:
     ):
         """
         **Property 6: Identical inputs produce structurally equivalent outputs**
-        
+
         *For any* PDF and configuration, processing the same input twice should produce
         structurally equivalent Storyboard JSON (same scene count, same scene order,
         equivalent narration content).
-        
+
         **Validates: Requirements 10.1, 10.2**
         """
         # Create two orchestrators with same configuration
         config1 = PipelineConfig(base_output_dir=temp_output_dir)
         config2 = PipelineConfig(base_output_dir=temp_output_dir)
-        
+
         orchestrator1 = Orchestrator(config=config1)
         orchestrator2 = Orchestrator(config=config2)
-        
+
         # Mock both orchestrators with identical inputs
         self._mock_pipeline(orchestrator1, temp_pdf_file, storyboard)
         self._mock_pipeline(orchestrator2, temp_pdf_file, storyboard)
-        
+
         # Execute pipeline twice with same input
         manifest1 = orchestrator1.run_pipeline(temp_pdf_file, event_source="local")
         manifest2 = orchestrator2.run_pipeline(temp_pdf_file, event_source="local")
-        
+
         # Verify structural equivalence
         # 1. Same scene count
         assert manifest1.total_scenes == manifest2.total_scenes, \
             "Scene count should be identical for same input"
-        
+
         # 2. Same success rate
         assert manifest1.scene_success_rate == manifest2.scene_success_rate, \
             "Success rate should be identical for same input"
-        
+
         # 3. Same number of successful scenes
         assert manifest1.successful_scenes == manifest2.successful_scenes, \
             "Number of successful scenes should be identical"
-        
+
         # 4. Same number of failed scenes
         assert len(manifest1.failed_scenes) == len(manifest2.failed_scenes), \
             "Number of failed scenes should be identical"
-        
+
         # 5. Same overall status
         assert manifest1.status == manifest2.status, \
             "Pipeline status should be identical for same input"
-        
+
         # 6. Same number of output files
         assert len(manifest1.files) == len(manifest2.files), \
             "Number of output files should be identical"
-        
+
         # 7. Same file types
         file_types1 = sorted([f.type for f in manifest1.files])
         file_types2 = sorted([f.type for f in manifest2.files])
         assert file_types1 == file_types2, \
             "Output file types should be identical"
-    
+
     @pytest.mark.property
     @given(
         storyboard=storyboard_strategy(),
@@ -230,26 +230,26 @@ class TestPipelineDeterminism:
     ):
         """
         Test that scene processing order is deterministic (array order).
-        
+
         Scenes should always be processed in the order they appear in the
         storyboard scenes array (index 0, 1, 2, ..., N-1).
-        
+
         **Validates: Requirements 10.2**
         """
         # Create orchestrator
         pipeline_config = PipelineConfig(base_output_dir=temp_output_dir)
         orchestrator = Orchestrator(config=pipeline_config)
-        
+
         # Mock pipeline with given storyboard
         self._mock_pipeline(orchestrator, temp_pdf_file, storyboard)
-        
+
         # Execute pipeline
         manifest = orchestrator.run_pipeline(temp_pdf_file, event_source="local")
-        
+
         # Verify scenes were processed in order
         # The scene_ids in the manifest should match the order in the storyboard
         expected_scene_ids = [scene.scene_id for scene in storyboard.scenes]
-        
+
         # Extract scene_ids from successful animation code files
         animation_files = [f for f in manifest.files if f.type == "animation_code"]
         actual_scene_ids = sorted([
@@ -260,18 +260,18 @@ class TestPipelineDeterminism:
             sid.replace("scene_", "")
             for sid in expected_scene_ids
         ])
-        
+
         # Verify all expected scenes are present (in some order)
         assert len(actual_scene_ids) == len(expected_scene_ids_sorted), \
             "All scenes should be processed"
-    
+
     def test_deterministic_scene_id_generation(self, temp_pdf_file, temp_output_dir):
         """
         Test that scene_id generation is deterministic.
-        
+
         Scene IDs should be generated consistently based on scene index,
         not based on timestamps or random values.
-        
+
         **Validates: Requirements 10.3, 10.4**
         """
         # Create storyboard with specific scenes
@@ -310,30 +310,30 @@ class TestPipelineDeterminism:
                 )
             ]
         )
-        
+
         # Run pipeline twice
         config = PipelineConfig(base_output_dir=temp_output_dir)
         orchestrator1 = Orchestrator(config=config)
         orchestrator2 = Orchestrator(config=config)
-        
+
         self._mock_pipeline(orchestrator1, temp_pdf_file, storyboard)
         self._mock_pipeline(orchestrator2, temp_pdf_file, storyboard)
-        
+
         manifest1 = orchestrator1.run_pipeline(temp_pdf_file, event_source="local")
         manifest2 = orchestrator2.run_pipeline(temp_pdf_file, event_source="local")
-        
+
         # Extract scene IDs from both runs
         files1 = sorted([f.path for f in manifest1.files if f.type == "animation_code"])
         files2 = sorted([f.path for f in manifest2.files if f.type == "animation_code"])
-        
+
         # Verify scene IDs are identical
         assert files1 == files2, \
             "Scene IDs should be deterministic across runs"
-        
+
         # Verify scene IDs match expected format
         assert "scene_001.py" in files1
         assert "scene_002.py" in files1
-    
+
     def _mock_pipeline(self, orchestrator, temp_pdf_file, storyboard):
         """Helper to mock all agents for pipeline execution."""
         # Mock ingestion
@@ -347,10 +347,10 @@ class TestPipelineDeterminism:
         orchestrator.ingestion_agent.execute = Mock(
             return_value=IngestionOutput(file_reference=file_ref)
         )
-        
+
         # Mock validation
         orchestrator.validation_agent.execute = Mock(return_value=file_ref)
-        
+
         # Mock vision OCR
         ocr_output = OCROutput(
             pdf_metadata=PDFMetadata(
@@ -375,15 +375,15 @@ class TestPipelineDeterminism:
             ]
         )
         orchestrator.vision_ocr_agent.execute = Mock(return_value=ocr_output)
-        
+
         # Mock script architect
         orchestrator.script_architect_agent.execute = Mock(return_value=storyboard)
-        
+
         # Mock JSON sanitizer
         orchestrator.json_sanitizer_agent.execute = Mock(
             return_value=Mock(storyboard=storyboard)
         )
-        
+
         # Mock scene controller
         animation_codes = [
             AnimationCodeObject(
@@ -397,21 +397,21 @@ class TestPipelineDeterminism:
             )
             for scene in storyboard.scenes
         ]
-        
+
         scene_report = SceneProcessingReport(
             total_scenes=len(storyboard.scenes),
             successful_scenes=len(storyboard.scenes),
             failed_scenes=[],
             output_directory="output/test/timestamp"
         )
-        
+
         orchestrator.scene_controller_agent.execute = Mock(
             return_value=Mock(
                 report=scene_report,
                 animation_code_objects=animation_codes
             )
         )
-        
+
         # Mock persistence
         files = [
             OutputFile(
@@ -426,7 +426,7 @@ class TestPipelineDeterminism:
             OutputFile(path="storyboard.json", size_bytes=200, type="storyboard"),
             OutputFile(path="manifest.json", size_bytes=150, type="manifest")
         ])
-        
+
         manifest = OutputManifest(
             output_directory="output/test/timestamp",
             files=files,
@@ -437,7 +437,7 @@ class TestPipelineDeterminism:
             successful_scenes=len(storyboard.scenes),
             failed_scenes=[]
         )
-        
+
         orchestrator.persistence_agent.execute = Mock(
             return_value=Mock(manifest=manifest)
         )

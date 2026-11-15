@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from src.utils.manim_engine_contract import COLOR_CYCLE, THREE_BLUE_ONE_BROWN_PALETTE
+from src.utils.manim_engine_contract import COLOR_CYCLE
 
 
 class ColorManager:

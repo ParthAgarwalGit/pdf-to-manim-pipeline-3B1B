@@ -12,15 +12,12 @@ directly to a Scene.construct() method.  When Manim is unavailable
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Sequence, Tuple
 
 try:
     from manim import (
-        FadeIn,
-        FadeToColor,
         Mobject,
         ReplacementTransform,
-        VGroup,
         Write,
     )
 

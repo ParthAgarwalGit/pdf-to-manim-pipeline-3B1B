@@ -92,6 +92,8 @@ GEMINI_API_KEY=...     # lesson, narration, OCR, Manim code, and vision repair
 Missing keys use deterministic local fallbacks unless `--strict-keys` is supplied. Tests always strip credentials and never make paid calls.
 V2 does not use Claude; `ANTHROPIC_API_KEY` is only relevant to legacy V1 paths.
 
+The optional D-ID talking-professor backend reads `DID_API_KEY` (`D_ID_API_KEY` is accepted as a legacy alias) from the same file. See [D-ID Avatar Backend](#d-id-avatar-backend).
+
 ## Usage
 
 Normal high-quality conversion with the default one-dollar API ceiling:
@@ -254,3 +256,14 @@ ruff check src\pipeline_v2 src\cli.py tests\test_v2_*.py tests\test_cli.py
 ```
 
 Production execution should still use a networkless, non-root container with CPU/memory/time limits and only the run directory writable. The AST gate is deliberately conservative but is not a complete operating-system sandbox.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+
+## Contributors
+
+- **Parth Agarwal**
+- **Sumit Galgalkar**
+- **Divyansh Bisht**
+- **Vignesh KS**

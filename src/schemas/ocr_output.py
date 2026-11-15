@@ -1,13 +1,13 @@
 """OCR output schema for Vision+OCR Agent."""
 
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class BoundingBox(BaseModel):
     """Bounding box coordinates for text blocks, math expressions, and diagrams."""
-    
+
     x: float = Field(..., description="X coordinate of top-left corner")
     y: float = Field(..., description="Y coordinate of top-left corner")
     width: float = Field(..., ge=0, description="Width of bounding box")
@@ -16,7 +16,7 @@ class BoundingBox(BaseModel):
 
 class TextBlock(BaseModel):
     """Text block extracted from a PDF page."""
-    
+
     text: str = Field(..., description="Extracted text content")
     bounding_box: BoundingBox = Field(..., description="Position of text block on page")
     reading_order: int = Field(..., ge=0, description="Sequential order for reading")
@@ -30,7 +30,7 @@ class TextBlock(BaseModel):
 
 class MathExpression(BaseModel):
     """Mathematical expression extracted from a PDF page."""
-    
+
     latex: str = Field(..., description="LaTeX representation of the math expression")
     bounding_box: BoundingBox = Field(..., description="Position of math expression on page")
     context: str = Field(
@@ -51,7 +51,7 @@ class MathExpression(BaseModel):
 
 class Diagram(BaseModel):
     """Diagram extracted from a PDF page."""
-    
+
     diagram_id: str = Field(..., description="Unique identifier for the diagram")
     bounding_box: BoundingBox = Field(..., description="Position of diagram on page")
     diagram_type: str = Field(
@@ -69,7 +69,7 @@ class Diagram(BaseModel):
         le=1.0,
         description="Detection confidence score (0-1)"
     )
-    
+
     @field_validator('diagram_type')
     @classmethod
     def validate_diagram_type(cls, v: str) -> str:
@@ -84,7 +84,7 @@ class Diagram(BaseModel):
 
 class Page(BaseModel):
     """Single page of OCR output."""
-    
+
     page_number: int = Field(..., ge=1, description="Page number (1-indexed)")
     text_blocks: List[TextBlock] = Field(
         default_factory=list,
@@ -102,7 +102,7 @@ class Page(BaseModel):
 
 class PDFMetadata(BaseModel):
     """Metadata about the source PDF file."""
-    
+
     filename: str = Field(..., description="Name of the PDF file")
     page_count: int = Field(..., ge=1, description="Total number of pages in the PDF")
     file_size_bytes: int = Field(..., ge=0, description="File size in bytes")
@@ -111,13 +111,13 @@ class PDFMetadata(BaseModel):
 class OCROutput(BaseModel):
     """
     Complete OCR output from Vision+OCR Agent.
-    
+
     Contains extracted text, mathematical notation, and diagrams from all pages.
     """
-    
+
     pdf_metadata: PDFMetadata = Field(..., description="Metadata about the source PDF")
     pages: List[Page] = Field(..., description="OCR output for each page")
-    
+
     @field_validator('pages')
     @classmethod
     def validate_pages_count(cls, v: List[Page], info) -> List[Page]:
@@ -125,7 +125,7 @@ class OCROutput(BaseModel):
         if not v:
             raise ValueError("pages list cannot be empty")
         return v
-    
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

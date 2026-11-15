@@ -61,6 +61,8 @@ def _isolate_api_keys(request, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DID_API_KEY", raising=False)
+    monkeypatch.delenv("D_ID_API_KEY", raising=False)
 
 
 # ---------------------------------------------------------------------------

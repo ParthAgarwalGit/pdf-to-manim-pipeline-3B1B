@@ -69,7 +69,23 @@ class StaticManimVerifier:
         "exec",
         "eval",
         "compile",
+        # numpy file I/O: np.loadtxt("keys.env", dtype=str) reads secrets.
+        "loadtxt",
+        "genfromtxt",
+        "fromfile",
+        "fromregex",
+        "load",
+        "save",
+        "savez",
+        "savez_compressed",
+        "savetxt",
+        "tofile",
+        "memmap",
+        "open_memmap",
+        "DataSource",
     }
+    # Manim's Code mobject reads and renders a file given a path.
+    CODE_FILE_KEYWORDS = {"code_file", "file_name"}
     SCENE_BASES = {"Scene", "ThreeDScene", "MovingCameraScene"}
     VISIBLE_CONSTRUCTORS = {
         "Angle", "AnnularSector", "Annulus", "Arc", "ArcBetweenPoints", "Arrow",
@@ -194,6 +210,12 @@ class StaticManimVerifier:
         tree: ast.AST,
         issues: list[VerificationIssue],
     ) -> None:
+        # Names used directly as call targets are reported as DANGEROUS_CALL;
+        # any other load of a forbidden builtin is an alias (e = exec; e(...)).
+        call_func_ids = {
+            id(n.func) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 name = self._call_name(node.func)
@@ -205,13 +227,31 @@ class StaticManimVerifier:
                         f"Call '{name}' is not allowed in generated Manim code.",
                         lines=[node.lineno],
                     ))
-                elif tail in self.FORBIDDEN_ATTRIBUTES:
+                # Attribute calls only: a bare connect(a, b) is the trusted
+                # geometry helper, while sock.connect(...) is not.
+                elif "." in name and tail in self.FORBIDDEN_ATTRIBUTES:
                     issues.append(self._issue(
                         "DANGEROUS_ATTRIBUTE",
                         f"Attribute call '{name}' is not allowed.",
                         lines=[node.lineno],
                     ))
-            elif isinstance(node, ast.Name) and node.id in self.FORBIDDEN_NAMES:
+                elif tail == "Code" and (
+                    node.args
+                    or any(kw.arg in self.CODE_FILE_KEYWORDS for kw in node.keywords)
+                ):
+                    issues.append(self._issue(
+                        "DANGEROUS_CALL",
+                        "Code(...) would read a file; pass code_string=... inline.",
+                        lines=[node.lineno],
+                    ))
+            elif isinstance(node, ast.Name) and (
+                node.id in self.FORBIDDEN_NAMES
+                or (
+                    node.id in self.FORBIDDEN_CALLS
+                    and isinstance(node.ctx, ast.Load)
+                    and id(node) not in call_func_ids
+                )
+            ):
                 issues.append(self._issue(
                     "DANGEROUS_NAME",
                     f"Name '{node.id}' is not allowed.",
@@ -256,16 +296,21 @@ class StaticManimVerifier:
             constructor = self._call_name(value.func).rsplit(".", 1)[-1]
             if constructor not in self.VISIBLE_CONSTRUCTORS:
                 continue
-            covered_calls.add(id(value))
+            # One purpose comment covers the whole expression, including
+            # parts nested on later lines: VGroup(\n Text(...),\n Dot()).
+            covered_calls.update(id(n) for n in ast.walk(value))
             candidates.append((node.lineno, constructor))
 
         # Also catch inline objects such as Create(Circle()), which otherwise
         # have neither a stable identity nor a nearby purpose annotation.
+        # ast.walk is breadth-first, so an outer constructor is seen before
+        # (and then covers) the constructors nested inside it.
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or id(node) in covered_calls:
                 continue
             constructor = self._call_name(node.func).rsplit(".", 1)[-1]
             if constructor in self.VISIBLE_CONSTRUCTORS:
+                covered_calls.update(id(n) for n in ast.walk(node))
                 candidates.append((node.lineno, constructor))
 
         for line_number, constructor in dict.fromkeys(candidates):

@@ -10,6 +10,7 @@ Responsibilities:
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -25,6 +26,14 @@ from src.agents.base import (
     RetryPolicy,
 )
 from src.utils.ffmpeg_finder import ffmpeg_available, get_ffmpeg, get_ffprobe
+from src.utils.render_sandbox import (
+    RenderSandboxConfig,
+    describe_sandbox_exit,
+    docker_available,
+    fresh_scratch_dir,
+    remove_if_empty,
+    run_manim,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +130,11 @@ class VideoRendererAgent(Agent):
         "-qk": "2160p60",
     }
 
+    RENDER_TIMEOUT_SECONDS = 300  # per scene
+
+    def __init__(self, sandbox: Optional[RenderSandboxConfig] = None):
+        self.sandbox = sandbox or RenderSandboxConfig()
+
     def execute(self, input_data: VideoRendererInput) -> AgentOutput:
         if not self.validate_input(input_data):
             raise AgentExecutionError("INVALID_INPUT", "Expected VideoRendererInput.")
@@ -140,6 +154,15 @@ class VideoRendererAgent(Agent):
             return VideoRendererFailure(
                 scene_results=[],
                 error="No scene files provided for rendering.",
+            )
+
+        if self.sandbox.is_docker and not docker_available(self.sandbox):
+            return VideoRendererFailure(
+                scene_results=[],
+                error=(
+                    "Render sandbox mode 'docker' needs the docker CLI on PATH "
+                    f"and the image {self.sandbox.image!r} built locally."
+                ),
             )
 
         quality_flag = self.quality_flag_for(input_data.quality)
@@ -254,21 +277,33 @@ class VideoRendererAgent(Agent):
             )
 
         try:
-            # Build manim command with explicit --media_dir so the output
-            # lands in a predictable location inside the pipeline output.
-            cmd = [
-                "manim", quality_flag,
-                "--media_dir", media_dir,
-                scene_file, class_name,
-            ]
-            logger.info(f"Rendering: {' '.join(cmd)}")
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5 min per scene
+            # Generated code runs with cwd in a per-scene scratch dir so
+            # relative paths (e.g. "keys.env") can't reach the repo root.
+            scratch_dir = fresh_scratch_dir(
+                Path(media_dir).parent / "render_scratch" / scene_stem
             )
+            render_scene_file = scene_file
+            render_media_dir = media_dir
+            if self.sandbox.is_docker:
+                # The container sees only the scratch dir: render inside it.
+                render_scene_file = str(scratch_dir / Path(scene_file).name)
+                shutil.copy2(scene_file, render_scene_file)
+                render_media_dir = str(scratch_dir / "media")
+            logger.info(
+                f"Rendering ({self.sandbox.mode} sandbox): {scene_file} {class_name}"
+            )
+
+            result = run_manim(
+                scene_path=Path(render_scene_file),
+                scene_class=class_name,
+                flags=[quality_flag],
+                media_dir=Path(render_media_dir),
+                scratch_dir=scratch_dir,
+                timeout_seconds=self.RENDER_TIMEOUT_SECONDS,
+                sandbox=self.sandbox,
+            )
+            if not self.sandbox.is_docker:
+                remove_if_empty(scratch_dir)
 
             if result.returncode != 0:
                 stderr = self._extract_render_error(result.stderr)
@@ -278,19 +313,22 @@ class VideoRendererAgent(Agent):
                     logger.error(f"manim stdout: {stdout}")
                 return SceneRenderResult(
                     scene_id=scene_id, success=False,
-                    error=f"manim exit code {result.returncode}: {stderr}",
+                    error=(
+                        f"manim exit code {result.returncode}"
+                        f"{describe_sandbox_exit(self.sandbox, result.returncode)}: {stderr}"
+                    ),
                 )
 
             # Find the rendered video
             video_path = self._find_rendered_video(
-                scene_file, class_name, quality_flag, media_dir
+                render_scene_file, class_name, quality_flag, render_media_dir
             )
             if not video_path:
                 return SceneRenderResult(
                     scene_id=scene_id, success=False,
                     error=(
                         "Render succeeded but output video not found. "
-                        f"Searched in {media_dir}"
+                        f"Searched in {render_media_dir}"
                     ),
                 )
 

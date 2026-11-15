@@ -79,6 +79,46 @@ quality-neutral), two levers:
 
 Both are opt-in so the default build stays reliable for the deadline.
 
+## Sandboxed execution of generated code
+
+Every scene is Python written by an LLM, and rendering it means running it. The
+AST gates (`ManimCodeValidatorAgent`, `StaticManimVerifier`) screen out known
+dangerous constructs, but a denylist can't be complete: Manim's own
+`SVGMobject`/`ImageMobject` read arbitrary files, and `import manim` reaches
+helpers the gate doesn't model. So the code also runs isolated, in one of two
+modes (`--render-sandbox`, or `PipelineConfig.render_sandbox`):
+
+| Mode | What generated code gets |
+|---|---|
+| `native` (default) | Host process with every secret-like variable (`*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*CREDENTIAL*`, `*AUTH*`, `*_KEY`, …) removed from its environment, and `cwd` set to a per-scene scratch dir, so `open("keys.env")` no longer finds the repo's key file. It can still read absolute paths and use the network. |
+| `docker` (opt-in) | A throwaway container: `--network none`, non-root `--user`, `--read-only` root with a small `noexec` `/tmp` tmpfs, `--cap-drop ALL`, `no-new-privileges`, `--cpus 2 --memory 2g --pids-limit 256`, an in-container `timeout -s KILL` matching the host timeout, and exactly one writable bind mount (the scene's scratch dir at `/work`). No `--env-file`, no host environment, no other mounts: the keys are never inside the container. |
+
+Docker mode covers every place generated code runs: the main render, render
+salvage, the optional `manim --dry_run` validation, and the raw-Manim preview
+verifier.
+
+```bash
+docker build -t pdf2manim:latest .     # the render image (never pulled: --pull never)
+pdf2manim convert paper.pdf --render-sandbox docker
+# or: RENDER_SANDBOX=docker pdf2manim convert paper.pdf
+# other image: --sandbox-image my-render-image:tag
+#   (needs python + manim + LaTeX + the src package + coreutils `timeout`)
+```
+
+Notes:
+
+- The pipeline process needs a Docker daemon it can reach, so run it on the
+  host (or a dedicated render worker). Don't enable docker mode *inside* the
+  `scripts/run_on_amd.sh` / `docker compose` container by mounting
+  `/var/run/docker.sock` into it: that socket is root-equivalent on the host,
+  and that container holds the API keys.
+- In docker mode each scene's video lands in
+  `<run>/render_scratch/<scene>/media/...` (the only directory the container can
+  write); the final concatenated video is unchanged.
+- On a root-owned Linux host the container runs as `nobody` (65534) and the
+  scratch dir is made world-writable; otherwise it runs as your uid:gid. Limits
+  live in `RenderSandboxConfig` (`src/utils/render_sandbox.py`).
+
 ## Notes
 
 - `keys.env` is excluded by both `.gitignore` and `.dockerignore`; keys are

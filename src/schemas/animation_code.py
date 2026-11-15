@@ -10,10 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class AnimationCodeObject(BaseModel):
     """
     Animation code object produced by Animation Code Generator.
-    
+
     Contains executable Manim code for a single scene.
     """
-    
+
     scene_id: str = Field(..., description="Unique identifier for the scene")
     code: str = Field(..., description="Python code for the Manim scene")
     imports: List[str] = Field(
@@ -37,7 +37,7 @@ class AnimationCodeObject(BaseModel):
         ...,
         description="ISO8601 timestamp when the code was generated"
     )
-    
+
     @field_validator('scene_id')
     @classmethod
     def validate_scene_id(cls, v: str) -> str:
@@ -53,7 +53,7 @@ class AnimationCodeObject(BaseModel):
                 f"scene_id must contain only [A-Za-z0-9_-], got '{v}'"
             )
         return v
-    
+
     @field_validator('class_name')
     @classmethod
     def validate_class_name(cls, v: str) -> str:
@@ -63,7 +63,7 @@ class AnimationCodeObject(BaseModel):
         if not v.isidentifier():
             raise ValueError(f"class_name must be a valid Python identifier, got '{v}'")
         return v
-    
+
     @field_validator('code')
     @classmethod
     def validate_code(cls, v: str) -> str:
@@ -71,7 +71,7 @@ class AnimationCodeObject(BaseModel):
         if not v or not v.strip():
             raise ValueError("code cannot be empty")
         return v
-    
+
     @field_validator('narration')
     @classmethod
     def validate_narration(cls, v: str) -> str:
@@ -87,7 +87,7 @@ class AnimationCodeObject(BaseModel):
         if not v:
             raise ValueError("imports list cannot be empty")
         return v
-    
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

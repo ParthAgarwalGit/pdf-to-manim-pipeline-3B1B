@@ -9,18 +9,14 @@ Covers:
 
 from dataclasses import dataclass
 from typing import List, Optional
-from unittest.mock import MagicMock
 
-import pytest
 
 from src.agents.video_quality_reviewer import (
-    VideoQualityFinding,
     VideoQualityReviewerAgent,
     VideoQualityReviewerInput,
-    VideoQualityReviewerOutput,
 )
 from src.schemas.animation_code import AnimationCodeObject
-from src.schemas.output_manifest import OutputManifest, OutputFile
+from src.schemas.output_manifest import OutputManifest
 from src.schemas.storyboard import Scene, StoryboardJSON, Configuration, PDFMetadataStoryboard, VisualIntent
 
 

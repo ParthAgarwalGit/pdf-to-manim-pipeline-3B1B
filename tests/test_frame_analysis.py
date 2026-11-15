@@ -10,7 +10,6 @@ from PIL import Image
 
 from src.agents.video_quality_reviewer import VideoQualityReviewerAgent
 from src.utils.frame_analysis import (
-    KeyframeReport,
     analyze_keyframes,
     mean_abs_diff,
     nonblank_fraction,

@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import openai
@@ -98,6 +98,44 @@ def _split_for_tts(text: str, max_chars: int = TTS_MAX_CHARS) -> List[str]:
     return chunks
 
 
+class ElevenLabsTTSProvider:
+    """The professor's cloned voice via the ElevenLabs text-to-speech API.
+
+    One voice for the whole video, so presenter bridges and Manim narration
+    sound like the same person. Only constructed after the professor's
+    consent and the vendor's verification are checked (ProfessorProfile).
+    The API key comes from the environment and never reaches an artifact.
+    """
+
+    name = "elevenlabs"
+    URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+    def __init__(self, api_key: str, voice_id: str, model_id: str = "eleven_multilingual_v2", timeout: int = 120):
+        if not api_key:
+            raise ValueError("ELEVENLABS_API_KEY is required for the professor's voice clone.")
+        self._api_key = api_key
+        self.voice_id = voice_id
+        self.model_id = model_id
+        self.timeout = timeout
+
+    def synthesize(self, text: str) -> bytes:
+        import json as _json
+        import urllib.request
+
+        request = urllib.request.Request(
+            self.URL.format(voice_id=self.voice_id),
+            data=_json.dumps({"text": text, "model_id": self.model_id}).encode("utf-8"),
+            headers={
+                "xi-api-key": self._api_key,
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            return response.read()
+
+
 @dataclass
 class TTSInput(AgentInput):
     """Input for Text-to-Speech Agent.
@@ -116,13 +154,19 @@ class TTSInput(AgentInput):
         scene_id: str,
         output_dir: str,
         quality: str = "standard",
-        voice: str = "alloy"
+        voice: str = "alloy",
+        beats: Optional[List[Tuple[str, str]]] = None,
+        pauses: Optional[Dict[str, float]] = None,
     ):
         self.narration = narration
         self.scene_id = scene_id
         self.output_dir = output_dir
         self.quality = quality
         self.voice = voice
+        # (beat_id, text) in order. When given, each beat is synthesized
+        # separately so the output carries a beat-level timing track.
+        self.beats = beats or None
+        self.pauses = pauses or {}  # beat_id -> seconds of silence after it
 
 
 @dataclass
@@ -141,12 +185,15 @@ class TTSOutput(AgentOutput):
         audio_file_path: str,
         duration_seconds: float,
         scene_id: str,
-        cost_usd: float = 0.0
+        cost_usd: float = 0.0,
+        beat_timings: Optional[Dict[str, List[float]]] = None,
     ):
         self.audio_file_path = audio_file_path
         self.duration_seconds = duration_seconds
         self.scene_id = scene_id
         self.cost_usd = cost_usd
+        # beat_id -> [start, end] seconds within this audio file.
+        self.beat_timings = beat_timings or {}
 
 
 class TTSError(AgentOutput):
@@ -189,17 +236,25 @@ class TTSAgent(Agent):
     VALID_VOICES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
     VALID_QUALITIES = {"standard", "high"}
 
-    def __init__(self, max_retries: int = 3, strict: bool = False):
+    def __init__(self, max_retries: int = 3, strict: bool = False, provider: Any = None):
         """Initialize TTS Agent.
 
         Args:
             max_retries: Maximum number of retry attempts for API calls
             strict: If True, raise immediately when API key is missing
                     instead of returning TTSError and skipping generation.
+            provider: Optional speech provider with ``name`` and
+                ``synthesize(text) -> bytes`` (e.g. an ElevenLabs voice clone).
+                None means OpenAI TTS.
         """
         super().__init__()
         self.max_retries = max_retries
         self.strict = strict
+        self.provider = provider
+        self.client = None
+        self.cost_tracker = CostTracker.get_instance()
+        if provider is not None:
+            return  # the provider owns its own credentials
 
         # Initialize OpenAI client if API key is available
         api_key = os.getenv("OPENAI_API_KEY")
@@ -245,8 +300,8 @@ class TTSAgent(Agent):
                 {"input_type": type(input_data).__name__}
             )
 
-        # Check if client is available
-        if not self.client:
+        # Check if a speech provider is available
+        if not self._can_speak():
             logger.warning(f"OpenAI client not available. Skipping TTS for scene {input_data.scene_id}")
             return TTSError(
                 scene_id=input_data.scene_id,
@@ -266,15 +321,26 @@ class TTSAgent(Agent):
 
             # Generate audio file with retry logic
             audio_file_path = None
+            beat_timings: Dict[str, List[float]] = {}
             for attempt in range(self.max_retries):
                 try:
-                    audio_file_path = self._generate_audio(
-                        narration=input_data.narration,
-                        scene_id=input_data.scene_id,
-                        output_dir=input_data.output_dir,
-                        model=model,
-                        voice=input_data.voice
-                    )
+                    if input_data.beats:
+                        audio_file_path, beat_timings = self._generate_beat_audio(
+                            beats=input_data.beats,
+                            scene_id=input_data.scene_id,
+                            output_dir=input_data.output_dir,
+                            model=model,
+                            voice=input_data.voice,
+                            pauses=input_data.pauses,
+                        )
+                    else:
+                        audio_file_path = self._generate_audio(
+                            narration=input_data.narration,
+                            scene_id=input_data.scene_id,
+                            output_dir=input_data.output_dir,
+                            model=model,
+                            voice=input_data.voice
+                        )
                     break
                 except Exception as e:
                     if attempt < self.max_retries - 1:
@@ -307,8 +373,8 @@ class TTSAgent(Agent):
             # cost.  A future CostTracker revision should add a dedicated
             # `characters` field.
             self.cost_tracker.track_call(
-                provider="openai",
-                model=model,
+                provider=getattr(self.provider, "name", "openai"),
+                model="tts" if self.provider is not None else model,
                 input_tokens=char_count,
                 output_tokens=0,
                 call_type="tts",
@@ -320,7 +386,8 @@ class TTSAgent(Agent):
                 audio_file_path=audio_file_path,
                 duration_seconds=duration_seconds,
                 scene_id=input_data.scene_id,
-                cost_usd=cost
+                cost_usd=cost,
+                beat_timings=beat_timings,
             )
 
         except AgentExecutionError:
@@ -417,7 +484,9 @@ class TTSAgent(Agent):
                 scene_id=scene_id,
                 output_dir=scene_output_dir,
                 quality=quality,
-                voice=voice
+                voice=voice,
+                beats=scene.get("beats"),
+                pauses=scene.get("pauses"),
             )
 
             output = self.execute(tts_input)
@@ -459,8 +528,8 @@ class TTSAgent(Agent):
         Raises:
             Exception: If any API call or ffmpeg concat fails
         """
-        if not self.client:
-            raise RuntimeError("OpenAI client not initialized")
+        if not self._can_speak():
+            raise RuntimeError("No TTS provider initialized")
 
         output_path = Path(output_dir) / f"{scene_id}.mp3"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -471,14 +540,8 @@ class TTSAgent(Agent):
 
         if len(chunks) == 1:
             # Fast path — single API call.
-            response = self.client.audio.speech.create(
-                model=model,
-                voice=voice,
-                input=chunks[0],
-                response_format="mp3",
-            )
             with open(output_path, "wb") as f:
-                f.write(response.content)
+                f.write(self._speech_bytes(chunks[0], model, voice))
             return str(output_path)
 
         logger.info(
@@ -489,15 +552,9 @@ class TTSAgent(Agent):
         with tempfile.TemporaryDirectory() as tmp:
             part_paths: List[str] = []
             for i, chunk in enumerate(chunks):
-                response = self.client.audio.speech.create(
-                    model=model,
-                    voice=voice,
-                    input=chunk,
-                    response_format="mp3",
-                )
                 part = Path(tmp) / f"part_{i:03d}.mp3"
                 with open(part, "wb") as f:
-                    f.write(response.content)
+                    f.write(self._speech_bytes(chunk, model, voice))
                 part_paths.append(str(part))
 
             # ffmpeg concat demuxer wants a list file with single-quoted paths.
@@ -522,6 +579,127 @@ class TTSAgent(Agent):
                 )
 
         return str(output_path)
+
+    def _can_speak(self) -> bool:
+        return self.provider is not None or bool(self.client)
+
+    def _speech_bytes(self, text: str, model: str, voice: str) -> bytes:
+        """MP3 bytes for one chunk of text from the configured provider."""
+        if self.provider is not None:
+            return self.provider.synthesize(text)
+        response = self.client.audio.speech.create(
+            model=model, voice=voice, input=text, response_format="mp3",
+        )
+        return response.content
+
+    def _generate_beat_audio(
+        self,
+        beats: List[Tuple[str, str]],
+        scene_id: str,
+        output_dir: str,
+        model: str,
+        voice: str,
+        pauses: Optional[Dict[str, float]] = None,
+    ) -> Tuple[str, Dict[str, List[float]]]:
+        """Synthesize each beat separately and join them into the scene audio.
+
+        Returns the audio path and the beat-level timing track
+        (``beat_id -> [start, end]`` seconds). Per-part durations are measured
+        and scaled to the joined file's measured length, so the track lines up
+        with what is actually played. ``pauses`` adds silence after a beat
+        (professor pacing edits).
+        """
+        if not self._can_speak():
+            raise RuntimeError("No TTS provider initialized")
+        output_path = Path(output_dir) / f"{scene_id}.mp3"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pauses = pauses or {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parts: List[str] = []
+            spans: List[Tuple[str, int, int]] = []  # beat_id, first part, end part
+            for beat_id, text in beats:
+                first = len(parts)
+                for chunk in _split_for_tts(text):
+                    part = Path(tmp) / f"part_{len(parts):03d}.mp3"
+                    part.write_bytes(self._speech_bytes(chunk, model, voice))
+                    parts.append(str(part))
+                end = len(parts)
+                pause = float(pauses.get(beat_id, 0.0) or 0.0)
+                if pause > 0 and parts:
+                    silence = Path(tmp) / f"part_{len(parts):03d}.mp3"
+                    self._write_silence(silence, pause, like=parts[-1])
+                    parts.append(str(silence))
+                spans.append((beat_id, first, end))
+            if not parts:
+                raise RuntimeError(f"Empty narration for scene {scene_id}")
+
+            durations = [self._probe_duration(p) for p in parts]
+            if len(parts) == 1:
+                output_path.write_bytes(Path(parts[0]).read_bytes())
+            else:
+                self._concat_mp3(parts, output_path, tmp, scene_id)
+
+        total = self._probe_duration(str(output_path))
+        measured = sum(d for d in durations if d > 0)
+        if any(d <= 0 for d in durations) or measured <= 0:
+            # No ffprobe: fall back to the character-rate estimate per beat.
+            durations = [self._estimate_duration(t) for _, t in beats]
+            spans = [(b, i, i + 1) for i, (b, _) in enumerate(beats)]
+            measured = sum(durations)
+        scale = total / measured if total > 0 and measured > 0 else 1.0
+        starts = [0.0]
+        for duration in durations:
+            starts.append(starts[-1] + duration * scale)
+        timings = {
+            beat_id: [round(starts[first], 3), round(starts[end], 3)]
+            for beat_id, first, end in spans
+        }
+        return str(output_path), timings
+
+    @staticmethod
+    def _write_silence(path: Path, seconds: float, like: str) -> None:
+        """MP3 silence matching ``like``'s sample rate, so stream-copy joins work."""
+        sample_rate = 24000
+        try:
+            from src.utils.media_probe import probe
+            info = probe(like)
+            if info and info.audio and info.audio.sample_rate:
+                sample_rate = info.audio.sample_rate
+        except Exception:
+            pass
+        result = subprocess.run(
+            [
+                get_ffmpeg(), "-y", "-f", "lavfi",
+                "-i", f"anullsrc=r={sample_rate}:cl=mono", "-t", f"{seconds:.3f}",
+                "-c:a", "libmp3lame", "-b:a", "64k", str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg silence failed: {result.stderr.strip()[:300]}")
+
+    @staticmethod
+    def _concat_mp3(parts: List[str], output_path: Path, tmp: str, scene_id: str) -> None:
+        list_file = Path(tmp) / "parts.txt"
+        # ffmpeg concat demuxer wants a list file with single-quoted paths.
+        list_lines = ["file '" + p.replace("'", "'\\''") + "'" for p in parts]
+        list_file.write_text("\n".join(list_lines), encoding="utf-8")
+        # Re-encode at one constant bitrate: stream-copying parts of different
+        # bitrates (speech vs. generated silence) leaves an MP3 whose duration
+        # ffprobe estimates wrongly, which would skew the timing track.
+        result = subprocess.run(
+            [
+                get_ffmpeg(), "-y", "-f", "concat", "-safe", "0",
+                "-i", str(list_file), "-c:a", "libmp3lame", "-b:a", "128k",
+                str(output_path),
+            ],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg concat failed for scene {scene_id}: {result.stderr.strip()[:500]}"
+            )
 
     def _validate_config(self, input_data: TTSInput) -> None:
         """Validate configuration parameters.

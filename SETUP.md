@@ -128,6 +128,33 @@ AWS_REGION=us-east-1
 S3_BUCKET_NAME=pdf-uploads
 ```
 
+### Optional: D-ID Talking-Professor Backend
+
+`--render-backend did-avatar` renders each scene as a D-ID talking-avatar
+clip instead of a Manim animation. Add the key to `keys.env` (loaded by the
+CLI like the other keys; never commit it):
+
+```bash
+# keys.env
+DID_API_KEY=...          # D_ID_API_KEY is accepted as a legacy alias
+```
+
+Then run, with a public HTTPS portrait of a **fictional or licensed** avatar
+(D-ID's sample presenters qualify; never a real person's photo without consent):
+
+```bash
+pdf2manim convert notes.pdf --render-backend did-avatar \
+  --avatar-image-url https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg \
+  --target-minutes 2 --max-avatar-seconds 180 --strict
+```
+
+In this mode D-ID speaks the scene narration with its own native (stock)
+voice, so the pipeline **skips TTS** (no OpenAI TTS call) and Manim. Clips
+are written to `<run>/avatar/`, concatenated into
+`final_with_narration.mp4`, and summarized in the redacted `did_avatar.json`.
+Polling defaults (5 s interval, 120 polls, 60 s request timeout) are
+`PipelineConfig.did_*` settings.
+
 ### Update Agent Implementations
 
 To enable real LLM calls, you'll need to update these files:

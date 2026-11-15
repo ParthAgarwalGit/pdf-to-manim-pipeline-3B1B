@@ -87,6 +87,31 @@ def test_measured_tts_duration_rescales_scene_timeline(tmp_path):
     assert scene.visual_intent.transformations[0].timing == 4.0
 
 
+def test_rescale_uses_plan_extent_not_floored_estimate(tmp_path):
+    """A 12-word scene: plan spans ~4s, estimate floored to 8s, audio 4.2s.
+
+    Scaling from the 8s floor would squeeze visuals into ~2.1s of 4.2s audio.
+    """
+    orchestrator = Orchestrator(PipelineConfig(base_output_dir=str(tmp_path), tts_first=True))
+    storyboard = _storyboard()
+    scene = storyboard.scenes[0]
+    scene.duration_estimate = 8.0
+    intent = scene.visual_intent
+    intent.mathematical_objects[0].interval = TimeInterval(t_in=0, t_out=4)
+    intent.beats[0].end_time = 4
+    intent.transformations[0].timing = 1
+    tts = TTSOutput(
+        audio_file_path=str(tmp_path / "scene.mp3"),
+        duration_seconds=4.2,
+        cost_usd=0.0,
+        scene_id="scene_001",
+    )
+    orchestrator._apply_tts_timing(storyboard, [tts])
+    assert intent.beats[0].end_time == 4.2
+    assert intent.mathematical_objects[0].interval.t_out == 4.2
+    assert intent.transformations[0].timing == 1.05
+
+
 def test_codegen_uses_short_measured_audio_without_visual_floor(monkeypatch):
     storyboard = _storyboard()
     scene = storyboard.scenes[0]

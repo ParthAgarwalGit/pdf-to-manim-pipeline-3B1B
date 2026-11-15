@@ -11,22 +11,22 @@ can send it back to the Animation Generator for retry.
 
 import ast
 import logging
-import os
 import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import List, Optional
 
 from src.agents.base import (
     Agent,
     AgentExecutionError,
     AgentInput,
     AgentOutput,
-    BackoffStrategy,
     RetryPolicy,
 )
 from src.schemas.animation_code import AnimationCodeObject
+from src.utils.render_sandbox import RenderSandboxConfig, run_manim
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +104,33 @@ ALLOWED_IMPORT_ROOTS = {
 
 FORBIDDEN_CALL_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "input", "breakpoint",
+    # Reflection: getattr(obj, "__glob" + "als__") defeats attribute checks.
+    "getattr", "setattr", "delattr", "globals", "locals", "vars",
 }
 
 FORBIDDEN_ATTRIBUTES = {
     "__globals__", "__builtins__", "__subclasses__", "__mro__",
     "__code__", "__reduce__", "__loader__",
+    # numpy file I/O: np.loadtxt("keys.env", dtype=str) reads secrets.
+    "loadtxt", "genfromtxt", "fromfile", "fromregex", "load", "save",
+    "savez", "savez_compressed", "savetxt", "tofile", "memmap",
+    "open_memmap", "DataSource",
 }
+
+# Manim's Code mobject reads and renders a file when given a path
+# (positional arg or code_file/file_name) — only inline code_string is allowed.
+CODE_FILE_KEYWORDS = {"code_file", "file_name"}
+
+
+def is_code_file_read(node: ast.Call) -> bool:
+    """True for Code(...) calls that would read a file from disk."""
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else (
+        func.attr if isinstance(func, ast.Attribute) else ""
+    )
+    if name != "Code":
+        return False
+    return bool(node.args) or any(kw.arg in CODE_FILE_KEYWORDS for kw in node.keywords)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +198,9 @@ class ManimValidatorFailure(AgentOutput):
 
 class ManimCodeValidatorAgent(Agent):
     """Validates generated Manim code via AST, import checks, and optional dry run."""
+
+    def __init__(self, sandbox: Optional[RenderSandboxConfig] = None):
+        self.sandbox = sandbox or RenderSandboxConfig()
 
     def execute(self, input_data: ManimValidatorInput) -> AgentOutput:
         if not self.validate_input(input_data):
@@ -610,6 +634,12 @@ class ManimCodeValidatorAgent(Agent):
             return False
 
         ok = True
+        # Names used directly as call targets are reported by the Call branch;
+        # any OTHER load of a forbidden builtin is an alias (e = exec; e(...)).
+        call_func_ids = {
+            id(n.func) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -645,6 +675,12 @@ class ManimCodeValidatorAgent(Agent):
                         "is not allowed in scene code."
                     )
                     ok = False
+                elif is_code_file_read(node):
+                    errors.append(
+                        f"Security: Code(...) at line {node.lineno} would read a file; "
+                        "pass the source inline as code_string=... instead."
+                    )
+                    ok = False
             elif isinstance(node, ast.Attribute):
                 if node.attr in FORBIDDEN_ATTRIBUTES:
                     errors.append(
@@ -656,6 +692,17 @@ class ManimCodeValidatorAgent(Agent):
                 errors.append(
                     f"Security: access to '__builtins__' at line {node.lineno} "
                     "is not allowed in scene code."
+                )
+                ok = False
+            elif (
+                isinstance(node, ast.Name)
+                and node.id in FORBIDDEN_CALL_NAMES
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in call_func_ids
+            ):
+                errors.append(
+                    f"Security: reference to '{node.id}' at line {node.lineno} "
+                    "is not allowed in scene code (aliasing a forbidden builtin)."
                 )
                 ok = False
 
@@ -705,21 +752,27 @@ class ManimCodeValidatorAgent(Agent):
             return False
 
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False, encoding="utf-8"
-            ) as f:
+            # --dry_run still executes construct(): isolate it like a render,
+            # in a throwaway scratch dir that is also the subprocess cwd.
+            with tempfile.TemporaryDirectory(
+                prefix="manim_dry_run_", ignore_cleanup_errors=True
+            ) as scratch:
+                scratch_dir = Path(scratch)
+                scene_path = scratch_dir / "scene.py"
                 # Prepend manim import if not present
                 if "from manim import" not in source and "import manim" not in source:
-                    f.write("from manim import *\n\n")
-                f.write(source)
-                temp_path = f.name
+                    source = "from manim import *\n\n" + source
+                scene_path.write_text(source, encoding="utf-8")
 
-            result = subprocess.run(
-                ["manim", "-ql", "--dry_run", temp_path, class_name],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+                result = run_manim(
+                    scene_path=scene_path,
+                    scene_class=class_name,
+                    flags=["-ql", "--dry_run"],
+                    media_dir=scratch_dir / "media",
+                    scratch_dir=scratch_dir,
+                    timeout_seconds=60,
+                    sandbox=self.sandbox,
+                )
 
             if result.returncode != 0:
                 stderr_snippet = result.stderr[:500] if result.stderr else "No stderr."
@@ -729,7 +782,8 @@ class ManimCodeValidatorAgent(Agent):
             return True
 
         except FileNotFoundError:
-            errors.append("manim CLI not found — skipping dry_run.")
+            binary = "docker" if self.sandbox.is_docker else "manim"
+            errors.append(f"{binary} CLI not found — skipping dry_run.")
             return True  # Don't block on missing manim
         except subprocess.TimeoutExpired:
             errors.append("manim dry_run timed out (60s).")
@@ -737,10 +791,5 @@ class ManimCodeValidatorAgent(Agent):
         except Exception as e:
             errors.append(f"Unexpected dry_run error: {e}")
             return False
-        finally:
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
 
         return False  # Unreachable, but satisfies type checker

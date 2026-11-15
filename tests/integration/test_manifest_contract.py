@@ -8,10 +8,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from src.schemas.output_manifest import (
-    FailedSceneManifest,
     OutputFile,
     OutputManifest,
     RunConfig,

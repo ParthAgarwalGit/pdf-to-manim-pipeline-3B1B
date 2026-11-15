@@ -4,7 +4,7 @@ import pytest
 
 manim = pytest.importorskip("manim")  # skip entire module when Manim not installed
 
-from src.utils.pi_characters import (
+from src.utils.pi_characters import (  # noqa: E402
     create_character_for_role,
     create_character_lineup,
 )
