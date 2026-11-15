@@ -10,6 +10,7 @@ from typing import Optional
 import click
 
 from src.pipeline_v2 import PipelineV2, PipelineV2Config, RunStatus
+from src.pipeline_v2.models import MAX_V2_SCENES
 
 
 def _load_env_files() -> None:
@@ -67,7 +68,26 @@ def pdf2manim() -> None:
     help="Audit logs visual findings without rejecting renderable scenes.",
 )
 @click.option("--max-cost", type=click.FloatRange(min=0.01), default=1.0, show_default=True)
-@click.option("--max-scenes", type=click.IntRange(1, 12), default=12, show_default=True)
+@click.option(
+    "--min-scenes",
+    type=click.IntRange(1, MAX_V2_SCENES),
+    default=None,
+    help="Required scene floor; replans once and fails instead of silently producing fewer.",
+)
+@click.option(
+    "--max-scenes",
+    type=click.IntRange(1, MAX_V2_SCENES),
+    default=12,
+    show_default=True,
+    help="Scene ceiling; values above 12 request full coverage for long documents.",
+)
+@click.option(
+    "--pacing",
+    type=click.Choice(["standard", "relaxed"]),
+    default="standard",
+    show_default=True,
+    help="Use less-dense narration and slower speech in relaxed mode.",
+)
 @click.option("--skip-tts", is_flag=True)
 @click.option("--skip-render", is_flag=True)
 @click.option("--dry-run", is_flag=True, help="Stop after grounded lesson and narration planning.")
@@ -88,7 +108,9 @@ def convert(
     max_repairs_per_scene: int,
     verifier_mode: str,
     max_cost: float,
+    min_scenes: Optional[int],
     max_scenes: int,
+    pacing: str,
     skip_tts: bool,
     skip_render: bool,
     dry_run: bool,
@@ -100,6 +122,8 @@ def convert(
 ) -> None:
     """Run a new V2 conversion for INPUT_PDF."""
     effective_policy = "strict" if strict else policy
+    if min_scenes is not None and min_scenes > max_scenes:
+        raise click.UsageError("--min-scenes cannot exceed --max-scenes")
     config = PipelineV2Config(
         output_dir=output_dir,
         quality=quality,
@@ -110,7 +134,9 @@ def convert(
         max_repairs_per_scene=max_repairs_per_scene,
         verifier_mode=verifier_mode,
         max_cost_usd=max_cost,
+        min_scenes=min_scenes,
         max_scenes=max_scenes,
+        pacing=pacing,
         enable_tts=not skip_tts,
         enable_render=not skip_render,
         dry_run=dry_run,
@@ -128,6 +154,8 @@ def convert(
     click.echo(f"  Repair:      {repair}")
     click.echo(f"  Repair cap:  {max_repairs_per_scene} per scene")
     click.echo(f"  Verifier:    {verifier_mode}")
+    click.echo(f"  Scene range: {min_scenes or 'auto'}-{max_scenes}")
+    click.echo(f"  Pacing:      {pacing}")
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
     result = PipelineV2(config).run(input_pdf)
     _print_result(result)
@@ -217,6 +245,213 @@ def report(run_directory: Path) -> None:
     click.echo(str(path))
 
 
+@pdf2manim.group("eval")
+def eval_group() -> None:
+    """Build and run frozen scene-level model evaluations."""
+
+
+@eval_group.command("build")
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--benchmark",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("evals/benchmarks/scene-v1"),
+    show_default=True,
+)
+@click.option("--scene", "scene_ids", multiple=True, help="Scene ID to include; repeat as needed.")
+@click.option("--category", default="uncategorized", show_default=True)
+def eval_build(
+    run_directory: Path,
+    benchmark: Path,
+    scene_ids: tuple[str, ...],
+    category: str,
+) -> None:
+    """Create immutable scene cases from an existing V2 RUN_DIRECTORY."""
+    from src.evaluation.cases import build_benchmark
+
+    try:
+        manifest = build_benchmark(
+            run_directory,
+            benchmark,
+            scene_ids=list(scene_ids) or None,
+            category=category,
+        )
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Benchmark: {benchmark.resolve()}")
+    click.echo(f"Cases:     {len(manifest.case_files)}")
+    click.echo(f"Hash:      {manifest.benchmark_hash}")
+
+
+@eval_group.command("validate")
+@click.argument("benchmark", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def eval_validate(benchmark: Path) -> None:
+    """Validate schemas, copied assets, and immutable benchmark hashes."""
+    from src.evaluation.cases import load_benchmark
+
+    try:
+        manifest, cases = load_benchmark(benchmark)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    repair_ready = sum(bool(case.initial_code_path) for case in cases)
+    click.echo(f"Benchmark:    {manifest.benchmark_id}")
+    click.echo(f"Cases:        {len(cases)}")
+    click.echo(f"Repair-ready: {repair_ready}")
+    click.echo(f"Hash:         {manifest.benchmark_hash}")
+    click.echo("Validation:   passed")
+
+
+@eval_group.command("plan")
+@click.argument("benchmark", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--model", "models", multiple=True, default=("gemini",), show_default=True)
+@click.option("--track", type=click.Choice(["generator", "repair", "production"]), default="generator")
+@click.option("--replicates", type=click.IntRange(1, 5), default=1, show_default=True)
+def eval_plan(benchmark: Path, models: tuple[str, ...], track: str, replicates: int) -> None:
+    """Print the exact candidate and API-call plan without making calls."""
+    from src.evaluation.cases import load_benchmark
+    from src.evaluation.models import EvaluationTrack
+    from src.evaluation.runner import estimate_max_cost, parse_model_spec
+
+    try:
+        manifest, cases = load_benchmark(benchmark)
+        specs = [parse_model_spec(value) for value in models]
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    candidates = len(cases) * len(specs) * replicates
+    max_calls = candidates * (2 if track == "production" else 1)
+    max_cost = estimate_max_cost(cases, specs, EvaluationTrack(track), replicates)
+    click.echo(f"Benchmark:       {manifest.benchmark_id}")
+    click.echo(f"Track:           {track}")
+    click.echo(f"Cases:           {len(cases)}")
+    click.echo(f"Models:          {', '.join(item.alias for item in specs)}")
+    click.echo(f"Replicates:      {replicates}")
+    click.echo(f"Candidates:      {candidates}")
+    click.echo(f"Maximum calls:   {max_calls}")
+    click.echo(f"Max reservation: ${max_cost:.4f}")
+    click.echo("Paid calls made: 0")
+
+
+@eval_group.command("run")
+@click.argument("benchmark", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--model", "models", multiple=True, default=("gemini",), show_default=True)
+@click.option("--track", type=click.Choice(["generator", "repair", "production"]), default="generator")
+@click.option("--replicates", type=click.IntRange(1, 5), default=1, show_default=True)
+@click.option("--quality", type=click.Choice(["low", "medium"]), default="low", show_default=True)
+@click.option("--max-cost", type=click.FloatRange(min=0.01), required=True)
+@click.option("--workers", type=click.IntRange(1, 8), default=2, show_default=True)
+@click.option("--max-repairs", type=click.IntRange(0, 1), default=1, show_default=True)
+@click.option("--timeout", "timeout_seconds", type=click.IntRange(10, 900), default=180)
+@click.option(
+    "--output-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("evals/runs"),
+    show_default=True,
+)
+def eval_run(
+    benchmark: Path,
+    models: tuple[str, ...],
+    track: str,
+    replicates: int,
+    quality: str,
+    max_cost: float,
+    workers: int,
+    max_repairs: int,
+    timeout_seconds: int,
+    output_root: Path,
+) -> None:
+    """Execute a bounded evaluation using frozen scene inputs."""
+    from src.evaluation.models import EvaluationRunConfig, EvaluationTrack
+    from src.evaluation.runner import EvaluationRunner, parse_model_spec
+
+    try:
+        specs = [parse_model_spec(value) for value in models]
+        config = EvaluationRunConfig(
+            benchmark_path=benchmark.resolve(),
+            output_root=output_root.resolve(),
+            track=EvaluationTrack(track),
+            models=specs,
+            replicates=replicates,
+            quality=quality,
+            max_cost_usd=max_cost,
+            workers=workers,
+            max_repairs=max_repairs,
+            timeout_seconds=timeout_seconds,
+        )
+        result = EvaluationRunner(config).run()
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _print_evaluation_result(result)
+
+
+@eval_group.command("resume")
+@click.argument("evaluation_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--max-cost", type=click.FloatRange(min=0.01), default=None)
+@click.option(
+    "--retry-interrupted",
+    is_flag=True,
+    help="Explicitly retry interrupted candidates that may have reached a provider.",
+)
+def eval_resume(
+    evaluation_directory: Path,
+    max_cost: Optional[float],
+    retry_interrupted: bool,
+) -> None:
+    """Resume unfinished candidates without repeating completed calls."""
+    from src.evaluation.runner import EvaluationRunner
+
+    try:
+        result = EvaluationRunner.resume(
+            evaluation_directory,
+            max_cost_usd=max_cost,
+            retry_interrupted=retry_interrupted,
+        )
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _print_evaluation_result(result)
+
+
+@eval_group.command("report")
+@click.argument("evaluation_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def eval_report(evaluation_directory: Path) -> None:
+    """Regenerate and print the evaluation dashboard path."""
+    from src.evaluation.dashboard import generate_dashboard
+    from src.evaluation.models import EvaluationRunSummary
+
+    run_path = evaluation_directory / "run.json"
+    if not run_path.is_file():
+        raise click.ClickException(f"run.json not found in {evaluation_directory}")
+    summary = EvaluationRunSummary.model_validate_json(run_path.read_text(encoding="utf-8"))
+    path = generate_dashboard(evaluation_directory, summary)
+    click.echo(str(path.resolve()))
+
+
+@eval_group.command("status")
+@click.argument("evaluation_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def eval_status(evaluation_directory: Path) -> None:
+    """Print candidate progress and cost for an evaluation run."""
+    from src.evaluation.models import EvaluationRunSummary
+
+    run_path = evaluation_directory / "run.json"
+    if not run_path.is_file():
+        raise click.ClickException(f"run.json not found in {evaluation_directory}")
+    summary = EvaluationRunSummary.model_validate_json(run_path.read_text(encoding="utf-8"))
+    _print_evaluation_result(summary)
+
+
+@eval_group.command("review")
+@click.argument("evaluation_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--port", type=click.IntRange(1024, 65535), default=8765, show_default=True)
+@click.option("--no-open", is_flag=True, help="Do not open the dashboard in the default browser.")
+def eval_review(evaluation_directory: Path, port: int, no_open: bool) -> None:
+    """Serve the dashboard locally and persist human ratings."""
+    from src.evaluation.dashboard import serve_dashboard
+
+    try:
+        serve_dashboard(evaluation_directory, port=port, open_browser=not no_open)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _print_result(result) -> None:
     click.echo()
     click.echo(f"Status:       {result.status.value}")
@@ -231,6 +466,16 @@ def _print_result(result) -> None:
         raise click.ClickException("Conversion failed; inspect the run report.")
     if result.status == RunStatus.PAUSED_BUDGET:
         raise click.ClickException("API budget exhausted; resume with a higher --max-cost.")
+
+
+def _print_evaluation_result(result) -> None:
+    click.echo()
+    click.echo(f"Status:      {result.status}")
+    click.echo(f"Evaluation:  {result.run_directory}")
+    click.echo(f"Candidates:  {result.completed_candidates}/{result.total_candidates}")
+    click.echo(f"Failed:      {result.failed_candidates}")
+    click.echo(f"API cost:    ${result.total_cost_usd:.4f}")
+    click.echo(f"Dashboard:   {result.dashboard_path or 'not available'}")
 
 
 main = pdf2manim

@@ -1,0 +1,863 @@
+{
+  "version": "1.0",
+  "case_id": "similar_triangles_and_shadows_5pages__scene_5",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z",
+  "source_scene_id": "scene_5",
+  "source_facts": [
+    {
+      "fact_id": "p005-f000",
+      "page_number": 5,
+      "text": "SIMILAR TRIANGLES CHECK THE ANSWER",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.999755859375,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f001",
+      "page_number": 5,
+      "text": "Same shape, different scale 5 / 5",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        512.3250122070312,
+        908.0001220703125,
+        524.6909790039062
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f002",
+      "page_number": 5,
+      "text": "REASON BEFORE CALCULATING Scale the Whole Triangle",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        450.6210021972656,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f003",
+      "page_number": 5,
+      "text": "The tree shadow is four times the student shadow, so every matching length must also be four times as large.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        786.9903564453125,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f004",
+      "page_number": 5,
+      "text": "shadow",
+      "kind": "text",
+      "bbox": [
+        171.66200256347656,
+        274.1600036621094,
+        216.33799743652344,
+        290.6839904785156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f005",
+      "page_number": 5,
+      "text": "2 m",
+      "kind": "text",
+      "bbox": [
+        169.8780059814453,
+        312.0400085449219,
+        218.12200927734375,
+        350.59600830078125
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f006",
+      "page_number": 5,
+      "text": "x 4",
+      "kind": "text",
+      "bbox": [
+        382.1000061035156,
+        275.6000061035156,
+        409.8999938964844,
+        303.1400146484375
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f007",
+      "page_number": 5,
+      "text": "shadow",
+      "kind": "text",
+      "bbox": [
+        575.6619873046875,
+        274.1600036621094,
+        620.337890625,
+        290.6839904785156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f008",
+      "page_number": 5,
+      "text": "8 m",
+      "kind": "text",
+      "bbox": [
+        573.8779907226562,
+        312.0400085449219,
+        622.1220092773438,
+        350.59600830078125
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f009",
+      "page_number": 5,
+      "text": "height",
+      "kind": "text",
+      "bbox": [
+        783.0,
+        274.1600036621094,
+        818.9998779296875,
+        290.6839904785156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f010",
+      "page_number": 5,
+      "text": "1.5 x 4 = 6 m",
+      "kind": "text",
+      "bbox": [
+        771.2725219726562,
+        308.66998291015625,
+        830.7275390625,
+        369.0610046386719
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f011",
+      "page_number": 5,
+      "text": "Similar triangles turn an inaccessible length into a proportion.",
+      "kind": "text",
+      "bbox": [
+        243.93600463867188,
+        438.8800048828125,
+        716.0639038085938,
+        460.9119873046875
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_5",
+    "narration": "We can double-check our calculation by reasoning about the scale factor of the whole triangle. Because the 8 meter tree shadow is 4 times the 2 meter student shadow, multiplying the 1.5 meter student height by 4 confirms 6 meters. By recognizing matching angles, similar triangles turn inaccessible real-world measurements into simple proportions.",
+    "beats": [
+      {
+        "beat_id": "scene_5_beat_1",
+        "text": "We can double-check our calculation by reasoning about the scale factor of the whole triangle.",
+        "source_fact_ids": [
+          "p005-f002",
+          "p005-f003"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Isolate horizontal shadows of 2 m and 8 m alongside vertical heights of 1.5 m and 6 m.",
+        "continuity_note": "Maintains scene 4's solved values to present the whole-triangle scaling perspective.",
+        "start_seconds": 0.0,
+        "end_seconds": 7.266
+      },
+      {
+        "beat_id": "scene_5_beat_2",
+        "text": "Because the 8 meter tree shadow is 4 times the 2 meter student shadow, multiplying the 1.5 meter student height by 4 confirms 6 meters.",
+        "source_fact_ids": [
+          "p005-f003",
+          "p005-f004",
+          "p005-f005",
+          "p005-f006",
+          "p005-f007",
+          "p005-f008",
+          "p005-f009",
+          "p005-f010"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.5,
+        "visual_action": "Draw multiplier arrow x 4 from 2 m to 8 m shadow, and matching x 4 arrow transforming 1.5 m to 6 m.",
+        "continuity_note": "Demonstrates consistency between proportional algebra and scale factor reasoning.",
+        "start_seconds": 7.266,
+        "end_seconds": 19.294
+      },
+      {
+        "beat_id": "scene_5_beat_3",
+        "text": "By recognizing matching angles, similar triangles turn inaccessible real-world measurements into simple proportions.",
+        "source_fact_ids": [
+          "p005-f011"
+        ],
+        "role": "conclude",
+        "pause_after_seconds": 0.85,
+        "visual_action": "Highlight the completed full diagram framing shadows, heights, and similar triangle geometry.",
+        "continuity_note": "Final takeaway synthesizing the full lesson's core concept.",
+        "start_seconds": 19.294,
+        "end_seconds": 26.138
+      }
+    ],
+    "transition_in": "Dissolve algebraic steps to side-by-side scaling diagram",
+    "transition_out": "Fade out to summary title card",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\audio\\scene_5_paced.mp3",
+    "audio_duration_seconds": 26.137958,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_5",
+    "title": "Verifying by Whole-Triangle Scaling",
+    "description": "Double-check the calculated height by identifying the direct scale factor between shadow lengths and scaling the height accordingly.",
+    "learning_goal": "Verify proportional solutions using whole-triangle scaling reasoning.",
+    "source_fact_ids": [
+      "p005-f000",
+      "p005-f001",
+      "p005-f002",
+      "p005-f003",
+      "p005-f004",
+      "p005-f005",
+      "p005-f006",
+      "p005-f007",
+      "p005-f008",
+      "p005-f009",
+      "p005-f010",
+      "p005-f011"
+    ],
+    "example": "Shadow scales from 2 m to 8 m (x 4), so height scales as 1.5 x 4 = 6 m.",
+    "visual_objective": "Show a visual multiplier arrow (x 4) connecting the 2 m shadow to the 8 m shadow, and apply the same x 4 multiplier to 1.5 m to confirm 6 m.",
+    "new_visual_fact": "A shadow scale factor of 4 directly multiplies the student height of 1.5 m to yield 6 m.",
+    "do_not_repeat": [
+      "Algebraic fraction solving steps from scene 4"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_5",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_5_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p005-f002",
+          "p005-f003",
+          "p005-f004",
+          "p005-f005",
+          "p005-f006",
+          "p005-f007",
+          "p005-f008",
+          "p005-f009",
+          "p005-f010",
+          "p005-f011"
+        ],
+        "beat_ids": [
+          "scene_5_beat_1",
+          "scene_5_beat_2",
+          "scene_5_beat_3"
+        ],
+        "enter_beat": "scene_5_beat_1",
+        "exit_beat": "scene_5_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_5_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "We can double-check our calculation by reasoning about the scale factor of the whole trian",
+        "source_fact_ids": [
+          "p005-f002",
+          "p005-f003"
+        ],
+        "beat_ids": [
+          "scene_5_beat_1"
+        ],
+        "enter_beat": "scene_5_beat_1",
+        "exit_beat": "scene_5_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_5_beat_1",
+        "active_artifact_ids": [
+          "scene_5_primary",
+          "scene_5_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_5_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_5_beat_2",
+        "active_artifact_ids": [
+          "scene_5_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_5_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_5_beat_3",
+        "active_artifact_ids": [
+          "scene_5_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_5_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Isolate horizontal shadows of 2 m and 8 m alongside vertical heights of 1.5 m and 6 m.",
+      "Draw multiplier arrow x 4 from 2 m to 8 m shadow, and matching x 4 arrow transforming 1.5 m to 6 m.",
+      "Highlight the completed full diagram framing shadows, heights, and similar triangle geometry."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_2",
+      "title": "Matching Corresponding Sides and Ratios",
+      "learning_goal": "Formulate and verify equivalent ratios from corresponding side lengths of similar triangles.",
+      "visual_objective": "Highlight matching sides between a small and large triangle and display the step-by-step equality of ratios yielding 1.2.",
+      "visual_fact_already_shown": "Every corresponding side ratio (6/5, 3.6/3, 4.8/4) simplifies to the identical value of 1.2.",
+      "constructions_not_to_replay": [
+        "Basic triangle scaling animation from scene 1"
+      ]
+    },
+    {
+      "scene_id": "scene_3",
+      "title": "Sunlight and Shared Angles in Shadows",
+      "learning_goal": "Recognize that a shared sun angle forms similar right triangles between objects and their shadows.",
+      "visual_objective": "Render parallel sunlight rays creating matching right triangles for both a person and a tree with their ground shadows.",
+      "visual_fact_already_shown": "Parallel sunlight rays produce equal ground angles, creating two right triangles defined by vertical heights and horizontal shadows.",
+      "constructions_not_to_replay": [
+        "Generic triangle side ratio equations from scene 2"
+      ]
+    },
+    {
+      "scene_id": "scene_4",
+      "title": "Worked Example: Calculating Tree Height",
+      "learning_goal": "Set up a proportional equation to solve for an inaccessible height using shadow measurements.",
+      "visual_objective": "Animate the substitution of student measurements (1.5 m, 2 m) and tree shadow (8 m) into the proportion 1.5 / 2 = h / 8 and solve for h = 6 m.",
+      "visual_fact_already_shown": "The algebraic proportion 1.5 / 2 = h / 8 directly solves to give tree height h = 6 m.",
+      "constructions_not_to_replay": [
+        "Derivation of the shared sun angle from scene 3"
+      ]
+    }
+  ],
+  "expected_facts": [
+    "SIMILAR TRIANGLES CHECK THE ANSWER",
+    "Same shape, different scale 5 / 5",
+    "REASON BEFORE CALCULATING Scale the Whole Triangle",
+    "The tree shadow is four times the student shadow, so every matching length must also be four times as large.",
+    "shadow",
+    "2 m",
+    "x 4",
+    "shadow",
+    "8 m",
+    "height",
+    "1.5 x 4 = 6 m",
+    "Similar triangles turn an inaccessible length into a proportion."
+  ],
+  "required_visuals": [
+    "Show a visual multiplier arrow (x 4) connecting the 2 m shadow to the 8 m shadow, and apply the same x 4 multiplier to 1.5 m to confirm 6 m.",
+    "A shadow scale factor of 4 directly multiplies the student height of 1.5 m to yield 6 m."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\audio\\scene_5_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 7.867,
+      "artifact_ids": [
+        "auto_001",
+        "ground",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_shadow_line",
+        "small_triangle",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-002-7.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 11.2,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "ground",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_shadow_line",
+        "small_triangle",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-003-11.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_bg and calc_title overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 12.0,
+      "artifact_ids": [
+        "calc_bg",
+        "calc_title"
+      ],
+      "object_ids": [
+        "calc_bg",
+        "calc_title"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-004-12.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_bg and calc_shadow overlap (100% of the smaller bounding box).",
+      "timestamp": 12.0,
+      "artifact_ids": [
+        "calc_bg",
+        "calc_shadow"
+      ],
+      "object_ids": [
+        "calc_bg",
+        "calc_shadow"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-004-12.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_bg and calc_height overlap (100% of the smaller bounding box).",
+      "timestamp": 12.0,
+      "artifact_ids": [
+        "calc_bg",
+        "calc_height"
+      ],
+      "object_ids": [
+        "calc_bg",
+        "calc_height"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-004-12.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 24.0; target is at most 12.",
+      "timestamp": 12.0,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "calc_bg",
+        "calc_height",
+        "calc_shadow",
+        "calc_title",
+        "ground",
+        "height_arrow",
+        "height_mult_lbl",
+        "large_height_line",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_height_line",
+        "small_shadow_line",
+        "small_triangle",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-004-12.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_bg and calc_shadow overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 12.733,
+      "artifact_ids": [
+        "calc_bg",
+        "calc_shadow"
+      ],
+      "object_ids": [
+        "calc_bg",
+        "calc_shadow"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-005-12.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_bg and calc_height overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 12.733,
+      "artifact_ids": [
+        "calc_bg",
+        "calc_height"
+      ],
+      "object_ids": [
+        "calc_bg",
+        "calc_height"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-005-12.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 25.0; target is at most 12.",
+      "timestamp": 19.2,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "calc_bg",
+        "calc_height",
+        "calc_shadow",
+        "calc_title",
+        "ground",
+        "height_arrow",
+        "height_mult_lbl",
+        "large_height_line",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_height_line",
+        "small_shadow_line",
+        "small_triangle",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-007-19.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects small_triangle and angle_lbl_s overlap (100% of the smaller bounding box).",
+      "timestamp": 19.6,
+      "artifact_ids": [
+        "angle_lbl_s",
+        "small_triangle"
+      ],
+      "object_ids": [
+        "small_triangle",
+        "angle_lbl_s"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-010-19.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects large_triangle and angle_lbl_t overlap (100% of the smaller bounding box).",
+      "timestamp": 19.6,
+      "artifact_ids": [
+        "angle_lbl_t",
+        "large_triangle"
+      ],
+      "object_ids": [
+        "large_triangle",
+        "angle_lbl_t"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-010-19.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 29.0; target is at most 12.",
+      "timestamp": 19.6,
+      "artifact_ids": [
+        "angle_arc_s",
+        "angle_arc_t",
+        "angle_lbl_s",
+        "angle_lbl_t",
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "calc_bg",
+        "calc_height",
+        "calc_shadow",
+        "calc_title",
+        "ground",
+        "height_arrow",
+        "height_mult_lbl",
+        "large_height_line",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_height_line",
+        "small_shadow_line",
+        "small_triangle",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-010-19.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects small_triangle and angle_lbl_s overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 20.0,
+      "artifact_ids": [
+        "angle_lbl_s",
+        "small_triangle"
+      ],
+      "object_ids": [
+        "small_triangle",
+        "angle_lbl_s"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-011-20.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects large_triangle and angle_lbl_t overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 20.0,
+      "artifact_ids": [
+        "angle_lbl_t",
+        "large_triangle"
+      ],
+      "object_ids": [
+        "large_triangle",
+        "angle_lbl_t"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-011-20.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 31.0; target is at most 12.",
+      "timestamp": 21.2,
+      "artifact_ids": [
+        "angle_arc_s",
+        "angle_arc_t",
+        "angle_lbl_s",
+        "angle_lbl_t",
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "calc_bg",
+        "calc_height",
+        "calc_shadow",
+        "calc_title",
+        "confirm_box",
+        "ground",
+        "height_arrow",
+        "height_mult_lbl",
+        "large_height_line",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_height_line",
+        "small_shadow_line",
+        "small_triangle",
+        "takeaway",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-012-21.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_height and confirm_box overlap (100% bounds, 49% occupied pixels).",
+      "timestamp": 21.667,
+      "artifact_ids": [
+        "calc_height",
+        "confirm_box"
+      ],
+      "object_ids": [
+        "calc_height",
+        "confirm_box"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-013-21.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_height and confirm_box overlap (100% bounds, 80% occupied pixels).",
+      "timestamp": 22.133,
+      "artifact_ids": [
+        "calc_height",
+        "confirm_box"
+      ],
+      "object_ids": [
+        "calc_height",
+        "confirm_box"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-014-22.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 32.0; target is at most 12.",
+      "timestamp": 26.067,
+      "artifact_ids": [
+        "angle_arc_s",
+        "angle_arc_t",
+        "angle_lbl_s",
+        "angle_lbl_t",
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "auto_004",
+        "calc_bg",
+        "calc_height",
+        "calc_shadow",
+        "calc_title",
+        "confirm_box",
+        "ground",
+        "height_arrow",
+        "height_mult_lbl",
+        "large_height_line",
+        "large_shadow_line",
+        "large_triangle",
+        "lbl_s_h",
+        "lbl_s_sh",
+        "lbl_s_tag",
+        "lbl_t_h",
+        "lbl_t_sh",
+        "lbl_t_tag",
+        "shadow_arrow",
+        "shadow_mult_lbl",
+        "small_height_line",
+        "small_shadow_line",
+        "small_triangle",
+        "takeaway",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_5\\attempt-01\\frames\\frame-015-25.967s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-000-6.517s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-001-7.266s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-002-7.867s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-003-11.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-004-12.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-005-12.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-006-13.033s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-007-19.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-008-19.294s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-009-19.550s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-010-19.600s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_5\\initial-frames\\frame-011-20.000s.png"
+  ],
+  "content_hash": "f54ef78f51e00ab58e7da4a4d8b88af066f0188eacd65d7f241176c0a4f38015"
+}

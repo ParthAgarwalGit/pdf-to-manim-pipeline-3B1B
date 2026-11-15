@@ -1,0 +1,1149 @@
+{
+  "version": "1.0",
+  "case_id": "similar_triangles_and_shadows_5pages__scene_3",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z",
+  "source_scene_id": "scene_3",
+  "source_facts": [
+    {
+      "fact_id": "p003-f000",
+      "page_number": 3,
+      "text": "SIMILAR TRIANGLES SHADOWS",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9999389648438,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f001",
+      "page_number": 3,
+      "text": "Same shape, different scale 3 / 5",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        512.3250122070312,
+        908.0001220703125,
+        524.6909790039062
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f002",
+      "page_number": 3,
+      "text": "A SHARED SUN ANGLE A Person and a Tree Make Similar Triangles",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        745.9381713867188,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f003",
+      "page_number": 3,
+      "text": "At the same moment, sunlight reaches the ground at the same angle. Vertical heights and horizontal shadows form matching right triangles.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        887.0555419921875,
+        208.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f004",
+      "page_number": 3,
+      "text": "person height",
+      "kind": "text",
+      "bbox": [
+        80.04399871826172,
+        349.0899963378906,
+        165.99996948242188,
+        366.9909973144531
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f005",
+      "page_number": 3,
+      "text": "person shadow",
+      "kind": "text",
+      "bbox": [
+        217.32249450683594,
+        456.0899963378906,
+        312.677490234375,
+        473.9909973144531
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f006",
+      "page_number": 3,
+      "text": "tree height",
+      "kind": "text",
+      "bbox": [
+        513.5440063476562,
+        305.0899963378906,
+        580.0000610351562,
+        322.9909973144531
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f007",
+      "page_number": 3,
+      "text": "tree shadow",
+      "kind": "text",
+      "bbox": [
+        685.072509765625,
+        456.0899963378906,
+        760.9276123046875,
+        473.9909973144531
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_3",
+    "narration": "In the real world, sunlight reaches the ground at the exact same angle for nearby objects. A person's vertical height and ground shadow form a distinct right triangle under the sun. Right beside them, a tree's height and shadow form a second right triangle sharing the identical sun angle.",
+    "beats": [
+      {
+        "beat_id": "scene_3_beat_1",
+        "text": "In the real world, sunlight reaches the ground at the exact same angle for nearby objects.",
+        "source_fact_ids": [
+          "p003-f002",
+          "p003-f003"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.4,
+        "visual_action": "Introduce parallel golden sunlight rays slanting down toward ground plane.",
+        "continuity_note": "Brings the abstract angle condition from scene 2 into a physical outdoor setting.",
+        "start_seconds": 0.0,
+        "end_seconds": 6.828
+      },
+      {
+        "beat_id": "scene_3_beat_2",
+        "text": "A person's vertical height and ground shadow form a distinct right triangle under the sun.",
+        "source_fact_ids": [
+          "p003-f003",
+          "p003-f004",
+          "p003-f005"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Trace right triangle over person with labels person height and person shadow.",
+        "continuity_note": "Builds the first physical triangle anchored by sunlight rays.",
+        "start_seconds": 6.828,
+        "end_seconds": 13.204
+      },
+      {
+        "beat_id": "scene_3_beat_3",
+        "text": "Right beside them, a tree's height and shadow form a second right triangle sharing the identical sun angle.",
+        "source_fact_ids": [
+          "p003-f003",
+          "p003-f006",
+          "p003-f007"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.7,
+        "visual_action": "Trace larger right triangle over tree with labels tree height and tree shadow, highlighting matching ground angles.",
+        "continuity_note": "Establishes the pair of similar shadow triangles ready for numerical calculation.",
+        "start_seconds": 13.204,
+        "end_seconds": 21.136
+      }
+    ],
+    "transition_in": "Fade in outdoor scene schematic",
+    "transition_out": "Zoom in on triangle measurement overlays",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\audio\\scene_3_paced.mp3",
+    "audio_duration_seconds": 21.135667,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_3",
+    "title": "Sunlight and Shared Angles in Shadows",
+    "description": "Illustrate how sunlight at a given moment strikes the ground at an identical angle, turning vertical heights and horizontal shadows into similar right triangles.",
+    "learning_goal": "Recognize that a shared sun angle forms similar right triangles between objects and their shadows.",
+    "source_fact_ids": [
+      "p003-f000",
+      "p003-f001",
+      "p003-f002",
+      "p003-f003",
+      "p003-f004",
+      "p003-f005",
+      "p003-f006",
+      "p003-f007"
+    ],
+    "example": "A person height and person shadow forming a right triangle alongside a tree height and tree shadow forming a matching right triangle.",
+    "visual_objective": "Render parallel sunlight rays creating matching right triangles for both a person and a tree with their ground shadows.",
+    "new_visual_fact": "Parallel sunlight rays produce equal ground angles, creating two right triangles defined by vertical heights and horizontal shadows.",
+    "do_not_repeat": [
+      "Generic triangle side ratio equations from scene 2"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_3",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_3_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p003-f002",
+          "p003-f003",
+          "p003-f004",
+          "p003-f005",
+          "p003-f006",
+          "p003-f007"
+        ],
+        "beat_ids": [
+          "scene_3_beat_1",
+          "scene_3_beat_2",
+          "scene_3_beat_3"
+        ],
+        "enter_beat": "scene_3_beat_1",
+        "exit_beat": "scene_3_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_3_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "In the real world, sunlight reaches the ground at the exact same angle for nearby objects.",
+        "source_fact_ids": [
+          "p003-f002",
+          "p003-f003"
+        ],
+        "beat_ids": [
+          "scene_3_beat_1"
+        ],
+        "enter_beat": "scene_3_beat_1",
+        "exit_beat": "scene_3_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_3_beat_1",
+        "active_artifact_ids": [
+          "scene_3_primary",
+          "scene_3_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_3_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_3_beat_2",
+        "active_artifact_ids": [
+          "scene_3_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_3_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_3_beat_3",
+        "active_artifact_ids": [
+          "scene_3_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_3_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Introduce parallel golden sunlight rays slanting down toward ground plane.",
+      "Trace right triangle over person with labels person height and person shadow.",
+      "Trace larger right triangle over tree with labels tree height and tree shadow, highlighting matching ground angles."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_1",
+      "title": "The Idea of Similar Triangles",
+      "learning_goal": "Understand that similarity preserves shape through equal angles and uniform side length scaling.",
+      "visual_objective": "Animate a smaller triangle expanding into a larger triangle with matching angle indicators and side length labels showing a scale factor of 2.",
+      "visual_fact_already_shown": "A side of length 2 and base of 3 scale uniformly by factor 2 into side length 4 and base length 6 with identical angles.",
+      "constructions_not_to_replay": []
+    },
+    {
+      "scene_id": "scene_2",
+      "title": "Matching Corresponding Sides and Ratios",
+      "learning_goal": "Formulate and verify equivalent ratios from corresponding side lengths of similar triangles.",
+      "visual_objective": "Highlight matching sides between a small and large triangle and display the step-by-step equality of ratios yielding 1.2.",
+      "visual_fact_already_shown": "Every corresponding side ratio (6/5, 3.6/3, 4.8/4) simplifies to the identical value of 1.2.",
+      "constructions_not_to_replay": [
+        "Basic triangle scaling animation from scene 1"
+      ]
+    }
+  ],
+  "expected_facts": [
+    "SIMILAR TRIANGLES SHADOWS",
+    "Same shape, different scale 3 / 5",
+    "A SHARED SUN ANGLE A Person and a Tree Make Similar Triangles",
+    "At the same moment, sunlight reaches the ground at the same angle. Vertical heights and horizontal shadows form matching right triangles.",
+    "person height",
+    "person shadow",
+    "tree height",
+    "tree shadow"
+  ],
+  "required_visuals": [
+    "Render parallel sunlight rays creating matching right triangles for both a person and a tree with their ground shadows.",
+    "Parallel sunlight rays produce equal ground angles, creating two right triangles defined by vertical heights and horizontal shadows."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\audio\\scene_3_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 14.0; target is at most 12.",
+      "timestamp": 7.2,
+      "artifact_ids": [
+        "auto_001",
+        "body",
+        "ground_line",
+        "head",
+        "header_title",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-002-7.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 8.733,
+      "artifact_ids": [
+        "auto_001",
+        "body",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_right_angle",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-003-8.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r and p_height_label overlap (100% of the smaller bounding box).",
+      "timestamp": 10.8,
+      "artifact_ids": [
+        "p_height_label",
+        "r"
+      ],
+      "object_ids": [
+        "r",
+        "p_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-005-10.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_2 and p_height_label overlap (49% of the smaller bounding box).",
+      "timestamp": 10.8,
+      "artifact_ids": [
+        "p_height_label",
+        "r_2"
+      ],
+      "object_ids": [
+        "r_2",
+        "p_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-005-10.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects p_tri_poly and p_theta_label overlap (100% bounds, 70% occupied pixels).",
+      "timestamp": 10.8,
+      "artifact_ids": [
+        "p_theta_label",
+        "p_tri_poly"
+      ],
+      "object_ids": [
+        "p_tri_poly",
+        "p_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-005-10.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 20.0; target is at most 12.",
+      "timestamp": 10.8,
+      "artifact_ids": [
+        "auto_001",
+        "body",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-005-10.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects p_tri_poly and p_theta_label overlap (100% bounds, 69% occupied pixels).",
+      "timestamp": 11.267,
+      "artifact_ids": [
+        "p_theta_label",
+        "p_tri_poly"
+      ],
+      "object_ids": [
+        "p_tri_poly",
+        "p_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-006-11.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects p_tri_poly and p_theta_label overlap (100% bounds, 65% occupied pixels).",
+      "timestamp": 11.733,
+      "artifact_ids": [
+        "p_theta_label",
+        "p_tri_poly"
+      ],
+      "object_ids": [
+        "p_tri_poly",
+        "p_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-007-11.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects p_tri_poly and p_theta_label overlap (100% bounds, 60% occupied pixels).",
+      "timestamp": 12.2,
+      "artifact_ids": [
+        "p_theta_label",
+        "p_tri_poly"
+      ],
+      "object_ids": [
+        "p_tri_poly",
+        "p_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-008-12.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 21.0; target is at most 12.",
+      "timestamp": 13.4,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "body",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-010-13.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 23.0; target is at most 12.",
+      "timestamp": 13.667,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "body",
+        "foliage",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow",
+        "trunk"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-011-13.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 25.0; target is at most 12.",
+      "timestamp": 14.933,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "body",
+        "foliage",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow",
+        "t_right_angle",
+        "t_tri_poly",
+        "trunk"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-012-14.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r and t_height_label overlap (100% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_2 and t_height_label overlap (100% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r_2",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_2",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_3 and t_height_label overlap (100% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r_3",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_3",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_4 and t_height_label overlap (100% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r_4",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_4",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_5 and t_theta_label overlap (100% bounds, 52% occupied pixels).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r_5",
+        "t_theta_label"
+      ],
+      "object_ids": [
+        "r_5",
+        "t_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_5 and t_height_label overlap (100% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r_5",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_5",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_6 and t_height_label overlap (67% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "r_6",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_6",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects foliage and t_height_label overlap (38% of the smaller bounding box).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects t_tri_poly and t_theta_label overlap (100% bounds, 63% occupied pixels).",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "t_theta_label",
+        "t_tri_poly"
+      ],
+      "object_ids": [
+        "t_tri_poly",
+        "t_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 29.0; target is at most 12.",
+      "timestamp": 16.733,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "body",
+        "foliage",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "sun_core",
+        "sun_glow",
+        "t_angle_arc",
+        "t_height_label",
+        "t_right_angle",
+        "t_shadow_label",
+        "t_theta_label",
+        "t_tri_poly",
+        "trunk"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-014-16.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_2 and t_height_label overlap (100% bounds, 25% occupied pixels).",
+      "timestamp": 17.067,
+      "artifact_ids": [
+        "r_2",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_2",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-015-17.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects foliage and t_height_label overlap (44% bounds, 25% occupied pixels).",
+      "timestamp": 17.067,
+      "artifact_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-015-17.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_2 and t_height_label overlap (100% bounds, 21% occupied pixels).",
+      "timestamp": 17.467,
+      "artifact_ids": [
+        "r_2",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "r_2",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-016-17.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_5 and t_theta_label overlap (100% bounds, 50% occupied pixels).",
+      "timestamp": 17.467,
+      "artifact_ids": [
+        "r_5",
+        "t_theta_label"
+      ],
+      "object_ids": [
+        "r_5",
+        "t_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-016-17.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects foliage and t_height_label overlap (51% bounds, 32% occupied pixels).",
+      "timestamp": 17.467,
+      "artifact_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-016-17.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects t_tri_poly and t_theta_label overlap (100% bounds, 62% occupied pixels).",
+      "timestamp": 17.467,
+      "artifact_ids": [
+        "t_theta_label",
+        "t_tri_poly"
+      ],
+      "object_ids": [
+        "t_tri_poly",
+        "t_theta_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-016-17.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects foliage and t_height_label overlap (51% bounds, 33% occupied pixels).",
+      "timestamp": 17.8,
+      "artifact_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "object_ids": [
+        "foliage",
+        "t_height_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-017-17.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r and similarity_text overlap (67% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "r",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "r",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_2 and similarity_text overlap (87% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "r_2",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "r_2",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_3 and similarity_text overlap (100% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "r_3",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "r_3",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_4 and similarity_text overlap (86% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "r_4",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "r_4",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_5 and similarity_text overlap (66% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "r_5",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "r_5",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_6 and similarity_text overlap (46% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "r_6",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "r_6",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects similarity_card and similarity_text overlap (100% of the smaller bounding box).",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "similarity_card",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "similarity_card",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 31.0; target is at most 12.",
+      "timestamp": 18.133,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "body",
+        "foliage",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "similarity_card",
+        "similarity_text",
+        "sun_core",
+        "sun_glow",
+        "t_angle_arc",
+        "t_height_label",
+        "t_right_angle",
+        "t_shadow_label",
+        "t_theta_label",
+        "t_tri_poly",
+        "trunk"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-018-18.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects similarity_card and similarity_text overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 18.467,
+      "artifact_ids": [
+        "similarity_card",
+        "similarity_text"
+      ],
+      "object_ids": [
+        "similarity_card",
+        "similarity_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-019-18.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 32.0; target is at most 12.",
+      "timestamp": 21.467,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "body",
+        "foliage",
+        "ground_line",
+        "head",
+        "header_title",
+        "p_angle_arc",
+        "p_height_label",
+        "p_right_angle",
+        "p_shadow_label",
+        "p_theta_label",
+        "p_tri_poly",
+        "r",
+        "r_2",
+        "r_3",
+        "r_4",
+        "r_5",
+        "r_6",
+        "ray_label",
+        "similarity_card",
+        "similarity_text",
+        "sun_core",
+        "sun_glow",
+        "t_angle_arc",
+        "t_height_label",
+        "t_right_angle",
+        "t_shadow_label",
+        "t_theta_label",
+        "t_tri_poly",
+        "trunk"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_3\\attempt-01\\frames\\frame-021-21.367s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-000-5.367s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-001-6.828s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-002-7.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-003-8.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-004-10.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-005-10.800s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-006-11.267s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-007-11.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-008-12.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-009-13.204s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-010-13.400s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_3\\initial-frames\\frame-011-13.667s.png"
+  ],
+  "content_hash": "d093f60eb5aa01d19200d88796afece62c8e26cc974ee386dcf82ff990f5c562"
+}

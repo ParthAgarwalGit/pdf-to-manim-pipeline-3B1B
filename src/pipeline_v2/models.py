@@ -9,6 +9,9 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+MAX_V2_SCENES = 24
+
+
 class RunStatus(str, Enum):
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
@@ -76,7 +79,7 @@ class LessonPlan(BaseModel):
     objectives: list[str] = Field(min_length=1)
     prerequisites: list[str] = Field(default_factory=list)
     concept_dependencies: dict[str, list[str]] = Field(default_factory=dict)
-    scenes: list[LessonScene] = Field(min_length=1, max_length=12)
+    scenes: list[LessonScene] = Field(min_length=1, max_length=MAX_V2_SCENES)
 
     @field_validator("scenes")
     @classmethod
@@ -305,7 +308,9 @@ class PipelineV2Config(BaseModel):
     repair: Literal["off", "eligible"] = "eligible"
     verifier_mode: Literal["enforce", "audit"] = "enforce"
     max_cost_usd: float = Field(default=1.0, gt=0.0)
-    max_scenes: int = Field(default=12, ge=1, le=12)
+    min_scenes: Optional[int] = Field(default=None, ge=1, le=MAX_V2_SCENES)
+    max_scenes: int = Field(default=12, ge=1, le=MAX_V2_SCENES)
+    pacing: Literal["standard", "relaxed"] = "standard"
     enable_tts: bool = True
     enable_render: bool = True
     dry_run: bool = False
@@ -320,6 +325,12 @@ class PipelineV2Config(BaseModel):
     max_repairs_per_scene: int = Field(default=3, ge=0, le=3)
     preview_timeout_seconds: int = Field(default=120, ge=10)
     render_timeout_seconds: int = Field(default=600, ge=30)
+
+    @model_validator(mode="after")
+    def validate_scene_range(self) -> "PipelineV2Config":
+        if self.min_scenes is not None and self.min_scenes > self.max_scenes:
+            raise ValueError("min_scenes cannot exceed max_scenes")
+        return self
 
 
 class RunResult(BaseModel):

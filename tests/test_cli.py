@@ -26,6 +26,9 @@ def test_convert_passes_v2_budget_policy_and_workers(tmp_path):
             "convert", str(pdf), "--policy", "strict", "--max-cost", "0.75",
             "--repair", "off", "--verifier-mode", "audit",
             "--max-repairs-per-scene", "2",
+            "--min-scenes", "16",
+            "--max-scenes", "18",
+            "--pacing", "relaxed",
             "--api-workers", "2", "--code-workers", "1",
             "--skip-tts", "--skip-render",
         ])
@@ -35,8 +38,13 @@ def test_convert_passes_v2_budget_policy_and_workers(tmp_path):
     assert config.max_cost_usd == 0.75
     assert config.repair == "off"
     assert config.max_repairs_per_scene == 2
+    assert config.min_scenes == 16
+    assert config.max_scenes == 18
+    assert config.pacing == "relaxed"
     assert config.verifier_mode == "audit"
     assert "Verifier:    audit" in result.output
+    assert "Scene range: 16-18" in result.output
+    assert "Pacing:      relaxed" in result.output
     assert config.global_api_workers == 2
     assert config.code_workers == 1
     assert not config.enable_tts

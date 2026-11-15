@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "benchmark_id": "scene-v1",
+  "created_at": "2026-09-09T09:08:15.122610+00:00",
+  "source_runs": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z"
+  ],
+  "case_files": [
+    "cases/circumference_and_pi_5pages__scene_1_circle_parts/case.json",
+    "cases/circumference_and_pi_5pages__scene_2_discover_pi/case.json",
+    "cases/circumference_and_pi_5pages__scene_3_unroll_formula/case.json",
+    "cases/circumference_and_pi_5pages__scene_4_wheel_example/case.json",
+    "cases/circumference_and_pi_5pages__scene_5_arc_length/case.json",
+    "cases/similar_triangles_and_shadows_5pages__scene_1/case.json",
+    "cases/similar_triangles_and_shadows_5pages__scene_2/case.json",
+    "cases/similar_triangles_and_shadows_5pages__scene_3/case.json",
+    "cases/similar_triangles_and_shadows_5pages__scene_4/case.json",
+    "cases/similar_triangles_and_shadows_5pages__scene_5/case.json"
+  ],
+  "benchmark_hash": "3bb0a59b5825fc7d2faaca2ae2746a25bc01dba36754b87c9fc64b0c7db384fb"
+}

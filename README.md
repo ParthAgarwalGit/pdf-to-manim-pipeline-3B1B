@@ -112,6 +112,9 @@ pdf2manim convert document.pdf --repair off
 # Override the default three improving repair attempts per scene
 pdf2manim convert document.pdf --repair eligible --max-repairs-per-scene 2
 
+# Require full coverage and relaxed pacing for a long lecture deck
+pdf2manim convert document.pdf --min-scenes 18 --max-scenes 20 --pacing relaxed --quality high --repair eligible
+
 # Audit verifier findings without letting them reject a renderable scene
 pdf2manim convert document.pdf --verifier-mode audit --repair off
 
@@ -127,6 +130,16 @@ pdf2manim convert document.pdf --strict-keys
 # Bound external and local concurrency
 pdf2manim convert document.pdf --api-workers 4 --code-workers 3 --preview-workers 2 --render-workers 1
 ```
+
+The default 12-scene ceiling keeps short lessons concise. `--max-scenes` is only a ceiling;
+`--min-scenes` is the hard scene floor. If the lesson model returns fewer scenes than that floor,
+V2 replans once and then fails clearly instead of silently accepting a short lesson. Setting either
+an explicit floor or a ceiling above 12 activates full-coverage planning: every substantive page
+and distinct definition, derivation, algorithm, example family, and conclusion must be represented.
+`--pacing relaxed` targets 115 spoken words per minute, slows the generated audio further, and asks
+for less visual work per beat so animation calls are not squeezed into short windows. Longer plans
+also receive larger lesson and narration output budgets. The maximum supported scene value
+is 24; splitting by topic is still preferable when one source contains several independent courses.
 
 The default worker limits are four global API calls, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. The creative scaffold is local, so scene code generation starts as soon as its measured audio is ready.
 
@@ -181,6 +194,49 @@ Schema failures receive at most one semantic retry. Confirmed rate-limit or conn
 ## Presenter Extension
 
 The timeline model already supports `manim`, `presenter`, `mixed`, and `transition` segments through one `SegmentRenderer` protocol. V2 currently enables only Manim. A future avatar provider can consume the same narration audio for lip synchronization, reserve presenter-safe layout regions for mixed scenes, and return a clip to the existing compositor without changing lesson planning, verification, or run-state infrastructure.
+
+## Scene Evaluation
+
+The evaluation pipeline freezes scene inputs from completed V2 runs, then compares code models
+without rerunning extraction, lesson planning, narration, or TTS. Generator evaluation disables
+repair and deterministic source fallback, so a failed model output remains a measured failure.
+
+Create a benchmark by adding scenes from one or more existing runs:
+
+```powershell
+pdf2manim eval build output\DOCUMENT\RUN_ID --benchmark evals\benchmarks\scene-v1 `
+  --scene scene_01 --scene scene_03 --category geometry
+pdf2manim eval validate evals\benchmarks\scene-v1
+pdf2manim eval plan evals\benchmarks\scene-v1 --model gemini --track generator
+```
+
+Run one or more models against identical inputs. `gemini` and `gemma` are built-in aliases;
+custom models use `alias=provider:model-name`.
+
+```powershell
+pdf2manim eval run evals\benchmarks\scene-v1 --track generator `
+  --model gemini --model gemma --quality low --workers 2 --max-cost 2.00
+```
+
+`generator` performs exactly one generation and no repair. `repair` starts from the frozen
+original code and diagnostics. `production` generates a candidate and permits one repair only
+when deterministic diagnostics justify it. A production repair replaces the original only when
+it renders safely and lowers the issue score.
+
+Evaluation runs are resumable and stored under the ignored `evals/runs/` directory:
+
+```powershell
+pdf2manim eval resume evals\runs\EVALUATION_ID
+pdf2manim eval status evals\runs\EVALUATION_ID
+pdf2manim eval report evals\runs\EVALUATION_ID
+pdf2manim eval review evals\runs\EVALUATION_ID
+```
+
+The last command starts a local dashboard at `http://127.0.0.1:8765`. It provides summary and
+artifact tables, anonymized candidate videos, representative frames, diagnostics, code, prompts,
+responses, and five-axis human ratings. Ratings are appended to `review/ratings.jsonl`. Use
+`--retry-interrupted` only when intentionally repeating a candidate that may have reached a
+provider before interruption.
 
 ## Testing
 

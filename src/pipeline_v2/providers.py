@@ -18,7 +18,8 @@ from .state import BudgetExceeded, RunStore
 
 
 T = TypeVar("T", bound=BaseModel)
-STRUCTURED_OUTPUT_VERSION = "v2-structured-2"
+STRUCTURED_OUTPUT_VERSION = "v2-structured-4"
+GOOGLE_STRUCTURED_THINKING_BUDGET = 1024
 
 PRICES: dict[tuple[str, str], tuple[float, float]] = {
     ("anthropic", "claude-sonnet-5"): (2.00, 10.00),
@@ -98,6 +99,11 @@ class ProviderRouter:
         semantic_retries: int = 1,
     ) -> T:
         schema_json = schema.model_json_schema()
+        provider_schema = (
+            _google_compatible_schema(schema_json)
+            if provider == "google"
+            else schema_json
+        )
         schema_context = ""
         if provider != "google":
             schema_context = (
@@ -123,7 +129,7 @@ class ProviderRouter:
                     prompt=prompt + suffix,
                     scene_id=scene_id,
                     max_output_tokens=max_output_tokens,
-                    schema_json=schema_json,
+                    schema_json=provider_schema,
                 )
                 return schema.model_validate_json(clean_json_text(response.text))
             except MissingProviderKey as exc:
@@ -203,6 +209,10 @@ class ProviderRouter:
             "prompt": prompt,
             "schema": schema_json,
             "max_output_tokens": max_output_tokens,
+            "thinking_budget": (
+                GOOGLE_STRUCTURED_THINKING_BUDGET
+                if provider == "google" and schema_json else None
+            ),
         }
         canonical = json.dumps(request, sort_keys=True, ensure_ascii=False)
         cache_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -532,19 +542,42 @@ class ProviderRouter:
             if schema_json:
                 config_kwargs["response_mime_type"] = "application/json"
                 config_kwargs["response_json_schema"] = schema_json
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget=GOOGLE_STRUCTURED_THINKING_BUDGET,
+                    include_thoughts=False,
+                )
             result = client.models.generate_content(
                 model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(**config_kwargs),
             )
-            text = result.text or ""
+            candidates = list(getattr(result, "candidates", None) or [])
+            parts = [
+                part
+                for candidate in candidates
+                for part in (getattr(getattr(candidate, "content", None), "parts", None) or [])
+            ]
+            text = "".join(
+                value for part in parts
+                if (value := getattr(part, "text", None))
+            )
             usage = getattr(result, "usage_metadata", None)
+            candidate_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+            thinking_tokens = int(getattr(usage, "thoughts_token_count", 0) or 0)
+            output_units = candidate_tokens + thinking_tokens
+            finish_reason = str(
+                getattr(candidates[0], "finish_reason", "") if candidates else ""
+            )
             return ProviderResponse(
                 text=text, provider=provider, model=model,
                 input_units=int(getattr(usage, "prompt_token_count", estimate_tokens(system + prompt))),
-                output_units=int(getattr(usage, "candidates_token_count", estimate_tokens(text))),
+                output_units=output_units or estimate_tokens(text),
                 exact_usage=usage is not None,
-                raw={"finish_reason": str(getattr(result, "finish_reason", ""))},
+                raw={
+                    "finish_reason": finish_reason,
+                    "candidate_tokens": candidate_tokens,
+                    "thinking_tokens": thinking_tokens,
+                },
             )
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -597,6 +630,20 @@ class ProviderRequestRejected(RuntimeError):
 
 class ProviderUnavailable(RuntimeError):
     """Confirmed unbilled provider failures exhausted the bounded retry policy."""
+
+
+def _google_compatible_schema(value: Any) -> Any:
+    """Keep local array limits out of Gemini's occasionally brittle schema layer."""
+
+    if isinstance(value, dict):
+        return {
+            key: _google_compatible_schema(item)
+            for key, item in value.items()
+            if key != "maxItems"
+        }
+    if isinstance(value, list):
+        return [_google_compatible_schema(item) for item in value]
+    return value
 
 
 def _confirmed_retryable(exc: Exception) -> bool:

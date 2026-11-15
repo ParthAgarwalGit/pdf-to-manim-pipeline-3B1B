@@ -72,6 +72,7 @@ Thumbs.db
 # Project specific - runtime outputs
 .worktrees/
 output/
+evals/runs/
 media/
 verifier_runs/
 test_output/

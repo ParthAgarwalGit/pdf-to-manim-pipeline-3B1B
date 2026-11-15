@@ -1,0 +1,747 @@
+{
+  "version": "1.0",
+  "case_id": "circumference_and_pi_5pages__scene_1_circle_parts",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z",
+  "source_scene_id": "scene_1_circle_parts",
+  "source_facts": [
+    {
+      "fact_id": "p001-f000",
+      "page_number": 1,
+      "text": "CIRCUMFERENCE AND PI CIRCLE PARTS",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9998168945312,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f002",
+      "page_number": 1,
+      "text": "START AT THE CENTRE Radius, Diameter, Circumference",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        578.9910888671875,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f003",
+      "page_number": 1,
+      "text": "The radius runs from the centre to the edge. The diameter crosses the entire circle and is exactly twice the radius.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        814.4854125976562,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f004",
+      "page_number": 1,
+      "text": "radius r",
+      "kind": "text",
+      "bbox": [
+        334.489990234375,
+        318.95001220703125,
+        389.510009765625,
+        339.6050109863281
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f005",
+      "page_number": 1,
+      "text": "diameter d = 2r",
+      "kind": "text",
+      "bbox": [
+        246.43499755859375,
+        391.95001220703125,
+        353.56500244140625,
+        412.6050109863281
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f006",
+      "page_number": 1,
+      "text": "distance around",
+      "kind": "text",
+      "bbox": [
+        674.7940063476562,
+        263.0899963378906,
+        775.2061157226562,
+        280.9909973144531
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f007",
+      "page_number": 1,
+      "text": "circumference C",
+      "kind": "text",
+      "bbox": [
+        630.968017578125,
+        297.32000732421875,
+        819.031982421875,
+        330.3680114746094
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f008",
+      "page_number": 1,
+      "text": "d = 2r",
+      "kind": "text",
+      "bbox": [
+        695.343994140625,
+        349.4599914550781,
+        754.6560668945312,
+        379.7539978027344
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f009",
+      "page_number": 1,
+      "text": "One circle, three useful lengths.",
+      "kind": "text",
+      "bbox": [
+        633.968017578125,
+        389.1600036621094,
+        816.03173828125,
+        405.6839904785156
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_1_circle_parts",
+    "narration": "To understand any circle, we start at the centre with three essential measurements. The radius runs from the centre to the edge, while the diameter crosses the entire circle and is exactly twice the radius. The distance around the outside is the circumference, giving us three connected lengths for one circle.",
+    "beats": [
+      {
+        "beat_id": "scene_1_circle_parts_beat_1",
+        "text": "To understand any circle, we start at the centre with three essential measurements.",
+        "source_fact_ids": [
+          "p001-f000",
+          "p001-f002",
+          "p001-f009"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Introduce a circle on screen and mark its central point clearly.",
+        "continuity_note": "Initial scene establishing the geometric baseline.",
+        "start_seconds": 0.0,
+        "end_seconds": 5.601
+      },
+      {
+        "beat_id": "scene_1_circle_parts_beat_2",
+        "text": "The radius runs from the centre to the edge, while the diameter crosses the entire circle and is exactly twice the radius.",
+        "source_fact_ids": [
+          "p001-f003",
+          "p001-f004",
+          "p001-f005",
+          "p001-f008"
+        ],
+        "role": "explain",
+        "pause_after_seconds": 0.4,
+        "visual_action": "Draw radius segment r from the centre to the boundary, then extend it into full diameter segment d equals 2r.",
+        "continuity_note": "Builds directly outward from the centre point established in the first beat.",
+        "start_seconds": 5.601,
+        "end_seconds": 14.888
+      },
+      {
+        "beat_id": "scene_1_circle_parts_beat_3",
+        "text": "The distance around the outside is the circumference, giving us three connected lengths for one circle.",
+        "source_fact_ids": [
+          "p001-f006",
+          "p001-f007",
+          "p001-f009"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.75,
+        "visual_action": "Highlight the outer boundary path labeled circumference C in a distinct color.",
+        "continuity_note": "Prepares learner to examine how circumference relates to diameter across different shapes.",
+        "start_seconds": 14.888,
+        "end_seconds": 22.101
+      }
+    ],
+    "transition_in": "Fade in on a clean canvas",
+    "transition_out": "Smooth crossfade to comparison layout",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\audio\\scene_1_circle_parts_paced.mp3",
+    "audio_duration_seconds": 22.100792,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_1_circle_parts",
+    "title": "Circle Parts: Radius, Diameter, and Circumference",
+    "description": "Introduces the three fundamental lengths of a circle: the radius extending from the centre to the edge, the diameter spanning across the whole circle through the centre (d = 2r), and the circumference representing the distance around the boundary.",
+    "learning_goal": "Define radius, diameter, and circumference, and recognize that diameter is twice the radius (d = 2r).",
+    "source_fact_ids": [
+      "p001-f000",
+      "p001-f002",
+      "p001-f003",
+      "p001-f004",
+      "p001-f005",
+      "p001-f006",
+      "p001-f007",
+      "p001-f008",
+      "p001-f009"
+    ],
+    "example": null,
+    "visual_objective": "Draw a circle showing the center, radius segment r, full diameter segment d = 2r, and highlight the outer boundary as circumference C.",
+    "new_visual_fact": "A circle's diameter spans across the entire circle and equals exactly two radii (d = 2r), while circumference is the distance around.",
+    "do_not_repeat": [],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_1_circle_parts",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_1_circle_parts_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p001-f000",
+          "p001-f002",
+          "p001-f003",
+          "p001-f004",
+          "p001-f005",
+          "p001-f006",
+          "p001-f007",
+          "p001-f008",
+          "p001-f009"
+        ],
+        "beat_ids": [
+          "scene_1_circle_parts_beat_1",
+          "scene_1_circle_parts_beat_2",
+          "scene_1_circle_parts_beat_3"
+        ],
+        "enter_beat": "scene_1_circle_parts_beat_1",
+        "exit_beat": "scene_1_circle_parts_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_1_circle_parts_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "To understand any circle, we start at the centre with three essential measurements.",
+        "source_fact_ids": [
+          "p001-f000",
+          "p001-f002",
+          "p001-f009"
+        ],
+        "beat_ids": [
+          "scene_1_circle_parts_beat_1"
+        ],
+        "enter_beat": "scene_1_circle_parts_beat_1",
+        "exit_beat": "scene_1_circle_parts_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_1_circle_parts_beat_1",
+        "active_artifact_ids": [
+          "scene_1_circle_parts_primary",
+          "scene_1_circle_parts_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_1_circle_parts_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_1_circle_parts_beat_2",
+        "active_artifact_ids": [
+          "scene_1_circle_parts_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_1_circle_parts_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_1_circle_parts_beat_3",
+        "active_artifact_ids": [
+          "scene_1_circle_parts_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_1_circle_parts_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Introduce a circle on screen and mark its central point clearly.",
+      "Draw radius segment r from the centre to the boundary, then extend it into full diameter segment d equals 2r.",
+      "Highlight the outer boundary path labeled circumference C in a distinct color."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [],
+  "expected_facts": [
+    "CIRCUMFERENCE AND PI CIRCLE PARTS",
+    "START AT THE CENTRE Radius, Diameter, Circumference",
+    "The radius runs from the centre to the edge. The diameter crosses the entire circle and is exactly twice the radius.",
+    "radius r",
+    "diameter d = 2r",
+    "distance around",
+    "circumference C",
+    "d = 2r",
+    "One circle, three useful lengths."
+  ],
+  "required_visuals": [
+    "Draw a circle showing the center, radius segment r, full diameter segment d = 2r, and highlight the outer boundary as circumference C.",
+    "A circle's diameter spans across the entire circle and equals exactly two radii (d = 2r), while circumference is the distance around."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\audio\\scene_1_circle_parts_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and center_ripple overlap (11% bounds, 12% occupied pixels).",
+      "timestamp": 3.0,
+      "artifact_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "object_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-000-3.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and center_ripple overlap (36% bounds, 27% occupied pixels).",
+      "timestamp": 3.4,
+      "artifact_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "object_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-001-3.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and center_ripple overlap (54% of the smaller bounding box).",
+      "timestamp": 3.8,
+      "artifact_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "object_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-002-3.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and center_ripple overlap (57% of the smaller bounding box).",
+      "timestamp": 4.267,
+      "artifact_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "object_ids": [
+        "center_label",
+        "center_ripple"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-003-4.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 14.0; target is at most 12.",
+      "timestamp": 9.4,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "left_radius_dot",
+        "left_radius_label",
+        "left_radius_line",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_label",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-006-9.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 17.0; target is at most 12.",
+      "timestamp": 11.6,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "diameter_brace",
+        "diameter_card",
+        "diameter_label",
+        "left_radius_dot",
+        "left_radius_label",
+        "left_radius_line",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_label",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-008-11.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and diameter_brace overlap (64% bounds, 65% occupied pixels).",
+      "timestamp": 12.267,
+      "artifact_ids": [
+        "center_label",
+        "diameter_brace"
+      ],
+      "object_ids": [
+        "center_label",
+        "diameter_brace"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-009-12.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects base_circle and radius_label overlap (100% of the smaller bounding box).",
+      "timestamp": 12.933,
+      "artifact_ids": [
+        "base_circle",
+        "radius_label"
+      ],
+      "object_ids": [
+        "base_circle",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-010-12.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects base_circle and left_radius_label overlap (100% of the smaller bounding box).",
+      "timestamp": 12.933,
+      "artifact_ids": [
+        "base_circle",
+        "left_radius_label"
+      ],
+      "object_ids": [
+        "base_circle",
+        "left_radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-010-12.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and diameter_brace overlap (92% bounds, 65% occupied pixels).",
+      "timestamp": 12.933,
+      "artifact_ids": [
+        "center_label",
+        "diameter_brace"
+      ],
+      "object_ids": [
+        "center_label",
+        "diameter_brace"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-010-12.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects center_label and diameter_brace overlap (95% bounds, 65% occupied pixels).",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "center_label",
+        "diameter_brace"
+      ],
+      "object_ids": [
+        "center_label",
+        "diameter_brace"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-011-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 14.0; target is at most 12.",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "diameter_brace",
+        "diameter_card",
+        "diameter_label",
+        "left_radius_dot",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-011-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 15.0,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "diameter_brace",
+        "diameter_card",
+        "diameter_label",
+        "left_radius_dot",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-013-15.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 18.0; target is at most 12.",
+      "timestamp": 15.733,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "circ_desc",
+        "circumference_card",
+        "circumference_circle",
+        "diameter_brace",
+        "diameter_card",
+        "diameter_label",
+        "left_radius_dot",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-014-15.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 20.0; target is at most 12.",
+      "timestamp": 18.067,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "circ_arrow",
+        "circ_desc",
+        "circ_label",
+        "circumference_card",
+        "circumference_circle",
+        "diameter_brace",
+        "diameter_card",
+        "diameter_label",
+        "left_radius_dot",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-016-18.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects circ_arrow and circ_label overlap (66% bounds, 82% occupied pixels).",
+      "timestamp": 18.4,
+      "artifact_ids": [
+        "circ_arrow",
+        "circ_label"
+      ],
+      "object_ids": [
+        "circ_arrow",
+        "circ_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-017-18.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects circ_arrow and circ_label overlap (77% bounds, 88% occupied pixels).",
+      "timestamp": 18.667,
+      "artifact_ids": [
+        "circ_arrow",
+        "circ_label"
+      ],
+      "object_ids": [
+        "circ_arrow",
+        "circ_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-018-18.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects circ_arrow and circ_label overlap (85% bounds, 82% occupied pixels).",
+      "timestamp": 19.0,
+      "artifact_ids": [
+        "circ_arrow",
+        "circ_label"
+      ],
+      "object_ids": [
+        "circ_arrow",
+        "circ_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-019-19.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 21.0; target is at most 12.",
+      "timestamp": 22.333,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "auto_004",
+        "base_circle",
+        "center_dot",
+        "center_label",
+        "circ_arrow",
+        "circ_desc",
+        "circ_label",
+        "circumference_card",
+        "circumference_circle",
+        "diameter_brace",
+        "diameter_card",
+        "diameter_label",
+        "left_radius_dot",
+        "panel_title",
+        "radius_card",
+        "radius_dot",
+        "radius_line",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_1_circle_parts\\retries\\retry-01\\attempt-00\\frames\\frame-021-22.233s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-000-3.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-001-3.400s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-002-3.800s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-003-4.267s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-004-5.583s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-005-5.601s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-006-9.400s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-007-11.167s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-008-11.600s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-009-12.267s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-010-12.933s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_1_circle_parts\\initial-frames\\frame-011-13.600s.png"
+  ],
+  "content_hash": "cdabcdd27d5eb091dede5d7eb6fd75ced0bccc2337c20209f07d0022ad44235e"
+}

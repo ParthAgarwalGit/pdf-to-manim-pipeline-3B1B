@@ -19,8 +19,9 @@ from .state import RunStore
 
 
 SPEECH_RATE = 0.94
+RELAXED_SPEECH_RATE = 0.84
 SCENE_END_PAUSE_SECONDS = 2.0
-TTS_TIMING_VERSION = "tts-v2-3"
+TTS_TIMING_VERSION = "tts-v2-4"
 
 
 class NarrationAudioService:
@@ -33,6 +34,7 @@ class NarrationAudioService:
         high_quality: bool,
         strict_keys: bool,
         api_limit: asyncio.Semaphore,
+        speech_rate: float = SPEECH_RATE,
     ):
         self.store = store
         self.artifacts = artifacts
@@ -40,6 +42,7 @@ class NarrationAudioService:
         self.high_quality = high_quality
         self.strict_keys = strict_keys
         self.api_limit = api_limit
+        self.speech_rate = speech_rate
 
     async def generate(self, scene: NarratedScene, scene_dir: Path) -> NarratedScene:
         audio_dir = scene_dir / "audio"
@@ -96,7 +99,7 @@ class NarrationAudioService:
             request={
                 "provider": "openai", "model": model, "voice": self.voice,
                 "narration": narration_text, "characters": characters,
-                "speech_rate": SPEECH_RATE,
+                "speech_rate": self.speech_rate,
             },
         )
         agent = TTSAgent(max_retries=1, strict=True)
@@ -141,7 +144,7 @@ class NarrationAudioService:
             request={
                 "provider": "openai", "model": model, "voice": self.voice,
                 "narration": narration_text, "characters": characters,
-                "speech_rate": SPEECH_RATE,
+                "speech_rate": self.speech_rate,
             },
             response={
                 "audio_file_path": result.audio_file_path,
@@ -156,7 +159,7 @@ class NarrationAudioService:
                 _pace_audio,
                 original_path,
                 paced_path,
-                SPEECH_RATE,
+                self.speech_rate,
                 SCENE_END_PAUSE_SECONDS,
             )
             final_path = paced_path
@@ -167,7 +170,7 @@ class NarrationAudioService:
                 message="Applied calm educational pacing and a scene-boundary pause.",
                 source_duration_seconds=result.duration_seconds,
                 final_duration_seconds=round(final_duration, 3),
-                speech_rate=SPEECH_RATE,
+                speech_rate=self.speech_rate,
                 trailing_pause_seconds=SCENE_END_PAUSE_SECONDS,
             )
         except Exception as exc:

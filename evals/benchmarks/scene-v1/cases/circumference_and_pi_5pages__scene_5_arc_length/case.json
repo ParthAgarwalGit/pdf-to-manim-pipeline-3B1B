@@ -1,0 +1,692 @@
+{
+  "version": "1.0",
+  "case_id": "circumference_and_pi_5pages__scene_5_arc_length",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z",
+  "source_scene_id": "scene_5_arc_length",
+  "source_facts": [
+    {
+      "fact_id": "p005-f000",
+      "page_number": 5,
+      "text": "CIRCUMFERENCE AND PI ARC LENGTH",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9998779296875,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f002",
+      "page_number": 5,
+      "text": "TAKE ONLY PART OF THE CIRCLE A Quarter Circle Uses a Quarter Circumference",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        797.2531127929688,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f003",
+      "page_number": 5,
+      "text": "Arc length is the same fraction of the circumference as its central angle is of 360 degrees.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        654.4352416992188,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f004",
+      "page_number": 5,
+      "text": "90 degrees",
+      "kind": "text",
+      "bbox": [
+        187.97500610351562,
+        337.739990234375,
+        282.0249938964844,
+        362.5260009765625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f005",
+      "page_number": 5,
+      "text": "arc fraction",
+      "kind": "text",
+      "bbox": [
+        654.6010131835938,
+        246.08999633789062,
+        725.3991088867188,
+        263.9909973144531
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f006",
+      "page_number": 5,
+      "text": "90 / 360 = 1 / 4",
+      "kind": "text",
+      "bbox": [
+        619.6500244140625,
+        279.5299987792969,
+        760.3502807617188,
+        308.4469909667969
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f007",
+      "page_number": 5,
+      "text": "arc = (1/4)(2 pi r)",
+      "kind": "text",
+      "bbox": [
+        608.593505859375,
+        327.5299987792969,
+        771.4066162109375,
+        356.4469909667969
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p005-f008",
+      "page_number": 5,
+      "text": "arc = pi r / 2",
+      "kind": "text",
+      "bbox": [
+        620.1624755859375,
+        371.25,
+        759.8375854492188,
+        405.67498779296875
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_5_arc_length",
+    "narration": "What if we only need a piece of the circumference rather than a full turn? Arc length is the same fraction of the total circumference as its central angle is of 360 degrees. For a 90-degree central angle, that fraction is one quarter, giving an arc length of pi r over 2.",
+    "beats": [
+      {
+        "beat_id": "scene_5_arc_length_beat_1",
+        "text": "What if we only need a piece of the circumference rather than a full turn?",
+        "source_fact_ids": [
+          "p005-f000",
+          "p005-f002"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Show a full circle with an isolated section of the perimeter highlighted.",
+        "continuity_note": "Shifts perspective from entire rotations to partial curved lengths.",
+        "start_seconds": 0.0,
+        "end_seconds": 5.913
+      },
+      {
+        "beat_id": "scene_5_arc_length_beat_2",
+        "text": "Arc length is the same fraction of the total circumference as its central angle is of 360 degrees.",
+        "source_fact_ids": [
+          "p005-f003",
+          "p005-f005"
+        ],
+        "role": "explain",
+        "pause_after_seconds": 0.45,
+        "visual_action": "Display a central angle opening inside the circle alongside the fraction central angle over 360 degrees.",
+        "continuity_note": "Establishes the proportional relationship connecting angle to curved length.",
+        "start_seconds": 5.913,
+        "end_seconds": 13.038
+      },
+      {
+        "beat_id": "scene_5_arc_length_beat_3",
+        "text": "For a 90-degree central angle, that fraction is one quarter, giving an arc length of pi r over 2.",
+        "source_fact_ids": [
+          "p005-f002",
+          "p005-f004",
+          "p005-f006",
+          "p005-f007",
+          "p005-f008"
+        ],
+        "role": "conclude",
+        "pause_after_seconds": 0.85,
+        "visual_action": "Set the angle to 90 degrees, show 90 over 360 equals 1 over 4, and calculate arc equals one quarter of 2 pi r equals pi r over 2.",
+        "continuity_note": "Final visual calculation summarizing the lesson.",
+        "start_seconds": 13.038,
+        "end_seconds": 20.935
+      }
+    ],
+    "transition_in": "Fade in on circle diagram",
+    "transition_out": "Fade to end card",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\audio\\scene_5_arc_length_paced.mp3",
+    "audio_duration_seconds": 20.934667,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_5_arc_length",
+    "title": "Arc Length: Fractions of a Circle",
+    "description": "Explains how to determine arc length as a proportional fraction of the full circumference using the central angle over 360 degrees, with an example of a 90-degree central angle resulting in (1/4)(2 * pi * r) = pi * r / 2.",
+    "learning_goal": "Calculate the arc length of a circle sector using the ratio of central angle to 360 degrees.",
+    "source_fact_ids": [
+      "p005-f000",
+      "p005-f002",
+      "p005-f003",
+      "p005-f004",
+      "p005-f005",
+      "p005-f006",
+      "p005-f007",
+      "p005-f008"
+    ],
+    "example": "A central angle of 90 degrees corresponds to 90 / 360 = 1 / 4 of the circle, yielding an arc length of (1/4)(2 * pi * r) = pi * r / 2.",
+    "visual_objective": "Highlight a 90-degree sector of a circle, showing the fraction 90 / 360 = 1 / 4 and calculating the corresponding curved boundary length as pi * r / 2.",
+    "new_visual_fact": "Arc length corresponds directly to the central angle's fraction of 360 degrees multiplied by the full circumference.",
+    "do_not_repeat": [
+      "wheel revolution distance calculations",
+      "basic circumference definition"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_5_arc_length",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_5_arc_length_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p005-f000",
+          "p005-f002",
+          "p005-f003",
+          "p005-f004",
+          "p005-f005",
+          "p005-f006",
+          "p005-f007",
+          "p005-f008"
+        ],
+        "beat_ids": [
+          "scene_5_arc_length_beat_1",
+          "scene_5_arc_length_beat_2",
+          "scene_5_arc_length_beat_3"
+        ],
+        "enter_beat": "scene_5_arc_length_beat_1",
+        "exit_beat": "scene_5_arc_length_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_5_arc_length_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "What if we only need a piece of the circumference rather than a full turn?",
+        "source_fact_ids": [
+          "p005-f000",
+          "p005-f002"
+        ],
+        "beat_ids": [
+          "scene_5_arc_length_beat_1"
+        ],
+        "enter_beat": "scene_5_arc_length_beat_1",
+        "exit_beat": "scene_5_arc_length_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_5_arc_length_beat_1",
+        "active_artifact_ids": [
+          "scene_5_arc_length_primary",
+          "scene_5_arc_length_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_5_arc_length_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_5_arc_length_beat_2",
+        "active_artifact_ids": [
+          "scene_5_arc_length_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_5_arc_length_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_5_arc_length_beat_3",
+        "active_artifact_ids": [
+          "scene_5_arc_length_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_5_arc_length_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Show a full circle with an isolated section of the perimeter highlighted.",
+      "Display a central angle opening inside the circle alongside the fraction central angle over 360 degrees.",
+      "Set the angle to 90 degrees, show 90 over 360 equals 1 over 4, and calculate arc equals one quarter of 2 pi r equals pi r over 2."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_2_discover_pi",
+      "title": "Discovering Pi Through Constant Ratios",
+      "learning_goal": "Demonstrate that the ratio C / d is invariant for all circles and defines the constant pi.",
+      "visual_objective": "Display side-by-side circular items of varying sizes with their measured d and C values, computing C / d ~= 3.14 for each to establish pi = C / d.",
+      "visual_fact_already_shown": "For any circle regardless of size, dividing circumference by diameter consistently equals the constant pi (~3.14159).",
+      "constructions_not_to_replay": [
+        "basic definitions of radius, diameter, and circumference"
+      ]
+    },
+    {
+      "scene_id": "scene_3_unroll_formula",
+      "title": "Unrolling the Boundary: The Circumference Formula",
+      "learning_goal": "Derive and apply the formulas C = pi * d and C = 2 * pi * r by visualizing the unrolled circle boundary.",
+      "visual_objective": "Animate a circular boundary being cut and unrolled onto a horizontal line, aligning it against 3 full diameter segments plus an extra 0.14 portion.",
+      "visual_fact_already_shown": "Unrolling a circle's perimeter creates a linear segment whose length is exactly pi times its diameter (C = pi * d = 2 * pi * r).",
+      "constructions_not_to_replay": [
+        "individual object measurements from the previous scene"
+      ]
+    },
+    {
+      "scene_id": "scene_4_wheel_example",
+      "title": "Wheel Motion: One Turn Equals One Circumference",
+      "learning_goal": "Apply the circumference formula to calculate linear distance traveled from wheel revolutions.",
+      "visual_objective": "Animate a bicycle wheel rolling forward along a line by one complete revolution to cover C ~= 2.20 m, then extending across 10 turns to reach 22.0 m.",
+      "visual_fact_already_shown": "Each complete wheel revolution advances the wheel forward by a linear distance equal to one circumference C = 2 * pi * r.",
+      "constructions_not_to_replay": [
+        "unrolling derivation of C = pi * d"
+      ]
+    }
+  ],
+  "expected_facts": [
+    "CIRCUMFERENCE AND PI ARC LENGTH",
+    "TAKE ONLY PART OF THE CIRCLE A Quarter Circle Uses a Quarter Circumference",
+    "Arc length is the same fraction of the circumference as its central angle is of 360 degrees.",
+    "90 degrees",
+    "arc fraction",
+    "90 / 360 = 1 / 4",
+    "arc = (1/4)(2 pi r)",
+    "arc = pi r / 2"
+  ],
+  "required_visuals": [
+    "Highlight a 90-degree sector of a circle, showing the fraction 90 / 360 = 1 / 4 and calculating the corresponding curved boundary length as pi * r / 2.",
+    "Arc length corresponds directly to the central angle's fraction of 360 degrees multiplied by the full circumference."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\audio\\scene_5_arc_length_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects circle and theta_tex overlap (100% of the smaller bounding box).",
+      "timestamp": 6.4,
+      "artifact_ids": [
+        "circle",
+        "theta_tex"
+      ],
+      "object_ids": [
+        "circle",
+        "theta_tex"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-002-6.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 13.0; target is at most 12.",
+      "timestamp": 10.067,
+      "artifact_ids": [
+        "angle_arc",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "theta_tex",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-003-10.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 14.0; target is at most 12.",
+      "timestamp": 13.2,
+      "artifact_ids": [
+        "angle_arc",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "auto_002",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "theta_tex",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-006-13.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects circle and angle_90_label overlap (100% of the smaller bounding box).",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "angle_90_label",
+        "circle"
+      ],
+      "object_ids": [
+        "circle",
+        "angle_90_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-007-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r2_initial and angle_90_label overlap (100% of the smaller bounding box).",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "angle_90_label",
+        "r2_initial"
+      ],
+      "object_ids": [
+        "r2_initial",
+        "angle_90_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-007-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects theta_tex and sector_fill overlap (100% of the smaller bounding box).",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "sector_fill",
+        "theta_tex"
+      ],
+      "object_ids": [
+        "theta_tex",
+        "sector_fill"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-007-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects angle_90_label and sector_fill overlap (100% of the smaller bounding box).",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "angle_90_label",
+        "sector_fill"
+      ],
+      "object_ids": [
+        "angle_90_label",
+        "sector_fill"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-007-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 17.0; target is at most 12.",
+      "timestamp": 13.6,
+      "artifact_ids": [
+        "angle_90_label",
+        "angle_arc",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "auto_002",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "right_angle",
+        "sector_fill",
+        "theta_tex",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-007-13.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects theta_tex and sector_fill overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 14.0,
+      "artifact_ids": [
+        "sector_fill",
+        "theta_tex"
+      ],
+      "object_ids": [
+        "theta_tex",
+        "sector_fill"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-008-14.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects angle_90_label and sector_fill overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 14.0,
+      "artifact_ids": [
+        "angle_90_label",
+        "sector_fill"
+      ],
+      "object_ids": [
+        "angle_90_label",
+        "sector_fill"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-008-14.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects arc_initial and theta_tex overlap (100% of the smaller bounding box).",
+      "timestamp": 14.4,
+      "artifact_ids": [
+        "arc_initial",
+        "theta_tex"
+      ],
+      "object_ids": [
+        "arc_initial",
+        "theta_tex"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-009-14.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 14.733,
+      "artifact_ids": [
+        "angle_90_label",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "auto_002",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "right_angle",
+        "sector_fill",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-010-14.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 16.333,
+      "artifact_ids": [
+        "angle_90_label",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "auto_002",
+        "calc_step2",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "right_angle",
+        "sector_fill",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-012-16.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 18.0; target is at most 12.",
+      "timestamp": 17.667,
+      "artifact_ids": [
+        "angle_90_label",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "auto_002",
+        "box",
+        "calc_result",
+        "calc_step2",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "right_angle",
+        "sector_fill",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-013-17.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 19.0; target is at most 12.",
+      "timestamp": 21.2,
+      "artifact_ids": [
+        "angle_90_label",
+        "arc_initial",
+        "arc_label",
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "box",
+        "calc_result",
+        "calc_step2",
+        "circle",
+        "dot_center",
+        "formula_arc_gen",
+        "formula_header",
+        "formula_prop",
+        "r1",
+        "r2_initial",
+        "right_angle",
+        "sector_fill",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_5_arc_length\\attempt-00\\frames\\frame-015-21.100s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-000-5.300s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-001-5.913s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-002-6.400s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-003-10.067s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-004-10.600s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-005-13.038s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-006-13.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-007-13.600s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-008-14.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-009-14.400s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-010-14.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_5_arc_length\\initial-frames\\frame-011-15.900s.png"
+  ],
+  "content_hash": "4c0cee25ce86caf878610c93f364f980caf80b8c88baf254338390e4913121ae"
+}

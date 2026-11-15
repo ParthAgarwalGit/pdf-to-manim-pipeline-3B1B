@@ -1,0 +1,978 @@
+{
+  "version": "1.0",
+  "case_id": "circumference_and_pi_5pages__scene_2_discover_pi",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z",
+  "source_scene_id": "scene_2_discover_pi",
+  "source_facts": [
+    {
+      "fact_id": "p002-f000",
+      "page_number": 2,
+      "text": "CIRCUMFERENCE AND PI DISCOVER PI",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9999389648438,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f002",
+      "page_number": 2,
+      "text": "MEASURE MANY CIRCLES The Same Ratio Appears Every Time",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        634.0350341796875,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f003",
+      "page_number": 2,
+      "text": "For every circle, circumference divided by diameter is approximately 3.14159. We call this constant pi.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        736.0651245117188,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f004",
+      "page_number": 2,
+      "text": "coin",
+      "kind": "text",
+      "bbox": [
+        179.60800170898438,
+        252.02000427246094,
+        208.39199829101562,
+        271.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f005",
+      "page_number": 2,
+      "text": "d = 2.4 cm",
+      "kind": "text",
+      "bbox": [
+        88.0,
+        298.8800048828125,
+        165.82398986816406,
+        320.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f006",
+      "page_number": 2,
+      "text": "C = 7.54 cm",
+      "kind": "text",
+      "bbox": [
+        88.0,
+        336.8800048828125,
+        176.49598693847656,
+        358.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f007",
+      "page_number": 2,
+      "text": "C / d ~= 3.14",
+      "kind": "text",
+      "bbox": [
+        141.4669952392578,
+        375.739990234375,
+        246.532958984375,
+        400.5260009765625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f008",
+      "page_number": 2,
+      "text": "plate",
+      "kind": "text",
+      "bbox": [
+        477.6619873046875,
+        252.02000427246094,
+        510.33795166015625,
+        271.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f009",
+      "page_number": 2,
+      "text": "d = 26 cm",
+      "kind": "text",
+      "bbox": [
+        388.0,
+        298.8800048828125,
+        461.3759765625,
+        320.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f010",
+      "page_number": 2,
+      "text": "C = 81.68 cm",
+      "kind": "text",
+      "bbox": [
+        388.0,
+        336.8800048828125,
+        485.3919677734375,
+        358.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f011",
+      "page_number": 2,
+      "text": "C / d ~= 3.14",
+      "kind": "text",
+      "bbox": [
+        441.4670104980469,
+        375.739990234375,
+        546.5330200195312,
+        400.5260009765625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f012",
+      "page_number": 2,
+      "text": "wheel",
+      "kind": "text",
+      "bbox": [
+        774.5469970703125,
+        252.02000427246094,
+        813.4530639648438,
+        271.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f013",
+      "page_number": 2,
+      "text": "d = 70 cm",
+      "kind": "text",
+      "bbox": [
+        688.0,
+        298.8800048828125,
+        761.3759765625,
+        320.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f014",
+      "page_number": 2,
+      "text": "C = 219.91 cm",
+      "kind": "text",
+      "bbox": [
+        688.0,
+        336.8800048828125,
+        794.2879638671875,
+        358.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f015",
+      "page_number": 2,
+      "text": "C / d ~= 3.14",
+      "kind": "text",
+      "bbox": [
+        741.4669799804688,
+        375.739990234375,
+        846.5331420898438,
+        400.5260009765625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f016",
+      "page_number": 2,
+      "text": "pi = C / d",
+      "kind": "text",
+      "bbox": [
+        427.54998779296875,
+        437.25,
+        532.4500732421875,
+        471.67498779296875
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_2_discover_pi",
+    "narration": "If we measure different objects, a surprising pattern emerges every single time. A coin, a plate, and a wheel each show that dividing circumference by diameter gives approximately 3.14. For every circle, this constant ratio defines the number pi.",
+    "beats": [
+      {
+        "beat_id": "scene_2_discover_pi_beat_1",
+        "text": "If we measure different objects, a surprising pattern emerges every single time.",
+        "source_fact_ids": [
+          "p002-f000",
+          "p002-f002"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Display three circular objects of different sizes side by side labeled coin, plate, and wheel.",
+        "continuity_note": "Transitions from a single generic circle to physical examples.",
+        "start_seconds": 0.0,
+        "end_seconds": 5.653
+      },
+      {
+        "beat_id": "scene_2_discover_pi_beat_2",
+        "text": "A coin, a plate, and a wheel each show that dividing circumference by diameter gives approximately 3.14.",
+        "source_fact_ids": [
+          "p002-f004",
+          "p002-f005",
+          "p002-f006",
+          "p002-f007",
+          "p002-f008",
+          "p002-f009",
+          "p002-f010",
+          "p002-f011",
+          "p002-f012",
+          "p002-f013",
+          "p002-f014",
+          "p002-f015"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.45,
+        "visual_action": "Show measured values under each item and animate the calculation C over d yielding approximately 3.14 for each.",
+        "continuity_note": "Directly evaluates the ratio using the displayed measurements.",
+        "start_seconds": 5.653,
+        "end_seconds": 13.617
+      },
+      {
+        "beat_id": "scene_2_discover_pi_beat_3",
+        "text": "For every circle, this constant ratio defines the number pi.",
+        "source_fact_ids": [
+          "p002-f003",
+          "p002-f016"
+        ],
+        "role": "reflect",
+        "pause_after_seconds": 0.8,
+        "visual_action": "Merge the three ratio equations into the single formula pi equals C over d.",
+        "continuity_note": "Locks in the definition of pi before rearranging it into a formula.",
+        "start_seconds": 13.617,
+        "end_seconds": 18.836
+      }
+    ],
+    "transition_in": "Crossfade in three circular objects",
+    "transition_out": "Fade out measurements and retain one circle",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\audio\\scene_2_discover_pi_paced.mp3",
+    "audio_duration_seconds": 18.83625,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_2_discover_pi",
+    "title": "Discovering Pi Through Constant Ratios",
+    "description": "Compares three different circular objects (a coin, a plate, and a wheel) to show that dividing circumference by diameter always yields approximately 3.14159, defining the mathematical constant pi.",
+    "learning_goal": "Demonstrate that the ratio C / d is invariant for all circles and defines the constant pi.",
+    "source_fact_ids": [
+      "p002-f000",
+      "p002-f002",
+      "p002-f003",
+      "p002-f004",
+      "p002-f005",
+      "p002-f006",
+      "p002-f007",
+      "p002-f008",
+      "p002-f009",
+      "p002-f010",
+      "p002-f011",
+      "p002-f012",
+      "p002-f013",
+      "p002-f014",
+      "p002-f015",
+      "p002-f016"
+    ],
+    "example": "Coin with d = 2.4 cm and C = 7.54 cm gives C / d ~= 3.14; Plate with d = 26 cm and C = 81.68 cm gives C / d ~= 3.14; Wheel with d = 70 cm and C = 219.91 cm gives C / d ~= 3.14.",
+    "visual_objective": "Display side-by-side circular items of varying sizes with their measured d and C values, computing C / d ~= 3.14 for each to establish pi = C / d.",
+    "new_visual_fact": "For any circle regardless of size, dividing circumference by diameter consistently equals the constant pi (~3.14159).",
+    "do_not_repeat": [
+      "basic definitions of radius, diameter, and circumference"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_2_discover_pi",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_2_discover_pi_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p002-f000",
+          "p002-f002",
+          "p002-f003",
+          "p002-f004",
+          "p002-f005",
+          "p002-f006",
+          "p002-f007",
+          "p002-f008",
+          "p002-f009",
+          "p002-f010",
+          "p002-f011",
+          "p002-f012",
+          "p002-f013",
+          "p002-f014",
+          "p002-f015",
+          "p002-f016"
+        ],
+        "beat_ids": [
+          "scene_2_discover_pi_beat_1",
+          "scene_2_discover_pi_beat_2",
+          "scene_2_discover_pi_beat_3"
+        ],
+        "enter_beat": "scene_2_discover_pi_beat_1",
+        "exit_beat": "scene_2_discover_pi_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_2_discover_pi_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "If we measure different objects, a surprising pattern emerges every single time.",
+        "source_fact_ids": [
+          "p002-f000",
+          "p002-f002"
+        ],
+        "beat_ids": [
+          "scene_2_discover_pi_beat_1"
+        ],
+        "enter_beat": "scene_2_discover_pi_beat_1",
+        "exit_beat": "scene_2_discover_pi_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_2_discover_pi_beat_1",
+        "active_artifact_ids": [
+          "scene_2_discover_pi_primary",
+          "scene_2_discover_pi_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_2_discover_pi_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_2_discover_pi_beat_2",
+        "active_artifact_ids": [
+          "scene_2_discover_pi_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_2_discover_pi_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_2_discover_pi_beat_3",
+        "active_artifact_ids": [
+          "scene_2_discover_pi_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_2_discover_pi_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Display three circular objects of different sizes side by side labeled coin, plate, and wheel.",
+      "Show measured values under each item and animate the calculation C over d yielding approximately 3.14 for each.",
+      "Merge the three ratio equations into the single formula pi equals C over d."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_1_circle_parts",
+      "title": "Circle Parts: Radius, Diameter, and Circumference",
+      "learning_goal": "Define radius, diameter, and circumference, and recognize that diameter is twice the radius (d = 2r).",
+      "visual_objective": "Draw a circle showing the center, radius segment r, full diameter segment d = 2r, and highlight the outer boundary as circumference C.",
+      "visual_fact_already_shown": "A circle's diameter spans across the entire circle and equals exactly two radii (d = 2r), while circumference is the distance around.",
+      "constructions_not_to_replay": []
+    }
+  ],
+  "expected_facts": [
+    "CIRCUMFERENCE AND PI DISCOVER PI",
+    "MEASURE MANY CIRCLES The Same Ratio Appears Every Time",
+    "For every circle, circumference divided by diameter is approximately 3.14159. We call this constant pi.",
+    "coin",
+    "d = 2.4 cm",
+    "C = 7.54 cm",
+    "C / d ~= 3.14",
+    "plate",
+    "d = 26 cm",
+    "C = 81.68 cm",
+    "C / d ~= 3.14",
+    "wheel",
+    "d = 70 cm",
+    "C = 219.91 cm",
+    "C / d ~= 3.14",
+    "pi = C / d"
+  ],
+  "required_visuals": [
+    "Display side-by-side circular items of varying sizes with their measured d and C values, computing C / d ~= 3.14 for each to establish pi = C / d.",
+    "For any circle regardless of size, dividing circumference by diameter consistently equals the constant pi (~3.14159)."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\audio\\scene_2_discover_pi_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 14.0; target is at most 12.",
+      "timestamp": 2.133,
+      "artifact_ids": [
+        "auto_001",
+        "coin_circle",
+        "coin_diam_line",
+        "coin_label",
+        "plate_circle",
+        "plate_diam_line",
+        "plate_label",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-000-2.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_TEXT_OVERLAP",
+      "severity": "error",
+      "message": "Text objects title and wheel_label overlap (20% bounds, 59% occupied pixels).",
+      "timestamp": 4.0,
+      "artifact_ids": [
+        "title",
+        "wheel_label"
+      ],
+      "object_ids": [
+        "title",
+        "wheel_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-001-4.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_TEXT_OVERLAP",
+      "severity": "error",
+      "message": "Text objects title and wheel_label overlap (20% bounds, 24% occupied pixels).",
+      "timestamp": 4.933,
+      "artifact_ids": [
+        "title",
+        "wheel_label"
+      ],
+      "object_ids": [
+        "title",
+        "wheel_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-003-4.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 5.667,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "coin_circle",
+        "coin_diam_line",
+        "coin_label",
+        "plate_circle",
+        "plate_diam_line",
+        "plate_label",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-005-5.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 18.0; target is at most 12.",
+      "timestamp": 6.2,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "coin_circle",
+        "coin_data",
+        "coin_diam_line",
+        "coin_label",
+        "plate_circle",
+        "plate_data",
+        "plate_diam_line",
+        "plate_label",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_data",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-006-6.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 21.0; target is at most 12.",
+      "timestamp": 8.667,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "coin_circle",
+        "coin_data",
+        "coin_diam_line",
+        "coin_label",
+        "plate_circle",
+        "plate_data",
+        "plate_diam_line",
+        "plate_label",
+        "ratio_coin",
+        "ratio_plate",
+        "ratio_wheel",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_data",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-007-8.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_coin and hl_boxes.0 overlap (87% bounds, 45% occupied pixels).",
+      "timestamp": 11.733,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_coin"
+      ],
+      "object_ids": [
+        "ratio_coin",
+        "hl_boxes.0"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-009-11.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 22.0; target is at most 12.",
+      "timestamp": 11.733,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "coin_circle",
+        "coin_data",
+        "coin_diam_line",
+        "coin_label",
+        "hl_boxes",
+        "plate_circle",
+        "plate_data",
+        "plate_diam_line",
+        "plate_label",
+        "ratio_coin",
+        "ratio_plate",
+        "ratio_wheel",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_data",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-009-11.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_plate and hl_boxes.1 overlap (87% bounds, 51% occupied pixels).",
+      "timestamp": 12.133,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_plate"
+      ],
+      "object_ids": [
+        "ratio_plate",
+        "hl_boxes.1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-010-12.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_plate and hl_boxes.1 overlap (87% bounds, 50% occupied pixels).",
+      "timestamp": 12.467,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_plate"
+      ],
+      "object_ids": [
+        "ratio_plate",
+        "hl_boxes.1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-011-12.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_wheel and hl_boxes.2 overlap (87% bounds, 50% occupied pixels).",
+      "timestamp": 12.867,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_wheel"
+      ],
+      "object_ids": [
+        "ratio_wheel",
+        "hl_boxes.2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 23.0; target is at most 12.",
+      "timestamp": 13.733,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "coin_circle",
+        "coin_data",
+        "coin_diam_line",
+        "coin_label",
+        "hl_boxes",
+        "plate_circle",
+        "plate_data",
+        "plate_diam_line",
+        "plate_label",
+        "ratio_coin",
+        "ratio_plate",
+        "ratio_wheel",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_data",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-014-13.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_coin and hl_boxes.6.0 overlap (87% bounds, 33% occupied pixels).",
+      "timestamp": 14.067,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_coin"
+      ],
+      "object_ids": [
+        "ratio_coin",
+        "hl_boxes.6.0"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-015-14.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_plate and hl_boxes.6.1 overlap (87% bounds, 33% occupied pixels).",
+      "timestamp": 14.067,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_plate"
+      ],
+      "object_ids": [
+        "ratio_plate",
+        "hl_boxes.6.1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-015-14.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_wheel and hl_boxes.6.2 overlap (87% bounds, 34% occupied pixels).",
+      "timestamp": 14.067,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_wheel"
+      ],
+      "object_ids": [
+        "ratio_wheel",
+        "hl_boxes.6.2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-015-14.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_wheel and hl_boxes.6.2 overlap (87% bounds, 33% occupied pixels).",
+      "timestamp": 14.333,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_wheel"
+      ],
+      "object_ids": [
+        "ratio_wheel",
+        "hl_boxes.6.2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-017-14.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_coin and hl_boxes.6.0 overlap (87% of the smaller bounding box).",
+      "timestamp": 14.667,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_coin"
+      ],
+      "object_ids": [
+        "ratio_coin",
+        "hl_boxes.6.0"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-018-14.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_plate and hl_boxes.6.1 overlap (87% of the smaller bounding box).",
+      "timestamp": 14.667,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_plate"
+      ],
+      "object_ids": [
+        "ratio_plate",
+        "hl_boxes.6.1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-018-14.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects ratio_wheel and hl_boxes.6.2 overlap (87% of the smaller bounding box).",
+      "timestamp": 14.667,
+      "artifact_ids": [
+        "hl_boxes",
+        "ratio_wheel"
+      ],
+      "object_ids": [
+        "ratio_wheel",
+        "hl_boxes.6.2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-018-14.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 14.933,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "coin_circle",
+        "coin_diam_line",
+        "coin_label",
+        "plate_circle",
+        "plate_diam_line",
+        "plate_label",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-019-14.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects box_final and final_formula overlap (100% of the smaller bounding box).",
+      "timestamp": 15.533,
+      "artifact_ids": [
+        "box_final",
+        "final_formula"
+      ],
+      "object_ids": [
+        "box_final",
+        "final_formula"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-020-15.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 19.0; target is at most 12.",
+      "timestamp": 15.533,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "box_final",
+        "coin_circle",
+        "coin_diam_line",
+        "coin_label",
+        "desc_label",
+        "final_formula",
+        "plate_circle",
+        "plate_diam_line",
+        "plate_label",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-020-15.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 20.0; target is at most 12.",
+      "timestamp": 18.933,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "auto_004",
+        "box_final",
+        "coin_circle",
+        "coin_diam_line",
+        "coin_label",
+        "desc_label",
+        "final_formula",
+        "plate_circle",
+        "plate_diam_line",
+        "plate_label",
+        "spoke1",
+        "spoke2",
+        "spoke3",
+        "title",
+        "wheel_circle",
+        "wheel_diam_line",
+        "wheel_label"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_2_discover_pi\\retries\\retry-01\\attempt-00\\frames\\frame-021-18.833s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-000-2.133s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-001-4.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-002-4.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-003-4.933s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-004-5.653s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-005-5.667s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-006-6.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-007-8.667s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-008-9.467s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-009-11.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-010-12.133s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_2_discover_pi\\initial-frames\\frame-011-12.467s.png"
+  ],
+  "content_hash": "bb6e77ea389c4e79f5811b12df5cf67a4f1f09b6547557a7e08e4a9da19f3386"
+}

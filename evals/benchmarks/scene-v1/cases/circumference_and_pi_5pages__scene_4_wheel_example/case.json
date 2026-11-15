@@ -1,0 +1,1029 @@
+{
+  "version": "1.0",
+  "case_id": "circumference_and_pi_5pages__scene_4_wheel_example",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z",
+  "source_scene_id": "scene_4_wheel_example",
+  "source_facts": [
+    {
+      "fact_id": "p004-f000",
+      "page_number": 4,
+      "text": "CIRCUMFERENCE AND PI WHEEL EXAMPLE",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9998779296875,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f002",
+      "page_number": 4,
+      "text": "ONE TURN, ONE CIRCUMFERENCE How Far Does a Bicycle Wheel Travel?",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        665.2201538085938,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f003",
+      "page_number": 4,
+      "text": "A wheel has radius 0.35 m. Each complete revolution moves the bicycle forward by one circumference.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        742.7702026367188,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f004",
+      "page_number": 4,
+      "text": "r = 0.35 m",
+      "kind": "text",
+      "bbox": [
+        259.5060119628906,
+        324.0199890136719,
+        324.4940185546875,
+        343.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f005",
+      "page_number": 4,
+      "text": "one revolution",
+      "kind": "text",
+      "bbox": [
+        657.2150268554688,
+        248.08999633789062,
+        746.7850952148438,
+        265.9909973144531
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f006",
+      "page_number": 4,
+      "text": "C = 2 pi (0.35)",
+      "kind": "text",
+      "bbox": [
+        637.25,
+        287.6000061035156,
+        766.7498779296875,
+        315.1400146484375
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f007",
+      "page_number": 4,
+      "text": "C ~= 2.20 m",
+      "kind": "text",
+      "bbox": [
+        632.5125122070312,
+        325.25,
+        771.487548828125,
+        359.67498779296875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f008",
+      "page_number": 4,
+      "text": "10 turns ~= 22.0 m",
+      "kind": "text",
+      "bbox": [
+        623.4569702148438,
+        379.739990234375,
+        780.5431518554688,
+        404.5260009765625
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_4_wheel_example",
+    "narration": "Now let us see how this works with a rolling bicycle wheel with a radius of 0.35 metres. In one complete revolution, the wheel rolls forward by one circumference, covering about 2.20 metres. Across 10 complete turns, the bicycle travels approximately 22.0 metres.",
+    "beats": [
+      {
+        "beat_id": "scene_4_wheel_example_beat_1",
+        "text": "Now let us see how this works with a rolling bicycle wheel with a radius of 0.35 metres.",
+        "source_fact_ids": [
+          "p004-f000",
+          "p004-f002",
+          "p004-f003",
+          "p004-f004"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Introduce a bicycle wheel resting on the ground with radius r equals 0.35 m marked.",
+        "continuity_note": "Applies the circumference formula to an authentic rotating object.",
+        "start_seconds": 0.0,
+        "end_seconds": 8.679
+      },
+      {
+        "beat_id": "scene_4_wheel_example_beat_2",
+        "text": "In one complete revolution, the wheel rolls forward by one circumference, covering about 2.20 metres.",
+        "source_fact_ids": [
+          "p004-f003",
+          "p004-f005",
+          "p004-f006",
+          "p004-f007"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.45,
+        "visual_action": "Animate the wheel rolling through one full rotation, tracing a line on the ground labeled C equals 2 pi (0.35) approximately 2.20 m.",
+        "continuity_note": "Shows the linear distance resulting from one rotation.",
+        "start_seconds": 8.679,
+        "end_seconds": 16.069
+      },
+      {
+        "beat_id": "scene_4_wheel_example_beat_3",
+        "text": "Across 10 complete turns, the bicycle travels approximately 22.0 metres.",
+        "source_fact_ids": [
+          "p004-f008"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.8,
+        "visual_action": "Extend the rolling motion across 10 rotations with total distance 22.0 m indicated along the path.",
+        "continuity_note": "Concludes full rotation distance and prepares to examine partial rotations.",
+        "start_seconds": 16.069,
+        "end_seconds": 21.496
+      }
+    ],
+    "transition_in": "Crossfade to a roadway ground plane",
+    "transition_out": "Fade out wheel and transition to circle sector",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\audio\\scene_4_wheel_example_paced.mp3",
+    "audio_duration_seconds": 21.496292,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_4_wheel_example",
+    "title": "Wheel Motion: One Turn Equals One Circumference",
+    "description": "Calculates the travel distance of a bicycle wheel with radius r = 0.35 m over one complete revolution (C ~= 2.20 m) and over 10 complete turns (22.0 m).",
+    "learning_goal": "Apply the circumference formula to calculate linear distance traveled from wheel revolutions.",
+    "source_fact_ids": [
+      "p004-f000",
+      "p004-f002",
+      "p004-f003",
+      "p004-f004",
+      "p004-f005",
+      "p004-f006",
+      "p004-f007",
+      "p004-f008"
+    ],
+    "example": "A bicycle wheel of radius r = 0.35 m travels C = 2 * pi * 0.35 ~= 2.20 m in one revolution, and 22.0 m in 10 turns.",
+    "visual_objective": "Animate a bicycle wheel rolling forward along a line by one complete revolution to cover C ~= 2.20 m, then extending across 10 turns to reach 22.0 m.",
+    "new_visual_fact": "Each complete wheel revolution advances the wheel forward by a linear distance equal to one circumference C = 2 * pi * r.",
+    "do_not_repeat": [
+      "unrolling derivation of C = pi * d"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_4_wheel_example",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_4_wheel_example_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p004-f000",
+          "p004-f002",
+          "p004-f003",
+          "p004-f004",
+          "p004-f005",
+          "p004-f006",
+          "p004-f007",
+          "p004-f008"
+        ],
+        "beat_ids": [
+          "scene_4_wheel_example_beat_1",
+          "scene_4_wheel_example_beat_2",
+          "scene_4_wheel_example_beat_3"
+        ],
+        "enter_beat": "scene_4_wheel_example_beat_1",
+        "exit_beat": "scene_4_wheel_example_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_4_wheel_example_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "Now let us see how this works with a rolling bicycle wheel with a radius of 0.35 metres.",
+        "source_fact_ids": [
+          "p004-f000",
+          "p004-f002",
+          "p004-f003",
+          "p004-f004"
+        ],
+        "beat_ids": [
+          "scene_4_wheel_example_beat_1"
+        ],
+        "enter_beat": "scene_4_wheel_example_beat_1",
+        "exit_beat": "scene_4_wheel_example_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_4_wheel_example_beat_1",
+        "active_artifact_ids": [
+          "scene_4_wheel_example_primary",
+          "scene_4_wheel_example_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_4_wheel_example_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_4_wheel_example_beat_2",
+        "active_artifact_ids": [
+          "scene_4_wheel_example_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_4_wheel_example_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_4_wheel_example_beat_3",
+        "active_artifact_ids": [
+          "scene_4_wheel_example_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_4_wheel_example_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Introduce a bicycle wheel resting on the ground with radius r equals 0.35 m marked.",
+      "Animate the wheel rolling through one full rotation, tracing a line on the ground labeled C equals 2 pi (0.35) approximately 2.20 m.",
+      "Extend the rolling motion across 10 rotations with total distance 22.0 m indicated along the path."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_1_circle_parts",
+      "title": "Circle Parts: Radius, Diameter, and Circumference",
+      "learning_goal": "Define radius, diameter, and circumference, and recognize that diameter is twice the radius (d = 2r).",
+      "visual_objective": "Draw a circle showing the center, radius segment r, full diameter segment d = 2r, and highlight the outer boundary as circumference C.",
+      "visual_fact_already_shown": "A circle's diameter spans across the entire circle and equals exactly two radii (d = 2r), while circumference is the distance around.",
+      "constructions_not_to_replay": []
+    },
+    {
+      "scene_id": "scene_2_discover_pi",
+      "title": "Discovering Pi Through Constant Ratios",
+      "learning_goal": "Demonstrate that the ratio C / d is invariant for all circles and defines the constant pi.",
+      "visual_objective": "Display side-by-side circular items of varying sizes with their measured d and C values, computing C / d ~= 3.14 for each to establish pi = C / d.",
+      "visual_fact_already_shown": "For any circle regardless of size, dividing circumference by diameter consistently equals the constant pi (~3.14159).",
+      "constructions_not_to_replay": [
+        "basic definitions of radius, diameter, and circumference"
+      ]
+    },
+    {
+      "scene_id": "scene_3_unroll_formula",
+      "title": "Unrolling the Boundary: The Circumference Formula",
+      "learning_goal": "Derive and apply the formulas C = pi * d and C = 2 * pi * r by visualizing the unrolled circle boundary.",
+      "visual_objective": "Animate a circular boundary being cut and unrolled onto a horizontal line, aligning it against 3 full diameter segments plus an extra 0.14 portion.",
+      "visual_fact_already_shown": "Unrolling a circle's perimeter creates a linear segment whose length is exactly pi times its diameter (C = pi * d = 2 * pi * r).",
+      "constructions_not_to_replay": [
+        "individual object measurements from the previous scene"
+      ]
+    }
+  ],
+  "expected_facts": [
+    "CIRCUMFERENCE AND PI WHEEL EXAMPLE",
+    "ONE TURN, ONE CIRCUMFERENCE How Far Does a Bicycle Wheel Travel?",
+    "A wheel has radius 0.35 m. Each complete revolution moves the bicycle forward by one circumference.",
+    "r = 0.35 m",
+    "one revolution",
+    "C = 2 pi (0.35)",
+    "C ~= 2.20 m",
+    "10 turns ~= 22.0 m"
+  ],
+  "required_visuals": [
+    "Animate a bicycle wheel rolling forward along a line by one complete revolution to cover C ~= 2.20 m, then extending across 10 turns to reach 22.0 m.",
+    "Each complete wheel revolution advances the wheel forward by a linear distance equal to one circumference C = 2 * pi * r."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\audio\\scene_4_wheel_example_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "FRAME_EDGE_PROXIMITY",
+      "severity": "warning",
+      "message": "ground is close to the frame edge but remains visible.",
+      "timestamp": 0.533,
+      "artifact_ids": [
+        "ground"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-000-0.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "FRAME_EDGE_PROXIMITY",
+      "severity": "warning",
+      "message": "road_surface is close to the frame edge but remains visible.",
+      "timestamp": 0.533,
+      "artifact_ids": [
+        "road_surface"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-000-0.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "FRAME_EDGE_PROXIMITY",
+      "severity": "warning",
+      "message": "ground_ticks is close to the frame edge but remains visible.",
+      "timestamp": 0.533,
+      "artifact_ids": [
+        "ground_ticks"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-000-0.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (48% bounds, 47% occupied pixels).",
+      "timestamp": 4.6,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-001-4.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.1 and radius_label overlap (37% bounds, 33% occupied pixels).",
+      "timestamp": 4.6,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-001-4.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.2.1 and radius_label overlap (14% bounds, 33% occupied pixels).",
+      "timestamp": 4.6,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.2.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-001-4.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (48% bounds, 32% occupied pixels).",
+      "timestamp": 5.2,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-002-5.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.1 and radius_label overlap (37% bounds, 23% occupied pixels).",
+      "timestamp": 5.2,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-002-5.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.2.1 and radius_label overlap (14% bounds, 27% occupied pixels).",
+      "timestamp": 5.2,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.2.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-002-5.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (41% bounds, 23% occupied pixels).",
+      "timestamp": 5.733,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-004-5.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.1 and radius_label overlap (32% bounds, 17% occupied pixels).",
+      "timestamp": 5.733,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-004-5.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.2.1 and radius_label overlap (12% bounds, 27% occupied pixels).",
+      "timestamp": 5.733,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.2.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-004-5.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects radius_line and radius_label overlap (15% bounds, 29% occupied pixels).",
+      "timestamp": 5.733,
+      "artifact_ids": [
+        "radius_label",
+        "radius_line"
+      ],
+      "object_ids": [
+        "radius_line",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-004-5.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (41% bounds, 24% occupied pixels).",
+      "timestamp": 6.333,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-005-6.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.1 and radius_label overlap (32% bounds, 18% occupied pixels).",
+      "timestamp": 6.333,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-005-6.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects radius_line and radius_label overlap (19% bounds, 28% occupied pixels).",
+      "timestamp": 6.333,
+      "artifact_ids": [
+        "radius_label",
+        "radius_line"
+      ],
+      "object_ids": [
+        "radius_line",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-005-6.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (41% bounds, 25% occupied pixels).",
+      "timestamp": 8.933,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-007-8.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects radius_line and radius_label overlap (19% bounds, 26% occupied pixels).",
+      "timestamp": 8.933,
+      "artifact_ids": [
+        "radius_label",
+        "radius_line"
+      ],
+      "object_ids": [
+        "radius_line",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-007-8.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (41% bounds, 22% occupied pixels).",
+      "timestamp": 9.067,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-008-9.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.1 and radius_label overlap (32% bounds, 16% occupied pixels).",
+      "timestamp": 9.067,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-008-9.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.0 and radius_label overlap (41% of the smaller bounding box).",
+      "timestamp": 9.2,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.0",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-009-9.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects wheel.1 and radius_label overlap (32% of the smaller bounding box).",
+      "timestamp": 9.2,
+      "artifact_ids": [
+        "radius_label",
+        "wheel"
+      ],
+      "object_ids": [
+        "wheel.1",
+        "radius_label"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-009-9.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "OFFSCREEN_OBJECT",
+      "severity": "error",
+      "message": "wheel crosses the safe frame boundary.",
+      "timestamp": 11.2,
+      "artifact_ids": [
+        "wheel"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-011-11.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.0 overlap (12% bounds, 10% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.0"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.1 overlap (14% bounds, 13% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.2.3 overlap (7% bounds, 11% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.2.3"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.2.4 overlap (37% bounds, 40% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.2.4"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.2.5 overlap (67% bounds, 58% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.2.5"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.2.6 overlap (17% bounds, 62% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.2.6"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.3 overlap (11% bounds, 32% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.3"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects header and wheel.4 overlap (62% bounds, 56% occupied pixels).",
+      "timestamp": 12.067,
+      "artifact_ids": [
+        "header",
+        "wheel"
+      ],
+      "object_ids": [
+        "header",
+        "wheel.4"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-012-12.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects road_surface and rev_text overlap (100% of the smaller bounding box).",
+      "timestamp": 13.667,
+      "artifact_ids": [
+        "rev_text",
+        "road_surface"
+      ],
+      "object_ids": [
+        "road_surface",
+        "rev_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-013-13.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects road_surface and rev_text overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 14.0,
+      "artifact_ids": [
+        "rev_text",
+        "road_surface"
+      ],
+      "object_ids": [
+        "road_surface",
+        "rev_text"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-014-14.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 13.0; target is at most 12.",
+      "timestamp": 16.267,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "end_pt_marker",
+        "ground",
+        "ground_ticks",
+        "header",
+        "path_tracker",
+        "rev_brace",
+        "rev_text",
+        "road_surface",
+        "start_pt_marker",
+        "trace_line",
+        "wheel"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-016-16.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_box and multi_turn_line1 overlap (100% of the smaller bounding box).",
+      "timestamp": 16.667,
+      "artifact_ids": [
+        "calc_box",
+        "multi_turn_line1"
+      ],
+      "object_ids": [
+        "calc_box",
+        "multi_turn_line1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-018-16.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_box and multi_turn_line2 overlap (100% of the smaller bounding box).",
+      "timestamp": 16.667,
+      "artifact_ids": [
+        "calc_box",
+        "multi_turn_line2"
+      ],
+      "object_ids": [
+        "calc_box",
+        "multi_turn_line2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-018-16.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 16.667,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "calc_box",
+        "end_pt_marker",
+        "ground",
+        "ground_ticks",
+        "header",
+        "multi_turn_line1",
+        "multi_turn_line2",
+        "path_tracker",
+        "rev_brace",
+        "rev_text",
+        "road_surface",
+        "start_pt_marker",
+        "trace_line",
+        "wheel"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-018-16.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_box and multi_turn_line1 overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 17.067,
+      "artifact_ids": [
+        "calc_box",
+        "multi_turn_line1"
+      ],
+      "object_ids": [
+        "calc_box",
+        "multi_turn_line1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-019-17.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects calc_box and multi_turn_line2 overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 17.067,
+      "artifact_ids": [
+        "calc_box",
+        "multi_turn_line2"
+      ],
+      "object_ids": [
+        "calc_box",
+        "multi_turn_line2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-019-17.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 17.0; target is at most 12.",
+      "timestamp": 21.733,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "calc_box",
+        "end_pt_marker",
+        "ground",
+        "ground_ticks",
+        "header",
+        "multi_turn_line1",
+        "multi_turn_line2",
+        "path_tracker",
+        "rev_brace",
+        "rev_text",
+        "road_surface",
+        "start_pt_marker",
+        "trace_line",
+        "wheel"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_4_wheel_example\\retries\\retry-01\\attempt-00\\frames\\frame-021-21.633s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-000-0.533s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-001-4.600s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-002-5.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-003-5.433s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-004-5.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-005-6.333s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-006-8.679s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-007-8.933s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-008-9.067s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-009-9.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-010-10.867s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_4_wheel_example\\initial-frames\\frame-011-11.200s.png"
+  ],
+  "content_hash": "78d2c08fff83871f6078acb4e44017fcee1005ce44bd32a45e5766a40dd615f1"
+}

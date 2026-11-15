@@ -36,6 +36,7 @@ from .models import (
 )
 from .observability import RunArtifacts
 from .planning import (
+    NARRATION_PROMPT_VERSION,
     PLANNING_MODEL,
     PLANNING_PROVIDER,
     PROMPT_VERSION,
@@ -50,7 +51,9 @@ from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
 from .state import BudgetExceeded, RunStore
 from .tts import (
+    RELAXED_SPEECH_RATE,
     SCENE_END_PAUSE_SECONDS,
+    SPEECH_RATE,
     NarrationAudioService,
     TTS_TIMING_VERSION,
     ensure_trailing_buffer,
@@ -176,6 +179,8 @@ class PipelineV2:
             "run_started", message=f"Starting V2 conversion for {input_path.name}",
             max_cost_usd=self.config.max_cost_usd, quality=self.config.quality,
             policy=self.config.policy, verifier_mode=self.config.verifier_mode,
+            min_scenes=self.config.min_scenes, max_scenes=self.config.max_scenes,
+            pacing=self.config.pacing,
         )
         self._write_run_json(input_path, RunStatus.RUNNING)
         router = ProviderRouter(
@@ -183,12 +188,20 @@ class PipelineV2:
             max_api_workers=self.config.global_api_workers,
             strict_keys=self.config.strict_keys,
         )
-        planner = PlanningService(router, self.config.max_scenes)
+        planner = PlanningService(
+            router,
+            self.config.max_scenes,
+            self.config.min_scenes,
+            self.config.pacing,
+        )
         generator = CodeGenerationService(router)
         audio = NarrationAudioService(
             self.store, self.artifacts, voice=self.config.voice,
             high_quality=self.config.quality == "high", strict_keys=self.config.strict_keys,
             api_limit=router.api_limit,
+            speech_rate=(
+                RELAXED_SPEECH_RATE if self.config.pacing == "relaxed" else SPEECH_RATE
+            ),
         )
         result = RunResult(run_id=run_id, run_directory=str(run_dir), status=RunStatus.RUNNING)
 
@@ -232,6 +245,9 @@ class PipelineV2:
                 lesson_data = await self._task(
                     "lesson", "lesson", None,
                     {"source": source.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
+                     "min_scenes": self.config.min_scenes,
+                     "max_scenes": self.config.max_scenes,
+                     "pacing": self.config.pacing,
                      "structured_output_version": STRUCTURED_OUTPUT_VERSION,
                      "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
                     lambda: planner.lesson(source),
@@ -246,7 +262,9 @@ class PipelineV2:
                 })
                 narration_data = await self._task(
                     "narration", "narration", None,
-                    {"lesson": lesson.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
+                    {"lesson": lesson.model_dump(mode="json"),
+                     "prompt_version": NARRATION_PROMPT_VERSION,
+                     "pacing": self.config.pacing,
                      "structured_output_version": STRUCTURED_OUTPUT_VERSION,
                      "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
                     lambda: planner.narration(lesson, source),

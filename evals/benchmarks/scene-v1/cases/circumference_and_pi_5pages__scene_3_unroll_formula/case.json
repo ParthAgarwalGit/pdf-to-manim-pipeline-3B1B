@@ -1,0 +1,782 @@
+{
+  "version": "1.0",
+  "case_id": "circumference_and_pi_5pages__scene_3_unroll_formula",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z",
+  "source_scene_id": "scene_3_unroll_formula",
+  "source_facts": [
+    {
+      "fact_id": "p003-f000",
+      "page_number": 3,
+      "text": "CIRCUMFERENCE AND PI THE FORMULA",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9998779296875,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f002",
+      "page_number": 3,
+      "text": "UNROLL THE BOUNDARY Circumference Is pi Diameters Long",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        624.8281860351562,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f003",
+      "page_number": 3,
+      "text": "Imagine cutting the circular boundary and laying it flat. Its length is pi times the diameter.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        646.0951538085938,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f004",
+      "page_number": 3,
+      "text": "circular boundary",
+      "kind": "text",
+      "bbox": [
+        155.87100219726562,
+        438.0199890136719,
+        274.1289978027344,
+        457.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f005",
+      "page_number": 3,
+      "text": "about 3.14 diameters",
+      "kind": "text",
+      "bbox": [
+        600.416015625,
+        354.8800048828125,
+        759.583984375,
+        376.9119873046875
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p003-f006",
+      "page_number": 3,
+      "text": "C = pi d = 2 pi r",
+      "kind": "equation",
+      "bbox": [
+        383.2049865722656,
+        426.1099853515625,
+        576.7950439453125,
+        463.28900146484375
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_3_unroll_formula",
+    "narration": "We can see this relationship clearly by unrolling the circular boundary onto a straight line. The flattened boundary stretches out to about 3.14 diameters long. This gives us our formula, C equals pi times d, or 2 pi r.",
+    "beats": [
+      {
+        "beat_id": "scene_3_unroll_formula_beat_1",
+        "text": "We can see this relationship clearly by unrolling the circular boundary onto a straight line.",
+        "source_fact_ids": [
+          "p003-f000",
+          "p003-f002",
+          "p003-f003",
+          "p003-f004"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Cut the circular perimeter at one point and animate it unrolling horizontally along a flat baseline.",
+        "continuity_note": "Connects the ratio from the previous scene to a linear visual representation.",
+        "start_seconds": 0.0,
+        "end_seconds": 6.393
+      },
+      {
+        "beat_id": "scene_3_unroll_formula_beat_2",
+        "text": "The flattened boundary stretches out to about 3.14 diameters long.",
+        "source_fact_ids": [
+          "p003-f003",
+          "p003-f005"
+        ],
+        "role": "explain",
+        "pause_after_seconds": 0.45,
+        "visual_action": "Place three unit segments equal to diameter d along the line plus a small extra portion of 0.14 d.",
+        "continuity_note": "Directly compares the unrolled line against diameter segments.",
+        "start_seconds": 6.393,
+        "end_seconds": 10.871
+      },
+      {
+        "beat_id": "scene_3_unroll_formula_beat_3",
+        "text": "This gives us our formula, C equals pi times d, or 2 pi r.",
+        "source_fact_ids": [
+          "p003-f006"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.75,
+        "visual_action": "Display and highlight the equation C equals pi d equals 2 pi r above the line.",
+        "continuity_note": "Establishes the formula needed for the practical wheel calculation in the next scene.",
+        "start_seconds": 10.871,
+        "end_seconds": 17.261
+      }
+    ],
+    "transition_in": "Transform circle to unrolling animation",
+    "transition_out": "Transition to a rolling wheel scene",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\audio\\scene_3_unroll_formula_paced.mp3",
+    "audio_duration_seconds": 17.261208,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_3_unroll_formula",
+    "title": "Unrolling the Boundary: The Circumference Formula",
+    "description": "Visualizes cutting and unrolling the circular boundary into a flat straight line segment, demonstrating that its length is about 3.14 diameters long, deriving C = pi * d = 2 * pi * r.",
+    "learning_goal": "Derive and apply the formulas C = pi * d and C = 2 * pi * r by visualizing the unrolled circle boundary.",
+    "source_fact_ids": [
+      "p003-f000",
+      "p003-f002",
+      "p003-f003",
+      "p003-f004",
+      "p003-f005",
+      "p003-f006"
+    ],
+    "example": null,
+    "visual_objective": "Animate a circular boundary being cut and unrolled onto a horizontal line, aligning it against 3 full diameter segments plus an extra 0.14 portion.",
+    "new_visual_fact": "Unrolling a circle's perimeter creates a linear segment whose length is exactly pi times its diameter (C = pi * d = 2 * pi * r).",
+    "do_not_repeat": [
+      "individual object measurements from the previous scene"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_3_unroll_formula",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_3_unroll_formula_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p003-f000",
+          "p003-f002",
+          "p003-f003",
+          "p003-f004",
+          "p003-f005",
+          "p003-f006"
+        ],
+        "beat_ids": [
+          "scene_3_unroll_formula_beat_1",
+          "scene_3_unroll_formula_beat_2",
+          "scene_3_unroll_formula_beat_3"
+        ],
+        "enter_beat": "scene_3_unroll_formula_beat_1",
+        "exit_beat": "scene_3_unroll_formula_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_3_unroll_formula_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "We can see this relationship clearly by unrolling the circular boundary onto a straight li",
+        "source_fact_ids": [
+          "p003-f000",
+          "p003-f002",
+          "p003-f003",
+          "p003-f004"
+        ],
+        "beat_ids": [
+          "scene_3_unroll_formula_beat_1"
+        ],
+        "enter_beat": "scene_3_unroll_formula_beat_1",
+        "exit_beat": "scene_3_unroll_formula_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_3_unroll_formula_beat_1",
+        "active_artifact_ids": [
+          "scene_3_unroll_formula_primary",
+          "scene_3_unroll_formula_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_3_unroll_formula_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_3_unroll_formula_beat_2",
+        "active_artifact_ids": [
+          "scene_3_unroll_formula_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_3_unroll_formula_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_3_unroll_formula_beat_3",
+        "active_artifact_ids": [
+          "scene_3_unroll_formula_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_3_unroll_formula_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Cut the circular perimeter at one point and animate it unrolling horizontally along a flat baseline.",
+      "Place three unit segments equal to diameter d along the line plus a small extra portion of 0.14 d.",
+      "Display and highlight the equation C equals pi d equals 2 pi r above the line."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_1_circle_parts",
+      "title": "Circle Parts: Radius, Diameter, and Circumference",
+      "learning_goal": "Define radius, diameter, and circumference, and recognize that diameter is twice the radius (d = 2r).",
+      "visual_objective": "Draw a circle showing the center, radius segment r, full diameter segment d = 2r, and highlight the outer boundary as circumference C.",
+      "visual_fact_already_shown": "A circle's diameter spans across the entire circle and equals exactly two radii (d = 2r), while circumference is the distance around.",
+      "constructions_not_to_replay": []
+    },
+    {
+      "scene_id": "scene_2_discover_pi",
+      "title": "Discovering Pi Through Constant Ratios",
+      "learning_goal": "Demonstrate that the ratio C / d is invariant for all circles and defines the constant pi.",
+      "visual_objective": "Display side-by-side circular items of varying sizes with their measured d and C values, computing C / d ~= 3.14 for each to establish pi = C / d.",
+      "visual_fact_already_shown": "For any circle regardless of size, dividing circumference by diameter consistently equals the constant pi (~3.14159).",
+      "constructions_not_to_replay": [
+        "basic definitions of radius, diameter, and circumference"
+      ]
+    }
+  ],
+  "expected_facts": [
+    "CIRCUMFERENCE AND PI THE FORMULA",
+    "UNROLL THE BOUNDARY Circumference Is pi Diameters Long",
+    "Imagine cutting the circular boundary and laying it flat. Its length is pi times the diameter.",
+    "circular boundary",
+    "about 3.14 diameters",
+    "C = pi d = 2 pi r"
+  ],
+  "required_visuals": [
+    "Animate a circular boundary being cut and unrolled onto a horizontal line, aligning it against 3 full diameter segments plus an extra 0.14 portion.",
+    "Unrolling a circle's perimeter creates a linear segment whose length is exactly pi times its diameter (C = pi * d = 2 * pi * r)."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\audio\\scene_3_unroll_formula_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 6.867,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "lbl",
+        "origin_circle",
+        "rolled_arc",
+        "seg",
+        "theta_tracker",
+        "tick_l",
+        "tick_r",
+        "title",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-002-6.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 19.0; target is at most 12.",
+      "timestamp": 7.667,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "lbl",
+        "lbl_2",
+        "origin_circle",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_r",
+        "tick_r_2",
+        "title",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-003-7.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 23.0; target is at most 12.",
+      "timestamp": 8.467,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-004-8.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 27.0; target is at most 12.",
+      "timestamp": 9.267,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rem_lbl",
+        "rem_seg",
+        "rem_tick_l",
+        "rem_tick_r",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-006-9.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 28.0; target is at most 12.",
+      "timestamp": 10.267,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rem_lbl",
+        "rem_seg",
+        "rem_tick_l",
+        "rem_tick_r",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "total_sum_tex",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-007-10.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects formula_box_bg and f_step1 overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 11.867,
+      "artifact_ids": [
+        "f_step1",
+        "formula_box_bg"
+      ],
+      "object_ids": [
+        "formula_box_bg",
+        "f_step1"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-009-11.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 30.0; target is at most 12.",
+      "timestamp": 11.867,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "f_step1",
+        "formula_box_bg",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rem_lbl",
+        "rem_seg",
+        "rem_tick_l",
+        "rem_tick_r",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "total_sum_tex",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-009-11.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects formula_box_bg and f_subtext overlap (100% of the smaller bounding box).",
+      "timestamp": 13.533,
+      "artifact_ids": [
+        "f_subtext",
+        "formula_box_bg"
+      ],
+      "object_ids": [
+        "formula_box_bg",
+        "f_subtext"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-011-13.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects formula_box_bg and f_step2 overlap (100% of the smaller bounding box).",
+      "timestamp": 13.533,
+      "artifact_ids": [
+        "f_step2",
+        "formula_box_bg"
+      ],
+      "object_ids": [
+        "formula_box_bg",
+        "f_step2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-011-13.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 32.0; target is at most 12.",
+      "timestamp": 13.533,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "f_step1",
+        "f_step2",
+        "f_subtext",
+        "formula_box_bg",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rem_lbl",
+        "rem_seg",
+        "rem_tick_l",
+        "rem_tick_r",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "total_sum_tex",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-011-13.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects formula_box_bg and f_subtext overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 13.933,
+      "artifact_ids": [
+        "f_subtext",
+        "formula_box_bg"
+      ],
+      "object_ids": [
+        "formula_box_bg",
+        "f_subtext"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-012-13.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects formula_box_bg and f_step2 overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 13.933,
+      "artifact_ids": [
+        "f_step2",
+        "formula_box_bg"
+      ],
+      "object_ids": [
+        "formula_box_bg",
+        "f_step2"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-012-13.933s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 33.0; target is at most 12.",
+      "timestamp": 15.067,
+      "artifact_ids": [
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "f_step1",
+        "f_step2",
+        "f_subtext",
+        "formula_box_bg",
+        "highlight_rect",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rem_lbl",
+        "rem_seg",
+        "rem_tick_l",
+        "rem_tick_r",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "total_sum_tex",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-013-15.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects f_step2 and highlight_rect overlap (100% bounds, 11% occupied pixels).",
+      "timestamp": 15.333,
+      "artifact_ids": [
+        "f_step2",
+        "highlight_rect"
+      ],
+      "object_ids": [
+        "f_step2",
+        "highlight_rect"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-014-15.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects f_step2 and highlight_rect overlap (100% bounds, 15% occupied pixels).",
+      "timestamp": 15.6,
+      "artifact_ids": [
+        "f_step2",
+        "highlight_rect"
+      ],
+      "object_ids": [
+        "f_step2",
+        "highlight_rect"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-015-15.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 34.0; target is at most 12.",
+      "timestamp": 17.867,
+      "artifact_ids": [
+        "auto_001",
+        "baseline",
+        "c_brace",
+        "c_label",
+        "circle_body",
+        "cut_marker",
+        "end_dot",
+        "f_step1",
+        "f_step2",
+        "f_subtext",
+        "formula_box_bg",
+        "highlight_rect",
+        "lbl",
+        "lbl_2",
+        "lbl_3",
+        "origin_circle",
+        "rem_lbl",
+        "rem_seg",
+        "rem_tick_l",
+        "rem_tick_r",
+        "rolled_arc",
+        "seg",
+        "seg_2",
+        "seg_3",
+        "theta_tracker",
+        "tick_l",
+        "tick_l_2",
+        "tick_l_3",
+        "tick_r",
+        "tick_r_2",
+        "tick_r_3",
+        "title",
+        "total_sum_tex",
+        "unrolled_line"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\circumference_and_pi_5pages\\2026-09-01T18-38-17Z\\scenes\\scene_3_unroll_formula\\attempt-01\\frames\\frame-017-17.765s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-000-4.466s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-001-6.393s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-002-6.867s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-003-7.667s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-004-8.467s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-005-8.933s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-006-9.267s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-007-10.267s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-008-10.871s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-009-11.867s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-010-13.399s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\circumference_and_pi_5pages__scene_3_unroll_formula\\initial-frames\\frame-011-13.533s.png"
+  ],
+  "content_hash": "589a321b065087a7f0186e34b6fa817a3eabe1b35cf2302a3953f35ddadfc8ea"
+}

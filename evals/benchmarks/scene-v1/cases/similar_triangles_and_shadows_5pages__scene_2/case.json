@@ -1,0 +1,738 @@
+{
+  "version": "1.0",
+  "case_id": "similar_triangles_and_shadows_5pages__scene_2",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z",
+  "source_scene_id": "scene_2",
+  "source_facts": [
+    {
+      "fact_id": "p002-f000",
+      "page_number": 2,
+      "text": "SIMILAR TRIANGLES MATCH THE SIDES",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9998779296875,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f001",
+      "page_number": 2,
+      "text": "Same shape, different scale 2 / 5",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        512.3250122070312,
+        908.0001220703125,
+        524.6909790039062
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f002",
+      "page_number": 2,
+      "text": "CORRESPONDING SIDES Every Matching Ratio Is Equal",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        531.3060913085938,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f003",
+      "page_number": 2,
+      "text": "Place each side beside the side in the same position. The ratios agree because one scale factor controls the whole triangle.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        879.570556640625,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f004",
+      "page_number": 2,
+      "text": "small",
+      "kind": "text",
+      "bbox": [
+        212.1009979248047,
+        240.02000427246094,
+        247.89898681640625,
+        259.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f005",
+      "page_number": 2,
+      "text": "large",
+      "kind": "text",
+      "bbox": [
+        663.27001953125,
+        210.02000427246094,
+        696.7300415039062,
+        229.29800415039062
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f006",
+      "page_number": 2,
+      "text": "large / small",
+      "kind": "text",
+      "bbox": [
+        445.3139953613281,
+        373.1600036621094,
+        514.6859741210938,
+        389.6839904785156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f007",
+      "page_number": 2,
+      "text": "6/5 = 3.6/3 = 4.8/4 = 1.2",
+      "kind": "equation",
+      "bbox": [
+        378.843994140625,
+        402.66998291015625,
+        581.1561279296875,
+        428.8330078125
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p002-f008",
+      "page_number": 2,
+      "text": "If two angles match, the side ratios must match too.",
+      "kind": "text",
+      "bbox": [
+        295.37249755859375,
+        458.95001220703125,
+        664.6275634765625,
+        479.6050109863281
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_2",
+    "narration": "Because one scale factor controls the whole shape, comparing matching sides creates equivalent ratios. Dividing the large triangle sides by the small triangle sides gives 6 over 5, 3.6 over 3, and 4.8 over 4, all simplifying to 1.2. Whenever two angles match between triangles, their side ratios will always agree.",
+    "beats": [
+      {
+        "beat_id": "scene_2_beat_1",
+        "text": "Because one scale factor controls the whole shape, comparing matching sides creates equivalent ratios.",
+        "source_fact_ids": [
+          "p002-f002",
+          "p002-f003",
+          "p002-f004",
+          "p002-f005"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.45,
+        "visual_action": "Introduce small and large triangle pair with labeled side lengths in identical orientations.",
+        "continuity_note": "Connects scale factor intuition from scene 1 to explicit ratio comparisons.",
+        "start_seconds": 0.0,
+        "end_seconds": 6.794
+      },
+      {
+        "beat_id": "scene_2_beat_2",
+        "text": "Dividing the large triangle sides by the small triangle sides gives 6 over 5, 3.6 over 3, and 4.8 over 4, all simplifying to 1.2.",
+        "source_fact_ids": [
+          "p002-f006",
+          "p002-f007"
+        ],
+        "role": "explain",
+        "pause_after_seconds": 0.4,
+        "visual_action": "Highlight matching side pairs in color and display equation 6/5 = 3.6/3 = 4.8/4 = 1.2.",
+        "continuity_note": "Directly evaluates the ratios formed by the corresponding sides.",
+        "start_seconds": 6.794,
+        "end_seconds": 18.524
+      },
+      {
+        "beat_id": "scene_2_beat_3",
+        "text": "Whenever two angles match between triangles, their side ratios will always agree.",
+        "source_fact_ids": [
+          "p002-f008"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.75,
+        "visual_action": "Pulse matching interior angles across both triangles to emphasize angle equality requirement.",
+        "continuity_note": "Sets up real-world application of matching sun angles creating similar shadow triangles.",
+        "start_seconds": 18.524,
+        "end_seconds": 24.712
+      }
+    ],
+    "transition_in": "Cross-dissolve to side comparison layout",
+    "transition_out": "Morph geometric diagrams into outdoor landscape diagram",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\audio\\scene_2_paced.mp3",
+    "audio_duration_seconds": 24.711833,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_2",
+    "title": "Matching Corresponding Sides and Ratios",
+    "description": "Show how placing corresponding sides into ratios reveals consistent equality across all matching pairs when two angles are identical.",
+    "learning_goal": "Formulate and verify equivalent ratios from corresponding side lengths of similar triangles.",
+    "source_fact_ids": [
+      "p002-f000",
+      "p002-f001",
+      "p002-f002",
+      "p002-f003",
+      "p002-f004",
+      "p002-f005",
+      "p002-f006",
+      "p002-f007",
+      "p002-f008"
+    ],
+    "example": "large / small ratios: 6/5 = 3.6/3 = 4.8/4 = 1.2.",
+    "visual_objective": "Highlight matching sides between a small and large triangle and display the step-by-step equality of ratios yielding 1.2.",
+    "new_visual_fact": "Every corresponding side ratio (6/5, 3.6/3, 4.8/4) simplifies to the identical value of 1.2.",
+    "do_not_repeat": [
+      "Basic triangle scaling animation from scene 1"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_2",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_2_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p002-f002",
+          "p002-f003",
+          "p002-f004",
+          "p002-f005",
+          "p002-f006",
+          "p002-f007",
+          "p002-f008"
+        ],
+        "beat_ids": [
+          "scene_2_beat_1",
+          "scene_2_beat_2",
+          "scene_2_beat_3"
+        ],
+        "enter_beat": "scene_2_beat_1",
+        "exit_beat": "scene_2_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_2_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "Because one scale factor controls the whole shape, comparing matching sides creates equiva",
+        "source_fact_ids": [
+          "p002-f002",
+          "p002-f003",
+          "p002-f004",
+          "p002-f005"
+        ],
+        "beat_ids": [
+          "scene_2_beat_1"
+        ],
+        "enter_beat": "scene_2_beat_1",
+        "exit_beat": "scene_2_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_2_beat_1",
+        "active_artifact_ids": [
+          "scene_2_primary",
+          "scene_2_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_2_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_2_beat_2",
+        "active_artifact_ids": [
+          "scene_2_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_2_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_2_beat_3",
+        "active_artifact_ids": [
+          "scene_2_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_2_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Introduce small and large triangle pair with labeled side lengths in identical orientations.",
+      "Highlight matching side pairs in color and display equation 6/5 = 3.6/3 = 4.8/4 = 1.2.",
+      "Pulse matching interior angles across both triangles to emphasize angle equality requirement."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_1",
+      "title": "The Idea of Similar Triangles",
+      "learning_goal": "Understand that similarity preserves shape through equal angles and uniform side length scaling.",
+      "visual_objective": "Animate a smaller triangle expanding into a larger triangle with matching angle indicators and side length labels showing a scale factor of 2.",
+      "visual_fact_already_shown": "A side of length 2 and base of 3 scale uniformly by factor 2 into side length 4 and base length 6 with identical angles.",
+      "constructions_not_to_replay": []
+    }
+  ],
+  "expected_facts": [
+    "SIMILAR TRIANGLES MATCH THE SIDES",
+    "Same shape, different scale 2 / 5",
+    "CORRESPONDING SIDES Every Matching Ratio Is Equal",
+    "Place each side beside the side in the same position. The ratios agree because one scale factor controls the whole triangle.",
+    "small",
+    "large",
+    "large / small",
+    "6/5 = 3.6/3 = 4.8/4 = 1.2",
+    "If two angles match, the side ratios must match too."
+  ],
+  "required_visuals": [
+    "Highlight matching sides between a small and large triangle and display the step-by-step equality of ratios yielding 1.2.",
+    "Every corresponding side ratio (6/5, 3.6/3, 4.8/4) simplifies to the identical value of 1.2."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\audio\\scene_2_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 2.067,
+      "artifact_ids": [
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "label_large",
+        "label_small",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-000-2.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects s_hyp and s_lbl_hyp overlap (100% bounds, 10% occupied pixels).",
+      "timestamp": 4.467,
+      "artifact_ids": [
+        "s_hyp",
+        "s_lbl_hyp"
+      ],
+      "object_ids": [
+        "s_hyp",
+        "s_lbl_hyp"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-001-4.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects l_hyp and l_lbl_hyp overlap (100% bounds, 12% occupied pixels).",
+      "timestamp": 4.467,
+      "artifact_ids": [
+        "l_hyp",
+        "l_lbl_hyp"
+      ],
+      "object_ids": [
+        "l_hyp",
+        "l_lbl_hyp"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-001-4.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 6.8,
+      "artifact_ids": [
+        "auto_001",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "label_large",
+        "label_small",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-004-6.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 17.0; target is at most 12.",
+      "timestamp": 7.067,
+      "artifact_ids": [
+        "auto_001",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "label_large",
+        "label_small",
+        "ratio_title",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-005-7.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 18.0; target is at most 12.",
+      "timestamp": 8.2,
+      "artifact_ids": [
+        "auto_001",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "label_large",
+        "label_small",
+        "r_hyp",
+        "ratio_title",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-006-8.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects s_hyp and s_lbl_hyp overlap (100% bounds, 15% occupied pixels).",
+      "timestamp": 8.6,
+      "artifact_ids": [
+        "s_hyp",
+        "s_lbl_hyp"
+      ],
+      "object_ids": [
+        "s_hyp",
+        "s_lbl_hyp"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-007-8.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects l_hyp and l_lbl_hyp overlap (100% bounds, 15% occupied pixels).",
+      "timestamp": 9.0,
+      "artifact_ids": [
+        "l_hyp",
+        "l_lbl_hyp"
+      ],
+      "object_ids": [
+        "l_hyp",
+        "l_lbl_hyp"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-008-9.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_TOO_SMALL",
+      "severity": "warning",
+      "message": "r_hyp is only about 4.7px high in a 480p preview.",
+      "timestamp": 10.467,
+      "artifact_ids": [
+        "r_hyp"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-009-10.467s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 19.0; target is at most 12.",
+      "timestamp": 15.133,
+      "artifact_ids": [
+        "auto_001",
+        "box_result",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "label_large",
+        "label_small",
+        "r_hyp",
+        "ratio_title",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-011-15.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_hyp.1 and box_result overlap (100% bounds, 22% occupied pixels).",
+      "timestamp": 15.6,
+      "artifact_ids": [
+        "box_result",
+        "r_hyp"
+      ],
+      "object_ids": [
+        "r_hyp.1",
+        "box_result"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-012-15.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_hyp.1 and box_result overlap (100% bounds, 44% occupied pixels).",
+      "timestamp": 16.067,
+      "artifact_ids": [
+        "box_result",
+        "r_hyp"
+      ],
+      "object_ids": [
+        "r_hyp.1",
+        "box_result"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-013-16.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects r_hyp.1 and box_result overlap (100% bounds, 48% occupied pixels).",
+      "timestamp": 16.533,
+      "artifact_ids": [
+        "box_result",
+        "r_hyp"
+      ],
+      "object_ids": [
+        "r_hyp.1",
+        "box_result"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-014-16.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 20.0; target is at most 12.",
+      "timestamp": 18.867,
+      "artifact_ids": [
+        "auto_001",
+        "auto_005",
+        "box_result",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "label_large",
+        "label_small",
+        "r_hyp",
+        "ratio_title",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-017-18.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 27.0; target is at most 12.",
+      "timestamp": 19.333,
+      "artifact_ids": [
+        "auto_001",
+        "auto_005",
+        "box_result",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "l_phi",
+        "l_rt",
+        "l_theta",
+        "label_large",
+        "label_small",
+        "r_hyp",
+        "ratio_title",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "s_phi",
+        "s_rt",
+        "s_theta",
+        "summary_note",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-018-19.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 28.0; target is at most 12.",
+      "timestamp": 25.133,
+      "artifact_ids": [
+        "auto_001",
+        "auto_005",
+        "auto_006",
+        "box_result",
+        "l_base",
+        "l_height",
+        "l_hyp",
+        "l_lbl_base",
+        "l_lbl_height",
+        "l_lbl_hyp",
+        "l_phi",
+        "l_rt",
+        "l_theta",
+        "label_large",
+        "label_small",
+        "r_hyp",
+        "ratio_title",
+        "s_base",
+        "s_height",
+        "s_hyp",
+        "s_lbl_base",
+        "s_lbl_height",
+        "s_lbl_hyp",
+        "s_phi",
+        "s_rt",
+        "s_theta",
+        "summary_note",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_2\\attempt-01\\frames\\frame-020-25.033s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-000-2.067s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-001-4.467s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-002-6.283s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-003-6.794s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-004-6.800s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-005-7.067s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-006-8.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-007-8.600s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-008-9.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-009-10.467s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-010-12.567s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_2\\initial-frames\\frame-011-15.133s.png"
+  ],
+  "content_hash": "9f2b11591840bdc245ade2c1f43d60a90d004a3c3b1a84c9748542fd47d323f0"
+}

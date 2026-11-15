@@ -34,7 +34,9 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.2.0"
+PROMPT_VERSION = "v2.4.2"
+NARRATION_PROMPT_VERSION = "v2.5.0"
+NARRATION_BATCH_SIZE = 5
 PLANNING_PROVIDER = "google"
 PLANNING_MODEL = "gemini-3.7-flash"
 
@@ -95,9 +97,26 @@ def _looks_like_equation(text: str) -> bool:
 
 
 class PlanningService:
-    def __init__(self, router: ProviderRouter, max_scenes: int = 12):
+    def __init__(
+        self,
+        router: ProviderRouter,
+        max_scenes: int = 12,
+        min_scenes: int | None = None,
+        pacing: str = "standard",
+    ):
+        if min_scenes is not None and min_scenes > max_scenes:
+            raise ValueError("min_scenes cannot exceed max_scenes")
         self.router = router
         self.max_scenes = max_scenes
+        self.min_scenes = min_scenes
+        self.pacing = pacing
+
+    def _required_min_scenes(self, source: SourceDocument) -> int:
+        if self.min_scenes is not None:
+            return self.min_scenes
+        if self.max_scenes > 12:
+            return _full_coverage_scene_floor(source.page_count, self.max_scenes)
+        return 1
 
     async def enrich_low_confidence_pages(
         self,
@@ -157,11 +176,38 @@ class PlanningService:
         return source.model_copy(update={"facts": source.facts + additions})
 
     async def lesson(self, source: SourceDocument) -> LessonPlan:
-        facts = [fact.model_dump(mode="json") for fact in source.facts]
+        facts = [_lesson_fact_payload(fact) for fact in source.facts]
+        required_min = self._required_min_scenes(source)
+        if self.min_scenes is not None or self.max_scenes > 12:
+            coverage_floor = required_min
+            scene_range = (
+                f"exactly {self.max_scenes}"
+                if coverage_floor == self.max_scenes
+                else f"between {coverage_floor} and {self.max_scenes}"
+            )
+            scene_guidance = (
+                f"Full-coverage mode is requested for this {source.page_count}-page document. "
+                f"Produce {scene_range} substantial scenes. "
+                "Cover every substantive source page and every distinct definition, derivation, "
+                "algorithm, example family, and conclusion. Every substantive page must be "
+                "represented by at least one cited source_fact_id. Keep related consecutive pages "
+                "together, but never merge unrelated topics merely to reduce scene count. "
+                "Give each scene one primary teaching objective. Split a scene whenever it would "
+                "otherwise contain multiple independent concepts, derivations, or worked examples. "
+                "Keep every scene record concise: use a short title, one-sentence description, "
+                "one-sentence learning goal, one-sentence visual objective, and at most two "
+                "do_not_repeat items. "
+            )
+        else:
+            scene_guidance = (
+                "Prefer 4-6 substantial scenes for a short document and use at most "
+                f"{self.max_scenes} scenes. "
+            )
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            "Create a source-grounded educational lesson plan. Prefer 4-6 substantial scenes for "
-            "a short document and use at most 8 unless the source genuinely needs more. Merge "
+            "Create a source-grounded educational lesson plan. "
+            + scene_guidance
+            + "Merge "
             "adjacent scenes that teach the same relationship; do not fragment one example into "
             "several tiny scenes. Every scene must cite source_fact_ids from the input. For every "
             "scene set visual_objective, the one new_visual_fact it contributes, and do_not_repeat "
@@ -169,37 +215,154 @@ class PlanningService:
             "equations. Set delivery_mode to manim.\n\n"
             + json.dumps({"document": source.filename, "facts": facts}, ensure_ascii=False)
         )
-        return await self.router.structured(
+        lesson = await self.router.structured(
             stage="lesson", task_id="lesson", provider=PLANNING_PROVIDER,
             model=PLANNING_MODEL, system="You are a rigorous educational lesson director.",
             prompt=prompt, schema=LessonPlan, fallback=lambda: self._fallback_lesson(source),
-            max_output_tokens=7000,
+            max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
         )
+        if len(lesson.scenes) >= required_min:
+            return lesson
+
+        artifacts = getattr(self.router, "artifacts", None)
+        if artifacts is not None:
+            artifacts.event(
+                "lesson_scene_floor_missed", stage="lesson", task_id="lesson-expand",
+                message=(
+                    f"Lesson returned {len(lesson.scenes)} scenes; at least "
+                    f"{required_min} were requested. Regenerating once."
+                ),
+                actual_scenes=len(lesson.scenes), required_scenes=required_min,
+            )
+        retry_prompt = (
+            prompt
+            + "\n\nThe previous structurally valid plan contained only "
+            + f"{len(lesson.scenes)} scenes. That is below the required minimum of "
+            + f"{required_min}. Regenerate the complete plan with between {required_min} and "
+            + f"{self.max_scenes} scenes. Do not merely duplicate scenes: split dense material "
+            + "along concept, derivation, and worked-example boundaries while preserving full "
+            + "source coverage."
+        )
+        expanded = await self.router.structured(
+            stage="lesson", task_id="lesson-expand", provider=PLANNING_PROVIDER,
+            model=PLANNING_MODEL, system="You are a rigorous educational lesson director.",
+            prompt=retry_prompt, schema=LessonPlan,
+            fallback=lambda: self._fallback_lesson(source),
+            max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
+        )
+        if len(expanded.scenes) < required_min:
+            raise RuntimeError(
+                f"Lesson planner returned {len(expanded.scenes)} scenes after regeneration; "
+                f"at least {required_min} are required."
+            )
+        return expanded
 
     async def narration(self, lesson: LessonPlan, source: SourceDocument) -> NarrationPlan:
         facts = {fact.fact_id: fact.text for fact in source.facts}
-        prompt = (
-            f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            "Write one continuity-aware spoken lesson at a calm teaching pace of 125-140 words "
-            "per minute. Split each scene into 2-4 semantic beats and keep one main idea per "
-            "sentence. Avoid dense clauses, breathless lists, repeated definitions, and abrupt "
-            "openings. The first beat of each scene must connect naturally to what the learner just "
-            "saw; the final beat must either pause for reflection or bridge to the next scene. "
-            "Populate role, pause_after_seconds (normally 0.25-0.55, or 0.6-0.9 for reflection and "
-            "scene endings), visual_action, continuity_note, transition_in, and transition_out. "
-            "Every visual_action must introduce, transform, compare, highlight, or remove visual "
-            "information; never request the same complete construction more than once. Every beat "
-            "must cite only supplied source_fact_ids. Preserve mathematical notation and do not add "
-            "unsupported claims. Set target_words_per_minute to 135. Timing fields must be zero; "
-            "the pipeline computes them after TTS.\n\n"
-            + json.dumps({"lesson": lesson.model_dump(mode="json"), "facts": facts}, ensure_ascii=False)
+        relaxed = self.pacing == "relaxed"
+        target_wpm = 115 if relaxed else 135
+        pace_guidance = (
+            "Use a relaxed pace of 110-120 words per minute. Leave room for the learner to inspect "
+            "each construction. Use 3-5 short semantic beats when the material needs them, but put "
+            "at most one major visual change and one small emphasis action in each beat. "
+            if relaxed else
+            "Use a calm teaching pace of 125-140 words per minute. Split each scene into 2-4 "
+            "semantic beats. "
         )
-        return await self.router.structured(
-            stage="narration", task_id="narration", provider=PLANNING_PROVIDER,
-            model=PLANNING_MODEL, system="You write clear spoken educational scripts.",
-            prompt=prompt, schema=NarrationPlan,
-            fallback=lambda: self._fallback_narration(lesson, source), max_output_tokens=9000,
-        )
+        outline = [
+            {
+                "scene_id": item.scene_id,
+                "title": item.title,
+                "learning_goal": item.learning_goal,
+                "new_visual_fact": item.new_visual_fact,
+            }
+            for item in lesson.scenes
+        ]
+        narrated: list[NarratedScene] = []
+        for offset in range(0, len(lesson.scenes), NARRATION_BATCH_SIZE):
+            batch = lesson.scenes[offset:offset + NARRATION_BATCH_SIZE]
+            batch_lesson = lesson.model_copy(update={"scenes": batch})
+            expected_ids = [item.scene_id for item in batch]
+            relevant_ids = {
+                fact_id
+                for item in batch
+                for fact_id in item.source_fact_ids
+            }
+            relevant_facts = {
+                fact_id: facts[fact_id]
+                for fact_id in relevant_ids
+                if fact_id in facts
+            }
+            previous = narrated[-1] if narrated else None
+            next_scene = (
+                lesson.scenes[offset + len(batch)]
+                if offset + len(batch) < len(lesson.scenes)
+                else None
+            )
+            payload = {
+                "lesson_title": lesson.title,
+                "global_scene_outline": outline,
+                "required_scene_ids": expected_ids,
+                "scenes_to_write": [item.model_dump(mode="json") for item in batch],
+                "source_facts": relevant_facts,
+                "continuity": {
+                    "previous_scene": (
+                        {
+                            "scene_id": previous.scene_id,
+                            "ending": previous.beats[-1].text[-400:],
+                            "transition_out": previous.transition_out,
+                        }
+                        if previous else None
+                    ),
+                    "next_scene": (
+                        {
+                            "scene_id": next_scene.scene_id,
+                            "title": next_scene.title,
+                            "learning_goal": next_scene.learning_goal,
+                        }
+                        if next_scene else None
+                    ),
+                },
+            }
+            prompt = (
+                f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\n"
+                "Write the requested consecutive section of one continuity-aware spoken lesson. "
+                + pace_guidance
+                + "Return exactly the required_scene_ids once each and in the supplied order; do "
+                "not write narration for any other scene. Keep one main idea per sentence. Avoid "
+                "dense clauses, breathless lists, repeated definitions, and abrupt openings. The "
+                "first beat of each scene must connect naturally to what the learner just saw; the "
+                "final beat must either pause for reflection or bridge to the next scene. Populate "
+                "role, pause_after_seconds (normally 0.25-0.55, or 0.6-0.9 for reflection and scene "
+                "endings), visual_action, continuity_note, transition_in, and transition_out. Every "
+                "visual_action must introduce, transform, compare, highlight, or remove visual "
+                "information; never request the same complete construction more than once. Every "
+                "beat must cite only supplied source_fact_ids. Preserve mathematical notation and "
+                f"do not add unsupported claims. Set target_words_per_minute to {target_wpm}. "
+                "Timing fields must be zero; the pipeline computes them after TTS.\n\n"
+                + json.dumps(payload, ensure_ascii=False)
+            )
+            task_id = f"narration-{offset // NARRATION_BATCH_SIZE:03d}"
+            batch_narration = await self.router.structured(
+                stage="narration", task_id=task_id, provider=PLANNING_PROVIDER,
+                model=PLANNING_MODEL, system="You write clear spoken educational scripts.",
+                prompt=prompt, schema=NarrationPlan,
+                fallback=lambda batch_lesson=batch_lesson: self._fallback_narration(
+                    batch_lesson, source,
+                ),
+                max_output_tokens=7000,
+            )
+            actual_ids = [item.scene_id for item in batch_narration.scenes]
+            if actual_ids != expected_ids:
+                raise RuntimeError(
+                    f"Narration batch {task_id} returned scene IDs {actual_ids}; "
+                    f"expected {expected_ids}."
+                )
+            narrated.extend(
+                item.model_copy(update={"target_words_per_minute": target_wpm})
+                for item in batch_narration.scenes
+            )
+        return NarrationPlan(scenes=narrated)
 
     async def visual_contracts(
         self,
@@ -286,7 +449,10 @@ class PlanningService:
         )
 
     def _fallback_lesson(self, source: SourceDocument) -> LessonPlan:
-        target = min(self.max_scenes, max(1, min(6, source.page_count)))
+        if self.min_scenes is not None or self.max_scenes > 12:
+            target = self._required_min_scenes(source)
+        else:
+            target = min(self.max_scenes, max(1, min(6, source.page_count)))
         chunks = _chunks(source.facts, target)
         scenes = []
         for index, chunk in enumerate(chunks):
@@ -301,8 +467,9 @@ class PlanningService:
             objectives=[scene.learning_goal for scene in scenes[:4]], scenes=scenes,
         )
 
-    @staticmethod
-    def _fallback_narration(lesson: LessonPlan, source: SourceDocument) -> NarrationPlan:
+    def _fallback_narration(
+        self, lesson: LessonPlan, source: SourceDocument,
+    ) -> NarrationPlan:
         facts = {fact.fact_id: fact.text for fact in source.facts}
         scenes = []
         for scene in lesson.scenes:
@@ -325,6 +492,7 @@ class PlanningService:
                 scene_id=scene.scene_id, narration=" ".join(beat.text for beat in beats), beats=beats,
                 transition_in=("" if not scenes else "Continue from the previous visual state."),
                 transition_out="Pause before the next idea.",
+                target_words_per_minute=115 if self.pacing == "relaxed" else 135,
             ))
         return NarrationPlan(scenes=scenes)
 
@@ -473,9 +641,25 @@ def validate_visual_contract(
     return errors
 
 
+def _lesson_fact_payload(fact: SourceFact) -> dict[str, object]:
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", fact.text)
+    return {
+        "fact_id": fact.fact_id,
+        "page_number": fact.page_number,
+        "kind": fact.kind,
+        "text": " ".join(text.split()),
+    }
+
+
 def _chunks(items: Iterable, count: int) -> list[list]:
     values = list(items)
     if not values:
         return []
     count = max(1, min(count, len(values)))
     return [values[index * len(values) // count:(index + 1) * len(values) // count] for index in range(count)]
+
+
+def _full_coverage_scene_floor(page_count: int, max_scenes: int) -> int:
+    """Reserve enough scenes for dense lecture decks without making one scene per page."""
+
+    return min(max_scenes, max(8, (page_count * 3 + 4) // 5))

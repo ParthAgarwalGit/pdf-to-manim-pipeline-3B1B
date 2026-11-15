@@ -1,0 +1,583 @@
+{
+  "version": "1.0",
+  "case_id": "similar_triangles_and_shadows_5pages__scene_1",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z",
+  "source_scene_id": "scene_1",
+  "source_facts": [
+    {
+      "fact_id": "p001-f000",
+      "page_number": 1,
+      "text": "SIMILAR TRIANGLES THE IDEA",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9999389648438,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f001",
+      "page_number": 1,
+      "text": "Same shape, different scale 1 / 5",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        512.3250122070312,
+        908.0001220703125,
+        524.6909790039062
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f002",
+      "page_number": 1,
+      "text": "GEOMETRY THAT KEEPS ITS SHAPE Same Angles, Different Sizes",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        514.8060302734375,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f003",
+      "page_number": 1,
+      "text": "Similar triangles have equal matching angles. Their matching side lengths grow or shrink by one common scale factor.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        843.6303100585938,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f004",
+      "page_number": 1,
+      "text": "3",
+      "kind": "text",
+      "bbox": [
+        205.2740020751953,
+        445.80999755859375,
+        214.7259979248047,
+        469.218994140625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f005",
+      "page_number": 1,
+      "text": "2",
+      "kind": "text",
+      "bbox": [
+        86.27400207519531,
+        363.80999755859375,
+        95.72600555419922,
+        387.218994140625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f006",
+      "page_number": 1,
+      "text": "6",
+      "kind": "text",
+      "bbox": [
+        630.2739868164062,
+        445.80999755859375,
+        639.7260131835938,
+        469.218994140625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f007",
+      "page_number": 1,
+      "text": "4",
+      "kind": "text",
+      "bbox": [
+        441.27398681640625,
+        317.80999755859375,
+        450.7259826660156,
+        341.218994140625
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p001-f008",
+      "page_number": 1,
+      "text": "scale x 2",
+      "kind": "text",
+      "bbox": [
+        350.80999755859375,
+        395.0199890136719,
+        409.1899719238281,
+        414.2980041503906
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_1",
+    "narration": "Similar triangles share identical matching angles even when their overall sizes differ. If a smaller triangle has a side of 2 and a base of 3, scaling it by a factor of 2 expands every length uniformly. This growth produces a corresponding side of 4 and base of 6 while preserving the original shape.",
+    "beats": [
+      {
+        "beat_id": "scene_1_beat_1",
+        "text": "Similar triangles share identical matching angles even when their overall sizes differ.",
+        "source_fact_ids": [
+          "p001-f002",
+          "p001-f003"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.4,
+        "visual_action": "Display small triangle with side length 2 and base 3, highlighting angle markers.",
+        "continuity_note": "Initial scene establishing fundamental triangle similarity concepts.",
+        "start_seconds": 0.0,
+        "end_seconds": 5.143
+      },
+      {
+        "beat_id": "scene_1_beat_2",
+        "text": "If a smaller triangle has a side of 2 and a base of 3, scaling it by a factor of 2 expands every length uniformly.",
+        "source_fact_ids": [
+          "p001-f003",
+          "p001-f004",
+          "p001-f005",
+          "p001-f008"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.35,
+        "visual_action": "Introduce scale factor arrow marked scale x 2 stretching the triangle outwards.",
+        "continuity_note": "Expands the smaller triangle into the larger form while keeping angle indicators constant.",
+        "start_seconds": 5.143,
+        "end_seconds": 15.373
+      },
+      {
+        "beat_id": "scene_1_beat_3",
+        "text": "This growth produces a corresponding side of 4 and base of 6 while preserving the original shape.",
+        "source_fact_ids": [
+          "p001-f003",
+          "p001-f006",
+          "p001-f007"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.7,
+        "visual_action": "Reveal labels 4 and 6 on the enlarged triangle alongside matching angle highlights.",
+        "continuity_note": "Prepares learner to examine explicit ratios between corresponding sides in the next scene.",
+        "start_seconds": 15.373,
+        "end_seconds": 22.791
+      }
+    ],
+    "transition_in": "Fade in on clean coordinate plane",
+    "transition_out": "Pan right toward corresponding side ratio display",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\audio\\scene_1_paced.mp3",
+    "audio_duration_seconds": 22.79125,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_1",
+    "title": "The Idea of Similar Triangles",
+    "description": "Demonstrate that similar triangles share equal matching angles while their corresponding side lengths grow or shrink according to a single scale factor.",
+    "learning_goal": "Understand that similarity preserves shape through equal angles and uniform side length scaling.",
+    "source_fact_ids": [
+      "p001-f000",
+      "p001-f001",
+      "p001-f002",
+      "p001-f003",
+      "p001-f004",
+      "p001-f005",
+      "p001-f006",
+      "p001-f007",
+      "p001-f008"
+    ],
+    "example": "A small triangle with side lengths 2 and 3 scaled by a factor of 2 into a larger triangle with side lengths 4 and 6.",
+    "visual_objective": "Animate a smaller triangle expanding into a larger triangle with matching angle indicators and side length labels showing a scale factor of 2.",
+    "new_visual_fact": "A side of length 2 and base of 3 scale uniformly by factor 2 into side length 4 and base length 6 with identical angles.",
+    "do_not_repeat": [],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_1",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_1_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p001-f002",
+          "p001-f003",
+          "p001-f004",
+          "p001-f005",
+          "p001-f006",
+          "p001-f007",
+          "p001-f008"
+        ],
+        "beat_ids": [
+          "scene_1_beat_1",
+          "scene_1_beat_2",
+          "scene_1_beat_3"
+        ],
+        "enter_beat": "scene_1_beat_1",
+        "exit_beat": "scene_1_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_1_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "Similar triangles share identical matching angles even when their overall sizes differ.",
+        "source_fact_ids": [
+          "p001-f002",
+          "p001-f003"
+        ],
+        "beat_ids": [
+          "scene_1_beat_1"
+        ],
+        "enter_beat": "scene_1_beat_1",
+        "exit_beat": "scene_1_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_1_beat_1",
+        "active_artifact_ids": [
+          "scene_1_primary",
+          "scene_1_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_1_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_1_beat_2",
+        "active_artifact_ids": [
+          "scene_1_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_1_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_1_beat_3",
+        "active_artifact_ids": [
+          "scene_1_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_1_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Display small triangle with side length 2 and base 3, highlighting angle markers.",
+      "Introduce scale factor arrow marked scale x 2 stretching the triangle outwards.",
+      "Reveal labels 4 and 6 on the enlarged triangle alongside matching angle highlights."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [],
+  "expected_facts": [
+    "SIMILAR TRIANGLES THE IDEA",
+    "Same shape, different scale 1 / 5",
+    "GEOMETRY THAT KEEPS ITS SHAPE Same Angles, Different Sizes",
+    "Similar triangles have equal matching angles. Their matching side lengths grow or shrink by one common scale factor.",
+    "3",
+    "2",
+    "6",
+    "4",
+    "scale x 2"
+  ],
+  "required_visuals": [
+    "Animate a smaller triangle expanding into a larger triangle with matching angle indicators and side length labels showing a scale factor of 2.",
+    "A side of length 2 and base of 3 scale uniformly by factor 2 into side length 4 and base length 6 with identical angles."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\audio\\scene_1_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects scale_label and large_tri overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 9.0,
+      "artifact_ids": [
+        "large_tri",
+        "scale_label"
+      ],
+      "object_ids": [
+        "scale_label",
+        "large_tri"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-002-9.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects scale_tag and large_tri overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 9.0,
+      "artifact_ids": [
+        "large_tri",
+        "scale_tag"
+      ],
+      "object_ids": [
+        "scale_tag",
+        "large_tri"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-002-9.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 11.267,
+      "artifact_ids": [
+        "arc_A",
+        "arc_A_lg",
+        "arc_B",
+        "arc_B_lg",
+        "arc_C",
+        "arc_C_lg",
+        "auto_001",
+        "large_tri",
+        "lbl_base_small",
+        "lbl_side_small",
+        "scale_arrow",
+        "scale_label",
+        "scale_tag",
+        "small_tri",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-003-11.267s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 16.0; target is at most 12.",
+      "timestamp": 15.533,
+      "artifact_ids": [
+        "arc_A",
+        "arc_A_lg",
+        "arc_B",
+        "arc_B_lg",
+        "arc_C",
+        "arc_C_lg",
+        "auto_001",
+        "auto_002",
+        "large_tri",
+        "lbl_base_small",
+        "lbl_side_small",
+        "scale_arrow",
+        "scale_label",
+        "scale_tag",
+        "small_tri",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-006-15.533s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 18.0; target is at most 12.",
+      "timestamp": 15.867,
+      "artifact_ids": [
+        "arc_A",
+        "arc_A_lg",
+        "arc_B",
+        "arc_B_lg",
+        "arc_C",
+        "arc_C_lg",
+        "auto_001",
+        "auto_002",
+        "large_tri",
+        "lbl_base_large",
+        "lbl_base_small",
+        "lbl_side_large",
+        "lbl_side_small",
+        "scale_arrow",
+        "scale_label",
+        "scale_tag",
+        "small_tri",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-007-15.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 20.0; target is at most 12.",
+      "timestamp": 17.2,
+      "artifact_ids": [
+        "arc_A",
+        "arc_A_lg",
+        "arc_B",
+        "arc_B_lg",
+        "arc_C",
+        "arc_C_lg",
+        "auto_001",
+        "auto_002",
+        "calc_base",
+        "calc_side",
+        "large_tri",
+        "lbl_base_large",
+        "lbl_base_small",
+        "lbl_side_large",
+        "lbl_side_small",
+        "scale_arrow",
+        "scale_label",
+        "scale_tag",
+        "small_tri",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-008-17.200s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 22.0; target is at most 12.",
+      "timestamp": 20.333,
+      "artifact_ids": [
+        "arc_A",
+        "arc_A_lg",
+        "arc_B",
+        "arc_B_lg",
+        "arc_C",
+        "arc_C_lg",
+        "auto_001",
+        "auto_002",
+        "calc_base",
+        "calc_side",
+        "large_tri",
+        "lbl_base_large",
+        "lbl_base_small",
+        "lbl_side_large",
+        "lbl_side_small",
+        "scale_arrow",
+        "scale_label",
+        "scale_tag",
+        "small_tri",
+        "summary",
+        "summary_box",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-010-20.333s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects summary_box and summary overlap (100% bounds, 100% occupied pixels).",
+      "timestamp": 20.667,
+      "artifact_ids": [
+        "summary",
+        "summary_box"
+      ],
+      "object_ids": [
+        "summary_box",
+        "summary"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-011-20.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 23.0; target is at most 12.",
+      "timestamp": 22.933,
+      "artifact_ids": [
+        "arc_A",
+        "arc_A_lg",
+        "arc_B",
+        "arc_B_lg",
+        "arc_C",
+        "arc_C_lg",
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "calc_base",
+        "calc_side",
+        "large_tri",
+        "lbl_base_large",
+        "lbl_base_small",
+        "lbl_side_large",
+        "lbl_side_small",
+        "scale_arrow",
+        "scale_label",
+        "scale_tag",
+        "small_tri",
+        "summary",
+        "summary_box",
+        "title"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_1\\attempt-00\\frames\\frame-013-22.833s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-000-5.143s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-001-5.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-002-9.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-003-11.267s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-004-11.467s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-005-15.373s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-006-15.533s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-007-15.867s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-008-17.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-009-17.200s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-010-20.333s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_1\\initial-frames\\frame-011-20.667s.png"
+  ],
+  "content_hash": "af804ae114e11168690d673aa262e737fd1b86d08f8b54db321133a248caf6ec"
+}

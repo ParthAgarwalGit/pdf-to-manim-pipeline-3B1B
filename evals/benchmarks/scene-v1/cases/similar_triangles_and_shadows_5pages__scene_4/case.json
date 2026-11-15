@@ -1,0 +1,781 @@
+{
+  "version": "1.0",
+  "case_id": "similar_triangles_and_shadows_5pages__scene_4",
+  "category": "geometry",
+  "source_run": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z",
+  "source_scene_id": "scene_4",
+  "source_facts": [
+    {
+      "fact_id": "p004-f000",
+      "page_number": 4,
+      "text": "SIMILAR TRIANGLES WORKED EXAMPLE",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        27.299999237060547,
+        907.9998779296875,
+        41.06999969482422
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f001",
+      "page_number": 4,
+      "text": "Same shape, different scale 4 / 5",
+      "kind": "text",
+      "bbox": [
+        52.0,
+        512.3250122070312,
+        908.0001220703125,
+        524.6909790039062
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f002",
+      "page_number": 4,
+      "text": "MEASURE WITHOUT CLIMBING How Tall Is the Tree?",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        89.16000366210938,
+        390.0989685058594,
+        157.13099670410156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f003",
+      "page_number": 4,
+      "text": "A 1.5 m student casts a 2 m shadow. At the same time, a nearby tree casts an 8 m shadow.",
+      "kind": "text",
+      "bbox": [
+        60.0,
+        166.875,
+        668.6251831054688,
+        187.48500061035156
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f004",
+      "page_number": 4,
+      "text": "student",
+      "kind": "text",
+      "bbox": [
+        217.72300720214844,
+        257.0199890136719,
+        268.2769775390625,
+        276.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f005",
+      "page_number": 4,
+      "text": "height = 1.5 m",
+      "kind": "text",
+      "bbox": [
+        102.0,
+        305.6000061035156,
+        235.94000244140625,
+        333.1400146484375
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f006",
+      "page_number": 4,
+      "text": "shadow = 2 m",
+      "kind": "text",
+      "bbox": [
+        102.0,
+        353.6000061035156,
+        233.72000122070312,
+        381.1400146484375
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f007",
+      "page_number": 4,
+      "text": "tree",
+      "kind": "text",
+      "bbox": [
+        704.1619873046875,
+        257.0199890136719,
+        729.8379516601562,
+        276.2980041503906
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f008",
+      "page_number": 4,
+      "text": "height = h",
+      "kind": "text",
+      "bbox": [
+        576.0,
+        305.6000061035156,
+        671.0198364257812,
+        333.1400146484375
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f009",
+      "page_number": 4,
+      "text": "shadow = 8 m",
+      "kind": "text",
+      "bbox": [
+        576.0,
+        353.6000061035156,
+        707.7199096679688,
+        381.1400146484375
+      ],
+      "confidence": 1.0
+    },
+    {
+      "fact_id": "p004-f010",
+      "page_number": 4,
+      "text": "1.5 / 2 = h / 8 -> h = 6 m",
+      "kind": "equation",
+      "bbox": [
+        365.760009765625,
+        441.6000061035156,
+        594.2399291992188,
+        469.1400146484375
+      ],
+      "confidence": 1.0
+    }
+  ],
+  "narration": {
+    "scene_id": "scene_4",
+    "narration": "Now we can determine the tree's unknown height without ever having to climb it. Suppose a 1.5 meter student casts a 2 meter shadow while a nearby tree casts an 8 meter shadow. Writing the proportion 1.5 over 2 equals h over 8 directly solves to give a tree height of 6 meters.",
+    "beats": [
+      {
+        "beat_id": "scene_4_beat_1",
+        "text": "Now we can determine the tree's unknown height without ever having to climb it.",
+        "source_fact_ids": [
+          "p004-f002",
+          "p004-f003"
+        ],
+        "role": "introduce",
+        "pause_after_seconds": 0.3,
+        "visual_action": "Highlight tree vertical segment with unknown variable label height = h.",
+        "continuity_note": "Focuses scene 3's visual model on solving for the unknown vertical side.",
+        "start_seconds": 0.0,
+        "end_seconds": 5.621
+      },
+      {
+        "beat_id": "scene_4_beat_2",
+        "text": "Suppose a 1.5 meter student casts a 2 meter shadow while a nearby tree casts an 8 meter shadow.",
+        "source_fact_ids": [
+          "p004-f003",
+          "p004-f004",
+          "p004-f005",
+          "p004-f006",
+          "p004-f007",
+          "p004-f009"
+        ],
+        "role": "demonstrate",
+        "pause_after_seconds": 0.45,
+        "visual_action": "Display numerical labels height = 1.5 m, shadow = 2 m, and shadow = 8 m on respective triangle sides.",
+        "continuity_note": "Populates the geometric model with concrete measurement values.",
+        "start_seconds": 5.621,
+        "end_seconds": 13.293
+      },
+      {
+        "beat_id": "scene_4_beat_3",
+        "text": "Writing the proportion 1.5 over 2 equals h over 8 directly solves to give a tree height of 6 meters.",
+        "source_fact_ids": [
+          "p004-f010"
+        ],
+        "role": "bridge",
+        "pause_after_seconds": 0.75,
+        "visual_action": "Animate algebraic equation 1.5 / 2 = h / 8 solving step-by-step to h = 6 m.",
+        "continuity_note": "Completes algebraic solution, setting up geometric scale factor verification.",
+        "start_seconds": 13.293,
+        "end_seconds": 21.645
+      }
+    ],
+    "transition_in": "Smooth focus transition onto measurement text overlays",
+    "transition_out": "Slide equation upward to make room for scaling multiplier",
+    "target_words_per_minute": 135,
+    "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\audio\\scene_4_paced.mp3",
+    "audio_duration_seconds": 21.6445,
+    "audio_tail_seconds": 2.0
+  },
+  "lesson": {
+    "scene_id": "scene_4",
+    "title": "Worked Example: Calculating Tree Height",
+    "description": "Set up and solve a proportion using measured heights and shadow lengths to determine an unknown tree height.",
+    "learning_goal": "Set up a proportional equation to solve for an inaccessible height using shadow measurements.",
+    "source_fact_ids": [
+      "p004-f000",
+      "p004-f001",
+      "p004-f002",
+      "p004-f003",
+      "p004-f004",
+      "p004-f005",
+      "p004-f006",
+      "p004-f007",
+      "p004-f008",
+      "p004-f009",
+      "p004-f010"
+    ],
+    "example": "Student height = 1.5 m, student shadow = 2 m, tree shadow = 8 m, tree height = h. Equation: 1.5 / 2 = h / 8 leading to h = 6 m.",
+    "visual_objective": "Animate the substitution of student measurements (1.5 m, 2 m) and tree shadow (8 m) into the proportion 1.5 / 2 = h / 8 and solve for h = 6 m.",
+    "new_visual_fact": "The algebraic proportion 1.5 / 2 = h / 8 directly solves to give tree height h = 6 m.",
+    "do_not_repeat": [
+      "Derivation of the shared sun angle from scene 3"
+    ],
+    "delivery_mode": "manim"
+  },
+  "visual_contract": {
+    "scene_id": "scene_4",
+    "layout_template": "full_visual",
+    "archetype": "concept",
+    "artifact_inventory": [
+      {
+        "artifact_id": "scene_4_primary",
+        "category": "primary_visual",
+        "role": "concept diagram",
+        "purpose": "Depict the scene's central relationship",
+        "content": "",
+        "source_fact_ids": [
+          "p004-f002",
+          "p004-f003",
+          "p004-f004",
+          "p004-f005",
+          "p004-f006",
+          "p004-f007",
+          "p004-f009",
+          "p004-f010"
+        ],
+        "beat_ids": [
+          "scene_4_beat_1",
+          "scene_4_beat_2",
+          "scene_4_beat_3"
+        ],
+        "enter_beat": "scene_4_beat_1",
+        "exit_beat": "scene_4_beat_3",
+        "region": "content_full",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 0,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "scene_end",
+        "allowed_overlap_with": []
+      },
+      {
+        "artifact_id": "scene_4_title",
+        "category": "semantic_text",
+        "role": "scene title",
+        "purpose": "Orient the learner to the current concept",
+        "content": "Now we can determine the tree's unknown height without ever having to climb it.",
+        "source_fact_ids": [
+          "p004-f002",
+          "p004-f003"
+        ],
+        "beat_ids": [
+          "scene_4_beat_1"
+        ],
+        "enter_beat": "scene_4_beat_1",
+        "exit_beat": "scene_4_beat_1",
+        "region": "header",
+        "footprint": "standard",
+        "preferred_aspect_ratio": null,
+        "overflow_policy": "scale",
+        "minimum_scale": 0.55,
+        "region_padding": 0.12,
+        "overlap_policy": "none",
+        "layer": 2,
+        "priority": 5,
+        "parent_id": null,
+        "target_id": null,
+        "carry_policy": "remove",
+        "allowed_overlap_with": []
+      }
+    ],
+    "composition_plan": [
+      {
+        "beat_id": "scene_4_beat_1",
+        "active_artifact_ids": [
+          "scene_4_primary",
+          "scene_4_title"
+        ],
+        "focus_artifact_ids": [
+          "scene_4_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_4_beat_2",
+        "active_artifact_ids": [
+          "scene_4_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_4_primary"
+        ],
+        "camera_intent": "static"
+      },
+      {
+        "beat_id": "scene_4_beat_3",
+        "active_artifact_ids": [
+          "scene_4_primary"
+        ],
+        "focus_artifact_ids": [
+          "scene_4_primary"
+        ],
+        "camera_intent": "static"
+      }
+    ],
+    "visual_progression": [
+      "Highlight tree vertical segment with unknown variable label height = h.",
+      "Display numerical labels height = 1.5 m, shadow = 2 m, and shadow = 8 m on respective triangle sides.",
+      "Animate algebraic equation 1.5 / 2 = h / 8 solving step-by-step to h = 6 m."
+    ],
+    "avoid_repeating": [],
+    "style_notes": [
+      "Use a dark background and high-contrast 3Blue1Brown-inspired colors."
+    ]
+  },
+  "visual_history": [
+    {
+      "scene_id": "scene_1",
+      "title": "The Idea of Similar Triangles",
+      "learning_goal": "Understand that similarity preserves shape through equal angles and uniform side length scaling.",
+      "visual_objective": "Animate a smaller triangle expanding into a larger triangle with matching angle indicators and side length labels showing a scale factor of 2.",
+      "visual_fact_already_shown": "A side of length 2 and base of 3 scale uniformly by factor 2 into side length 4 and base length 6 with identical angles.",
+      "constructions_not_to_replay": []
+    },
+    {
+      "scene_id": "scene_2",
+      "title": "Matching Corresponding Sides and Ratios",
+      "learning_goal": "Formulate and verify equivalent ratios from corresponding side lengths of similar triangles.",
+      "visual_objective": "Highlight matching sides between a small and large triangle and display the step-by-step equality of ratios yielding 1.2.",
+      "visual_fact_already_shown": "Every corresponding side ratio (6/5, 3.6/3, 4.8/4) simplifies to the identical value of 1.2.",
+      "constructions_not_to_replay": [
+        "Basic triangle scaling animation from scene 1"
+      ]
+    },
+    {
+      "scene_id": "scene_3",
+      "title": "Sunlight and Shared Angles in Shadows",
+      "learning_goal": "Recognize that a shared sun angle forms similar right triangles between objects and their shadows.",
+      "visual_objective": "Render parallel sunlight rays creating matching right triangles for both a person and a tree with their ground shadows.",
+      "visual_fact_already_shown": "Parallel sunlight rays produce equal ground angles, creating two right triangles defined by vertical heights and horizontal shadows.",
+      "constructions_not_to_replay": [
+        "Generic triangle side ratio equations from scene 2"
+      ]
+    }
+  ],
+  "expected_facts": [
+    "SIMILAR TRIANGLES WORKED EXAMPLE",
+    "Same shape, different scale 4 / 5",
+    "MEASURE WITHOUT CLIMBING How Tall Is the Tree?",
+    "A 1.5 m student casts a 2 m shadow. At the same time, a nearby tree casts an 8 m shadow.",
+    "student",
+    "height = 1.5 m",
+    "shadow = 2 m",
+    "tree",
+    "height = h",
+    "shadow = 8 m",
+    "1.5 / 2 = h / 8 -> h = 6 m"
+  ],
+  "required_visuals": [
+    "Animate the substitution of student measurements (1.5 m, 2 m) and tree shadow (8 m) into the proportion 1.5 / 2 = h / 8 and solve for h = 6 m.",
+    "The algebraic proportion 1.5 / 2 = h / 8 directly solves to give tree height h = 6 m."
+  ],
+  "forbidden_claims": [],
+  "audio_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\audio\\scene_4_paced.mp3",
+  "initial_code_path": "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial\\original.py",
+  "initial_findings": [
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 13.0; target is at most 12.",
+      "timestamp": 0.0,
+      "artifact_ids": [
+        "ground",
+        "s_ra",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "tree_base",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-000-0.000s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 0.667,
+      "artifact_ids": [
+        "ground",
+        "s_ra",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "tree_base",
+        "tree_glow",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-001-0.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 14.0; target is at most 12.",
+      "timestamp": 4.133,
+      "artifact_ids": [
+        "ground",
+        "s_ra",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-002-4.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 15.0; target is at most 12.",
+      "timestamp": 5.733,
+      "artifact_ids": [
+        "auto_001",
+        "ground",
+        "s_ra",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-005-5.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 18.0; target is at most 12.",
+      "timestamp": 6.867,
+      "artifact_ids": [
+        "auto_001",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-006-6.867s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 19.0; target is at most 12.",
+      "timestamp": 13.4,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-009-13.400s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 21.0; target is at most 12.",
+      "timestamp": 13.733,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "eq_formula",
+        "eq_title",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-010-13.733s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 22.0; target is at most 12.",
+      "timestamp": 15.067,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "eq_formula",
+        "eq_step1",
+        "eq_title",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-011-15.067s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 23.0; target is at most 12.",
+      "timestamp": 16.8,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "eq_formula",
+        "eq_step1",
+        "eq_step2",
+        "eq_title",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-013-16.800s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 25.0; target is at most 12.",
+      "timestamp": 18.6,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "box_res",
+        "eq_formula",
+        "eq_step1",
+        "eq_step2",
+        "eq_step3",
+        "eq_title",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-014-18.600s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects eq_step3 and box_res overlap (100% bounds, 10% occupied pixels).",
+      "timestamp": 19.133,
+      "artifact_ids": [
+        "box_res",
+        "eq_step3"
+      ],
+      "object_ids": [
+        "eq_step3",
+        "box_res"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-015-19.133s.png",
+      "code_lines": []
+    },
+    {
+      "code": "TEXT_GEOMETRY_OVERLAP",
+      "severity": "warning",
+      "message": "Text and geometry objects eq_step3 and box_res overlap (100% bounds, 18% occupied pixels).",
+      "timestamp": 19.667,
+      "artifact_ids": [
+        "box_res",
+        "eq_step3"
+      ],
+      "object_ids": [
+        "eq_step3",
+        "box_res"
+      ],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-016-19.667s.png",
+      "code_lines": []
+    },
+    {
+      "code": "VISUAL_DENSITY_HIGH",
+      "severity": "warning",
+      "message": "Weighted active visual density is 26.0; target is at most 12.",
+      "timestamp": 21.8,
+      "artifact_ids": [
+        "auto_001",
+        "auto_002",
+        "auto_003",
+        "box_res",
+        "eq_formula",
+        "eq_step1",
+        "eq_step2",
+        "eq_step3",
+        "eq_title",
+        "ground",
+        "s_height_label",
+        "s_ra",
+        "s_shadow_label",
+        "student_base",
+        "student_hyp",
+        "student_title",
+        "student_tri",
+        "student_vert",
+        "t_ra",
+        "t_shadow_label",
+        "tree_base",
+        "tree_h_label",
+        "tree_hyp",
+        "tree_title",
+        "tree_tri",
+        "tree_vert"
+      ],
+      "object_ids": [],
+      "screenshot_path": "C:\\Vignesh\\CodingProjects\\3B1B\\output\\similar_triangles_and_shadows_5pages\\2026-09-01T18-24-06Z\\scenes\\scene_4\\attempt-01\\frames\\frame-018-21.700s.png",
+      "code_lines": []
+    }
+  ],
+  "initial_frame_paths": [
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-000-0.000s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-001-0.667s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-002-4.133s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-003-5.450s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-004-5.621s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-005-5.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-006-6.867s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-007-10.900s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-008-13.293s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-009-13.400s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-010-13.733s.png",
+    "C:\\Vignesh\\CodingProjects\\3B1B\\evals\\benchmarks\\scene-v1\\cases\\similar_triangles_and_shadows_5pages__scene_4\\initial-frames\\frame-011-15.067s.png"
+  ],
+  "content_hash": "202f3761a571362c4a9c7621b67017a65fbb45ef61f47d7d390b3816649e9d5e"
+}
