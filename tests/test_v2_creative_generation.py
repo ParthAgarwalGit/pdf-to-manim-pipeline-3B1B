@@ -143,9 +143,12 @@ def test_instrumentation_adds_tracking_and_retimes_each_narration_section():
     assert "auto_register('wave', wave)" in result.code
     assert "ParametricFunction" in result.code
 
+    # Sections move towards their beat but are never sped up more than 1.5x:
+    # 9 s of animation in a 2 s beat becomes 6 s, and 5 s in a 3 s beat 3.33 s.
     durations = _section_durations(result.code)
-    assert abs(durations["beat_1"] - 2.0) < 0.001
-    assert abs(durations["beat_2"] - 3.0) < 0.001
+    assert abs(durations["beat_1"] - 9.0 / 1.5) < 0.001
+    assert abs(durations["beat_2"] - 5.0 / 1.5) < 0.001
+    assert result.capped_beats == ("beat_1", "beat_2")
 
     report = V2StaticVerifier(
         {"visual"}, {"beat_1", "beat_2"}, require_contract_tracking=False,
@@ -195,10 +198,13 @@ class Draft(Scene):
     )
     run_time = next(item.value.value for item in play.keywords if item.arg == "run_time")
 
-    assert abs(float(run_time) * 4 - 2.0) < 0.001
+    # The four repetitions count as 8 s, so the 2 s beat needs the full capped
+    # speed-up (a single 2 s play would have needed none).
+    assert abs(float(run_time) - 2.0 / 1.5) < 0.001
+    assert result.capped_beats == ("beat_1",)
 
 
-def test_missing_section_markers_fall_back_to_exact_global_timing():
+def test_missing_section_markers_fall_back_to_clamped_global_timing():
     raw = '''from manim import *
 
 class Draft(Scene):
@@ -226,8 +232,11 @@ class Draft(Scene):
         else:
             total += float(call.args[0].value)
 
+    # 10 s against a 5 s narration: the whole construct gets the capped scale.
     assert not result.section_timing_applied
-    assert abs(total - 5.0) < 0.001
+    assert abs(total - 10.0 / 1.5) < 0.001
+    assert result.timing_scales == (("scene", 1 / 1.5),)
+    assert result.capped_beats == ("scene",)
 
 
 def test_tracked_scene_registers_assigned_mobjects_without_model_calls():
@@ -270,9 +279,11 @@ class Draft(Scene):
 
     assert outcome.safe
     assert outcome.render_success, outcome.error
+    # The play is stretched to at most 1.5 s; the closing hold fills the rest.
     assert abs(outcome.duration_seconds - 2.0) < 0.2
     assert not any(item.severity == "error" for item in outcome.findings)
     trace = (tmp_path / "creative-render" / "trace.jsonl").read_text(encoding="utf-8")
+    assert '"event": "sync_wait"' in trace
     assert '"artifact_id": "dot"' in trace
     assert '"artifact_id": "label"' in trace
 

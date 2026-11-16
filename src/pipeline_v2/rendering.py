@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -17,13 +16,23 @@ from PIL import Image
 
 from src.manim_verifier.pipeline import analyze_keyframes
 from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
+from src.utils.render_sandbox import (
+    ManimProcess,
+    RenderSandboxConfig,
+    container_path,
+    describe_sandbox_exit,
+    docker_available,
+    host_timeout,
+    native_render_env,
+    start_manim,
+)
 
 from .diagnostics import analyze_trace
 from .models import NarratedScene, VerificationFinding, VisualContract
 from .static_verifier import V2StaticVerifier
 
 
-VERIFIER_VERSION = "v2-verifier-8-creative"
+VERIFIER_VERSION = "v2-verifier-9-sandbox-sync"
 
 
 @dataclass
@@ -42,18 +51,16 @@ class RenderOutcome:
 class TrackedManimRenderer:
     QUALITY_FLAGS = {"low": "-ql", "medium": "-qm", "high": "-qh"}
 
-    def __init__(self):
+    def __init__(self, sandbox: Optional[RenderSandboxConfig] = None):
+        self.sandbox = sandbox or RenderSandboxConfig()
         self._lock = threading.RLock()
-        self._processes: set[subprocess.Popen] = set()
+        self._processes: set[ManimProcess] = set()
 
     def terminate_all(self) -> None:
         with self._lock:
-            processes = list(self._processes)
-        for process in processes:
-            try:
-                process.terminate()
-            except OSError:
-                continue
+            handles = list(self._processes)
+        for handle in handles:
+            handle.kill()  # whole process tree, plus the container in docker mode
 
     def render(
         self,
@@ -93,39 +100,57 @@ class TrackedManimRenderer:
         trace_path = attempt_dir / "trace.jsonl"
         stdout_path = attempt_dir / "render_stdout.txt"
         stderr_path = attempt_dir / "render_stderr.txt"
-        environment = self._environment(trace_path, scene)
         video_path = attempt_dir / "video.mp4"
+        if self.sandbox.is_docker and not docker_available(self.sandbox):
+            outcome.error = (
+                "Could not start Manim: the render sandbox is 'docker' but the docker "
+                f"binary {self.sandbox.docker_binary!r} was not found on PATH."
+            )
+            stderr_path.write_text(outcome.error, encoding="utf-8")
+            outcome.findings.append(VerificationFinding(
+                code="RENDER_START_FAILED", severity="error", message=outcome.error,
+            ))
+            return outcome
         # Manim nests partial files deeply. A short staging root avoids the
         # Windows MAX_PATH failure while durable artifacts remain in attempt_dir.
-        with tempfile.TemporaryDirectory(prefix="pdf2manim-") as staging_value:
-            staging_dir = Path(staging_value)
+        # It is also the per-attempt scratch dir: the process cwd and, in docker
+        # mode, the only host directory the container can see.
+        with tempfile.TemporaryDirectory(
+            prefix="pdf2manim-", ignore_cleanup_errors=True,
+        ) as staging_value:
+            staging_dir = Path(staging_value).resolve()
             staged_scene = staging_dir / "scene.py"
             staged_scene.write_text(code, encoding="utf-8")
+            staged_trace = staging_dir / "trace.jsonl"
             media_dir = staging_dir / "media"
-            command = [
-                sys.executable, "-m", "manim", self.QUALITY_FLAGS.get(quality, "-ql"),
-                "--disable_caching", "--media_dir", str(media_dir),
-                str(staged_scene), report.scene_class,
-            ]
-            process = None
+            trace_target = (
+                container_path(staged_trace, staging_dir)
+                if self.sandbox.is_docker else str(staged_trace)
+            )
+            handle = None
             try:
-                process = subprocess.Popen(
-                    command, cwd=str(staging_dir), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, text=True, env=environment,
+                handle = start_manim(
+                    scene_path=staged_scene,
+                    scene_class=report.scene_class,
+                    flags=[self.QUALITY_FLAGS.get(quality, "-ql"), "--disable_caching"],
+                    media_dir=media_dir,
+                    scratch_dir=staging_dir,
+                    timeout_seconds=timeout_seconds,
+                    sandbox=self.sandbox,
+                    native_command=(sys.executable, "-m", "manim"),
+                    extra_env=self._tracking_environment(trace_target, scene),
                 )
                 with self._lock:
-                    self._processes.add(process)
-                stdout, stderr = process.communicate(timeout=timeout_seconds)
+                    self._processes.add(handle)
+                stdout, stderr = handle.communicate(
+                    timeout=host_timeout(self.sandbox, timeout_seconds),
+                )
                 stdout_path.write_text(stdout or "", encoding="utf-8")
                 stderr_path.write_text(stderr or "", encoding="utf-8")
             except subprocess.TimeoutExpired as exc:
-                if process:
-                    process.kill()
-                    stdout, stderr = process.communicate()
-                else:
-                    stdout, stderr = _decode(exc.stdout), _decode(exc.stderr)
-                stdout_path.write_text(stdout or "", encoding="utf-8")
-                stderr_path.write_text(stderr or "", encoding="utf-8")
+                # communicate() already killed the process tree (and container).
+                stdout_path.write_text(_decode(exc.stdout), encoding="utf-8")
+                stderr_path.write_text(_decode(exc.stderr), encoding="utf-8")
                 outcome.error = f"Manim render timed out after {timeout_seconds}s."
                 outcome.findings.append(VerificationFinding(
                     code="RENDER_TIMEOUT", severity="error", message=outcome.error,
@@ -139,13 +164,18 @@ class TrackedManimRenderer:
                 ))
                 return outcome
             finally:
-                if process:
+                if handle:
                     with self._lock:
-                        self._processes.discard(process)
+                        self._processes.discard(handle)
+                # Keep the trace as evidence on failure and timeout too.
+                _copy_if_present(staged_trace, trace_path)
 
-            if process.returncode != 0:
+            if handle.returncode != 0:
                 detail = (stderr or stdout or "No renderer output")[-2000:]
-                outcome.error = f"Manim exited with {process.returncode}: {detail}"
+                outcome.error = (
+                    f"Manim exited with {handle.returncode}: {detail}"
+                    f"{describe_sandbox_exit(self.sandbox, handle.returncode)}"
+                )
                 outcome.findings.append(VerificationFinding(
                     code="MANIM_RENDER_FAILED", severity="error", message=outcome.error,
                 ))
@@ -180,24 +210,27 @@ class TrackedManimRenderer:
 
     @staticmethod
     def _environment(trace_path: Path, scene: NarratedScene) -> dict[str, str]:
-        blocked = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
-        environment = {
-            key: value for key, value in os.environ.items()
-            if not any(fragment in key.upper() for fragment in blocked)
-        }
-        project_root = str(Path(__file__).resolve().parents[2])
-        current = environment.get("PYTHONPATH", "")
-        environment["PYTHONPATH"] = project_root + (os.pathsep + current if current else "")
-        environment["PDF2MANIM_TRACE_PATH"] = str(trace_path)
-        environment["PDF2MANIM_BEAT_SCHEDULE"] = json.dumps([
-            {
-                "beat_id": beat.beat_id,
-                "start": float(beat.start_seconds),
-                "end": float(beat.end_seconds),
-            }
-            for beat in scene.beats
-        ])
+        """Full environment of a native render: scrubbed host env plus tracking."""
+        environment = native_render_env()
+        environment.update(
+            TrackedManimRenderer._tracking_environment(str(trace_path), scene)
+        )
         return environment
+
+    @staticmethod
+    def _tracking_environment(trace_path: str, scene: NarratedScene) -> dict[str, str]:
+        """The only variables TrackedScene needs; safe to pass into a container."""
+        return {
+            "PDF2MANIM_TRACE_PATH": trace_path,
+            "PDF2MANIM_BEAT_SCHEDULE": json.dumps([
+                {
+                    "beat_id": beat.beat_id,
+                    "start": float(beat.start_seconds),
+                    "end": float(beat.end_seconds),
+                }
+                for beat in scene.beats
+            ]),
+        }
 
 
 def extract_frames(video_path: Path, output_dir: Path, timestamps: list[float]) -> list[str]:
@@ -294,6 +327,14 @@ def probe_duration(path: Path) -> float:
 def _find_video(media_dir: Path, scene_class: str) -> Optional[Path]:
     return next((path for path in media_dir.rglob(f"{scene_class}.mp4")
                  if "partial_movie_files" not in path.parts), None)
+
+
+def _copy_if_present(source: Path, target: Path) -> None:
+    try:
+        if source.is_file():
+            shutil.copyfile(source, target)
+    except OSError:
+        pass
 
 
 def _decode(value) -> str:

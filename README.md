@@ -242,6 +242,42 @@ provider before interruption.
 
 ## Testing
 
+### V2 Integration Controls
+
+The `vignesh/v2.1-integration` branch keeps V2 as the default CLI. Its connected
+features include native/Docker rendering, bounded narration synchronization,
+professor directives, editable local outlines, incremental revisions, and final
+media delivery checks. No presenter is enabled by default.
+
+```powershell
+pdf2manim plan notes.pdf -o concept_plan.yaml
+pdf2manim convert notes.pdf --plan concept_plan.yaml --brief brief.md --target-minutes 3 --quality high
+pdf2manim convert notes.pdf --render-sandbox docker --sandbox-image pdf2manim:latest
+pdf2manim revise output\DOCUMENT\RUN_ID --fix-visual "scene_001=Move labels apart" --dry-run
+pdf2manim revise output\DOCUMENT\RUN_ID --fix-visual "scene_001=Move labels apart" --yes
+```
+
+`--brief` is interpreted locally and its reading is printed before conversion;
+use `--directives FILE` for an explicit structured reading instead. The brief's
+duration overrides `--target-minutes`. `plan` makes a local source-derived outline
+without paid calls; review its titles, goals, depth and source references before
+using it. Scope and notation checks are written to `compliance.json`.
+
+Delivery checks are on by default (`--no-delivery-check` disables them). They
+write `delivery_report.json` and flag stream, duration, silence and loudness
+issues. Standard policy retains a video marked `PARTIAL_SUCCESS`; strict policy
+withholds its official final path when checks fail. Silent offline timing audio
+is identified as a placeholder, not treated as failed spoken narration.
+
+Native rendering strips secrets and changes working directory but is not a
+security sandbox. Docker mode adds network and resource isolation and requires
+the image to be built locally. No paid avatar calls are made by these commands.
+
+Remaining integration: connect the independently tested presenter provider and
+bridge modules to V2 task/budget/timeline orchestration, and replace the legacy
+professor studio's subprocess entry points with V2 services. The existing web
+studio still drives the legacy pipeline and is not the V2 interface yet.
+
 ```powershell
 # Entire hermetic suite, including one real local Manim/FFmpeg A/V smoke
 pytest

@@ -13,7 +13,7 @@ from .models import LessonScene, NarratedScene, SourceFact, VerificationFinding,
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-creative-code-2"
+CODE_PROMPT_VERSION = "v2-creative-code-3-sync"
 
 
 class CodeGenerationService:
@@ -28,6 +28,7 @@ class CodeGenerationService:
         lesson_scene: LessonScene | None = None,
         visual_history: list[dict[str, object]] | None = None,
         retry_attempt: int = 0,
+        notation_rules: list[str] | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system, prompt = generation_request(
@@ -38,6 +39,7 @@ class CodeGenerationService:
             lesson_scene=lesson_scene,
             visual_history=visual_history,
             retry_attempt=retry_attempt,
+            notation_rules=notation_rules,
         )
         try:
             response = await self.router.text(
@@ -104,6 +106,65 @@ adds those automatically. Do not claim success; the pipeline will render and mea
             repaired, class_name=class_name, scene=scene, contract=contract,
         ).code
 
+    def reinstrument(self, code: str, scene: NarratedScene, contract: VisualContract) -> str:
+        """Re-time existing scene code against new narration timing; no model call."""
+
+        return instrument_scene_code(
+            deinstrument_scene_code(code), class_name=class_name_for(scene.scene_id),
+            scene=scene, contract=contract,
+        ).code
+
+    async def revise(
+        self,
+        *,
+        scene: NarratedScene,
+        contract: VisualContract,
+        code: str,
+        instruction: str,
+        lesson_scene: LessonScene | None = None,
+        visual_history: list[dict[str, object]] | None = None,
+        notation_rules: list[str] | None = None,
+    ) -> str:
+        """Apply a professor's visual correction to one scene's existing code."""
+
+        class_name = class_name_for(scene.scene_id)
+        system = f"""PROMPT_VERSION={CODE_PROMPT_VERSION}
+You revise one self-contained Manim Community Python animation according to a correction from the
+professor who owns the lesson. Return one complete executable Python script only. Define exactly
+one Scene subclass named {class_name}. Apply the correction exactly and change nothing else:
+preserve correct mathematics, the explanatory idea, and every self.next_section("beat_id") marker.
+Allowed imports are `from manim import *` and `import numpy as np`. Do not add tracking,
+layout-engine, artifact-registration, or audio-timing code; the runtime adds those automatically."""
+        payload: dict[str, object] = {
+            "professor_correction": instruction,
+            "brief": _lesson_brief(lesson_scene, scene),
+            "visual_history": visual_history or [],
+            "narration_beats": _beat_payload(scene),
+            "existing_code": deinstrument_scene_code(code),
+        }
+        if notation_rules:
+            payload["notation_rules"] = notation_rules
+        try:
+            response = await self.router.text(
+                stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
+                provider="google", model="gemini-3.7-flash", system=system,
+                prompt=json.dumps(payload, ensure_ascii=False), max_output_tokens=9000,
+            )
+        except MissingProviderKey:
+            if self.router.strict_keys:
+                raise
+            # Without a model the correction cannot be applied; keep the scene
+            # renderable and say so instead of silently claiming a fix.
+            self.router.artifacts.event(
+                "revision_instruction_not_applied", stage="code_generation",
+                scene_id=scene.scene_id, task_id=f"code-{scene.scene_id}",
+                message="GEMINI_API_KEY is not configured; the existing visuals were kept.",
+            )
+            return self.reinstrument(code, scene, contract)
+        return instrument_scene_code(
+            clean_code(response.text), class_name=class_name, scene=scene, contract=contract,
+        ).code
+
 
 def generation_request(
     *,
@@ -114,6 +175,7 @@ def generation_request(
     lesson_scene: LessonScene | None = None,
     visual_history: list[dict[str, object]] | None = None,
     retry_attempt: int = 0,
+    notation_rules: list[str] | None = None,
 ) -> tuple[str, str]:
     """Build the deliberately small model-facing creative request."""
 
@@ -159,6 +221,10 @@ to fill narration time; use a calm hold or a focused highlight when no new const
             "style": contract.style_notes[:3],
         },
     }
+    if notation_rules:
+        # Added only when the professor set notation, so requests (and their
+        # cache keys) for runs without directives are unchanged.
+        payload["notation_rules"] = notation_rules
     return system, json.dumps(payload, ensure_ascii=False)
 
 

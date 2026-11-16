@@ -7,9 +7,11 @@ import os
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Mapping, Optional
 
 from src.agents.tts_agent import TTSAgent, TTSError, TTSInput, TTSOutput
 from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
+from src.utils.fingerprints import apply_lexicon, lexicon_for
 
 from .models import NarratedScene
 from .observability import RunArtifacts
@@ -44,10 +46,18 @@ class NarrationAudioService:
         self.api_limit = api_limit
         self.speech_rate = speech_rate
 
-    async def generate(self, scene: NarratedScene, scene_dir: Path) -> NarratedScene:
+    async def generate(
+        self,
+        scene: NarratedScene,
+        scene_dir: Path,
+        *,
+        lexicon: Optional[Mapping[str, str]] = None,
+        speech_rate: Optional[float] = None,
+    ) -> NarratedScene:
         audio_dir = scene_dir / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
-        narration_text = _narration_for_tts(scene)
+        narration_text = _narration_for_tts(scene, lexicon)
+        speech_rate = self.speech_rate if speech_rate is None else speech_rate
         if not os.getenv("OPENAI_API_KEY"):
             if self.strict_keys:
                 raise RuntimeError("OPENAI_API_KEY is required for narration audio")
@@ -79,6 +89,7 @@ class NarrationAudioService:
             return timed.model_copy(update={
                 "audio_path": str(path.resolve()),
                 "audio_tail_seconds": SCENE_END_PAUSE_SECONDS,
+                "audio_is_placeholder": True,
             })
 
         model = "tts-1-hd" if self.high_quality else "tts-1"
@@ -99,7 +110,7 @@ class NarrationAudioService:
             request={
                 "provider": "openai", "model": model, "voice": self.voice,
                 "narration": narration_text, "characters": characters,
-                "speech_rate": self.speech_rate,
+                "speech_rate": speech_rate,
             },
         )
         agent = TTSAgent(max_retries=1, strict=True)
@@ -144,7 +155,7 @@ class NarrationAudioService:
             request={
                 "provider": "openai", "model": model, "voice": self.voice,
                 "narration": narration_text, "characters": characters,
-                "speech_rate": self.speech_rate,
+                "speech_rate": speech_rate,
             },
             response={
                 "audio_file_path": result.audio_file_path,
@@ -159,7 +170,7 @@ class NarrationAudioService:
                 _pace_audio,
                 original_path,
                 paced_path,
-                self.speech_rate,
+                speech_rate,
                 SCENE_END_PAUSE_SECONDS,
             )
             final_path = paced_path
@@ -170,7 +181,7 @@ class NarrationAudioService:
                 message="Applied calm educational pacing and a scene-boundary pause.",
                 source_duration_seconds=result.duration_seconds,
                 final_duration_seconds=round(final_duration, 3),
-                speech_rate=self.speech_rate,
+                speech_rate=speech_rate,
                 trailing_pause_seconds=SCENE_END_PAUSE_SECONDS,
             )
         except Exception as exc:
@@ -188,6 +199,44 @@ class NarrationAudioService:
             ),
         })
 
+    async def repace(
+        self,
+        scene: NarratedScene,
+        raw_audio: Path,
+        scene_dir: Path,
+        speech_rate: float,
+    ) -> NarratedScene:
+        """Re-pace an existing recording locally; never calls the provider."""
+
+        audio_dir = scene_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        paced_path = audio_dir / f"{scene.scene_id}_paced.mp3"
+        await asyncio.to_thread(
+            _pace_audio, raw_audio, paced_path, speech_rate, SCENE_END_PAUSE_SECONDS,
+        )
+        duration = await asyncio.to_thread(_probe_duration, paced_path)
+        self.artifacts.event(
+            "tts_repaced", stage="tts", scene_id=scene.scene_id,
+            task_id=f"tts-{scene.scene_id}",
+            message="Re-paced the existing recording locally without a paid TTS call.",
+            final_duration_seconds=round(duration, 3), speech_rate=speech_rate,
+        )
+        return apply_audio_timing(scene, duration).model_copy(update={
+            "audio_path": str(paced_path.resolve()),
+            "audio_tail_seconds": SCENE_END_PAUSE_SECONDS,
+        })
+
+
+def retime(scene: NarratedScene, previous: NarratedScene) -> NarratedScene:
+    """Redistribute beat timings over an unchanged recording (pause edits)."""
+
+    if not previous.audio_duration_seconds:
+        raise RuntimeError(f"{scene.scene_id} has no measured audio to re-time")
+    return apply_audio_timing(scene, previous.audio_duration_seconds).model_copy(update={
+        "audio_path": previous.audio_path,
+        "audio_tail_seconds": previous.audio_tail_seconds,
+    })
+
 
 def _silence(path: Path, duration: float) -> None:
     command = [
@@ -199,8 +248,15 @@ def _silence(path: Path, duration: float) -> None:
         raise RuntimeError(f"Could not create fallback timing audio: {result.stderr[-800:]}")
 
 
-def _narration_for_tts(scene: NarratedScene) -> str:
-    """Produce TTS-friendly paragraphs without provider-specific pause markup."""
+def _narration_for_tts(
+    scene: NarratedScene,
+    lexicon: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Produce TTS-friendly paragraphs without provider-specific pause markup.
+
+    ``lexicon`` respells words for the voice only; on-screen text and the
+    storyboard keep the original spelling.
+    """
 
     paragraphs = []
     for beat in scene.beats:
@@ -208,7 +264,8 @@ def _narration_for_tts(scene: NarratedScene) -> str:
         if text and text[-1] not in ".!?":
             text += "."
         paragraphs.append(text)
-    return "\n\n".join(paragraphs)
+    text = "\n\n".join(paragraphs)
+    return apply_lexicon(text, lexicon_for(text, dict(lexicon))) if lexicon else text
 
 
 def _pace_audio(

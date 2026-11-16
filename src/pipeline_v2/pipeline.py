@@ -17,6 +17,13 @@ from typing import Any, Awaitable, Callable, Optional, TypeVar
 from pydantic import BaseModel
 
 from .diagnostics import frame_fingerprint, frame_sequence_similarity, issue_score
+from .delivery import SceneClip, run_delivery_gate
+from .directives import (
+    ConceptPlan, apply_scope, check_lesson_directives, enforce_narration_directives,
+    length_check, notation_findings, notation_rules,
+)
+from src.schemas.directives import ProfessorDirectives
+from src.utils.render_sandbox import RenderSandboxConfig
 from .generation import CODE_PROMPT_VERSION, CodeGenerationService
 from .instrumentation import deinstrument_scene_code
 from .media import compose_scene, concatenate, inspect_av, source_page_fallback
@@ -49,6 +56,21 @@ from .planning import (
 from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VERSION
 from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
+from .revision import (
+    FROZEN_PLANNING_FILE,
+    RevisionError,
+    RevisionOp,
+    RevisionPlan,
+    SceneAction,
+    build_revision,
+    frozen_planning,
+    load_frozen_planning,
+    load_run_state,
+    raw_audio_path,
+    read_revision_state,
+    revision_directory,
+    write_revision_state,
+)
 from .state import BudgetExceeded, RunStore
 from .tts import (
     RELAXED_SPEECH_RATE,
@@ -57,7 +79,9 @@ from .tts import (
     NarrationAudioService,
     TTS_TIMING_VERSION,
     ensure_trailing_buffer,
+    retime,
 )
+from src.utils.fingerprints import lexicon_for
 
 
 T = TypeVar("T")
@@ -68,7 +92,13 @@ class PipelineV2:
         self.config = config or PipelineV2Config()
         self.store: Optional[RunStore] = None
         self.artifacts: Optional[RunArtifacts] = None
-        self.renderer = TrackedManimRenderer()
+        self.renderer = TrackedManimRenderer(RenderSandboxConfig(
+            mode=self.config.render_sandbox, image=self.config.render_sandbox_image,
+        ))
+        self.directives = (
+            ProfessorDirectives.model_validate(self.config.directives)
+            if self.config.directives is not None else None
+        )
         self._visual_limit = asyncio.Semaphore(self.config.visual_workers)
         self._tts_limit = asyncio.Semaphore(self.config.tts_workers)
         self._code_limit = asyncio.Semaphore(self.config.code_workers)
@@ -78,6 +108,13 @@ class PipelineV2:
         self._retry_scene_ids: set[str] | None = None
         self._retry_attempts: dict[str, int] = {}
         self._previous_scene_results: dict[str, SceneResult] = {}
+        self._previous_result: Optional[dict[str, Any]] = None
+        # Revision state: per-scene actions, the pre-revision timed narration
+        # they start from, and run-wide pronunciation/pacing overrides.
+        self._revision_actions: dict[str, SceneAction] = {}
+        self._revision_previous: dict[str, NarratedScene] = {}
+        self._lexicon: dict[str, str] = {}
+        self._speech_rates: dict[str, float] = {}
 
     def run(self, input_pdf: str | Path, *, run_dir: Optional[str | Path] = None) -> RunResult:
         input_path = Path(input_pdf).resolve()
@@ -111,6 +148,8 @@ class PipelineV2:
         if max_cost_usd is not None:
             config_data["max_cost_usd"] = max_cost_usd
         config = PipelineV2Config.model_validate(config_data)
+        if read_revision_state(path).get("pending"):
+            return cls._run_revision(path, config, Path(payload["input_pdf"]).resolve())
         return cls(config).run(payload["input_pdf"], run_dir=path)
 
     @classmethod
@@ -167,7 +206,123 @@ class PipelineV2:
         pipeline._retry_scene_ids = set(requested)
         pipeline._retry_attempts = retry_attempts
         pipeline._previous_scene_results = previous
+        pipeline._previous_result = payload.get("result")
         return pipeline.run(input_path, run_dir=path)
+
+    @classmethod
+    def revise(
+        cls,
+        run_dir: str | Path,
+        ops: list[RevisionOp],
+        *,
+        max_cost_usd: Optional[float] = None,
+        dry_run: bool = False,
+    ) -> tuple[RevisionPlan, Optional[RunResult]]:
+        """Apply professor edits to a finished run, rebuilding only affected scenes.
+
+        Returns the plan (changes and cost estimate) and, unless ``dry_run`` or
+        nothing changed, the result of the rebuilt run.
+        """
+
+        path = Path(run_dir).resolve()
+        state = load_run_state(path)
+        plan, revised = build_revision(state, ops)
+        if dry_run or not plan.actions:
+            return plan, None
+        payload = json.loads((path / "run.json").read_text(encoding="utf-8"))
+        input_path = Path(payload.get("input_pdf", "")).resolve()
+        if not input_path.is_file():
+            raise RevisionError(f"The run's input PDF is no longer available: {input_path}")
+        config_data = payload["config"]
+        if max_cost_usd is not None:
+            config_data["max_cost_usd"] = max_cost_usd
+        config = PipelineV2Config.model_validate(config_data)
+
+        revision_dir = revision_directory(path, plan.revision_number)
+        revision_dir.mkdir(parents=True, exist_ok=True)
+        before = {
+            "storyboard": json.loads((path / "storyboard.json").read_text(encoding="utf-8")),
+            "result": payload.get("result"),
+        }
+        _write_json(revision_dir / "before.json", before)
+        _write_json(revision_dir / "plan.json", plan.model_dump(mode="json"))
+
+        affected = plan.affected_scene_ids
+        audio_ids = [item.scene_id for item in plan.actions if item.audio != "reuse"]
+        store = RunStore(path / "run.db", config.max_cost_usd)
+        try:
+            frozen = load_frozen_planning(path)
+            if frozen is not None:
+                base_narration: Optional[NarrationPlan] = frozen[1]
+            else:
+                try:
+                    base_narration = NarrationPlan.model_validate(
+                        store.successful_task_output("narration")
+                    )
+                except ValueError:
+                    base_narration = None
+            retry_attempts = store.prepare_scene_revision(affected, audio_ids)
+        finally:
+            store.close()
+        _write_json(path / FROZEN_PLANNING_FILE, frozen_planning(
+            state.lesson, revised.narration, set(audio_ids), base_narration,
+        ))
+        _write_json(path / "storyboard.json", {
+            "lesson": state.lesson.model_dump(mode="json"),
+            "narration": revised.narration.model_dump(mode="json"),
+        })
+        write_revision_state(path, {
+            "revision": plan.revision_number,
+            "lexicon": revised.lexicon,
+            "speech_rates": revised.speech_rates,
+            "pending": {
+                "revision": plan.revision_number,
+                "actions": [item.model_dump(mode="json") for item in plan.actions],
+                "retry_attempts": retry_attempts,
+            },
+        })
+        return plan, cls._run_revision(path, config, input_path)
+
+    @classmethod
+    def _run_revision(cls, path: Path, config: PipelineV2Config, input_path: Path) -> RunResult:
+        """Run (or re-enter after an interruption) the pending revision of a run."""
+
+        state = read_revision_state(path)
+        pending = state["pending"]
+        number = int(pending["revision"])
+        revision_dir = revision_directory(path, number)
+        before = json.loads((revision_dir / "before.json").read_text(encoding="utf-8"))
+        actions = [SceneAction.model_validate(item) for item in pending["actions"]]
+        pipeline = cls(config)
+        pipeline._retry_scene_ids = {item.scene_id for item in actions}
+        pipeline._retry_attempts = {
+            key: int(value) for key, value in pending["retry_attempts"].items()
+        }
+        pipeline._previous_result = before.get("result")
+        pipeline._previous_scene_results = {
+            item["scene_id"]: SceneResult.model_validate(item)
+            for item in (before.get("result") or {}).get("scene_results", [])
+        }
+        pipeline._revision_actions = {item.scene_id: item for item in actions}
+        pipeline._revision_previous = {
+            scene.scene_id: scene
+            for scene in NarrationPlan.model_validate(before["storyboard"]["narration"]).scenes
+        }
+        result = pipeline.run(input_path, run_dir=path)
+        if result.status in (RunStatus.SUCCESS, RunStatus.PARTIAL_SUCCESS, RunStatus.FAILED):
+            # Interrupted and budget-paused revisions stay pending so a resume
+            # continues them instead of reverting to the cached planner output.
+            state["pending"] = None
+            write_revision_state(path, state)
+        _write_json(revision_dir / "result.json", {
+            "revision": number,
+            "status": result.status.value,
+            "message": result.message,
+            "rebuilt_scene_ids": sorted(pipeline._retry_scene_ids),
+            "total_cost_usd": result.estimated_cost_usd,
+            "final_video_path": result.final_video_path,
+        })
+        return result
 
     async def _run(self, input_path: Path, resume_dir: Optional[Path]) -> RunResult:
         run_dir, run_id = self._prepare_run(input_path, resume_dir)
@@ -193,7 +348,20 @@ class PipelineV2:
             self.config.max_scenes,
             self.config.min_scenes,
             self.config.pacing,
+            audience=self.config.audience,
+            directives=self.directives,
+            concept_plan=(ConceptPlan.model_validate(self.config.concept_plan)
+                          if self.config.concept_plan is not None else None),
+            target_minutes=self.config.target_minutes,
         )
+        controls = {
+            key: value for key, value in {
+                "directives": self.config.directives,
+                "concept_plan": self.config.concept_plan,
+                "target_minutes": self.config.target_minutes,
+            }.items() if value is not None
+        }
+        compliance = []
         generator = CodeGenerationService(router)
         audio = NarrationAudioService(
             self.store, self.artifacts, voice=self.config.voice,
@@ -204,6 +372,13 @@ class PipelineV2:
             ),
         )
         result = RunResult(run_id=run_id, run_directory=str(run_dir), status=RunStatus.RUNNING)
+        revision_state = read_revision_state(run_dir)
+        self._lexicon = dict(revision_state.get("lexicon") or {})
+        self._speech_rates = {
+            key: float(value)
+            for key, value in (revision_state.get("speech_rates") or {}).items()
+        }
+        frozen_plan = load_frozen_planning(run_dir)
 
         try:
             if self._retry_scene_ids is not None:
@@ -221,6 +396,17 @@ class PipelineV2:
                     message="Reusing grounded planning and narration for selected scene retries.",
                     scene_ids=sorted(self._retry_scene_ids),
                     retry_attempts=self._retry_attempts,
+                )
+            elif frozen_plan is not None:
+                # A revised run restarts from its edited storyboard; rerunning
+                # the cached planner output would silently undo the edits.
+                source = SourceDocument.model_validate_json(
+                    (run_dir / "source" / "document.json").read_text(encoding="utf-8")
+                )
+                lesson, narration = frozen_plan
+                self.artifacts.event(
+                    "revised_planning_reused", stage="narration",
+                    message="Reusing the revised storyboard instead of the original plan.",
                 )
             else:
                 input_hash = hashlib.sha256(input_path.read_bytes()).hexdigest()
@@ -240,6 +426,8 @@ class PipelineV2:
                     dependencies=["source"],
                 )
                 source = SourceDocument.model_validate(enriched_data)
+                source, scope_checks = apply_scope(source, self.directives)
+                compliance.extend(scope_checks)
                 self.artifacts.write_json("source/document.json", source.model_dump(mode="json"))
 
                 lesson_data = await self._task(
@@ -248,6 +436,7 @@ class PipelineV2:
                      "min_scenes": self.config.min_scenes,
                      "max_scenes": self.config.max_scenes,
                      "pacing": self.config.pacing,
+                     **controls,
                      "structured_output_version": STRUCTURED_OUTPUT_VERSION,
                      "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
                     lambda: planner.lesson(source),
@@ -265,6 +454,7 @@ class PipelineV2:
                     {"lesson": lesson.model_dump(mode="json"),
                      "prompt_version": NARRATION_PROMPT_VERSION,
                      "pacing": self.config.pacing,
+                     **controls,
                      "structured_output_version": STRUCTURED_OUTPUT_VERSION,
                      "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
                     lambda: planner.narration(lesson, source),
@@ -289,6 +479,22 @@ class PipelineV2:
                             "source-grounded plan."
                         ),
                     )
+            compliance.extend(check_lesson_directives(
+                lesson, source, self.directives, planner.omitted_concepts,
+            ))
+            narration, narration_checks = enforce_narration_directives(
+                narration, self.directives, planner.omitted_concepts,
+            )
+            compliance.extend(narration_checks)
+            if controls:
+                self.artifacts.write_json("professor_controls.json", controls)
+                self.artifacts.write_json("compliance.json", [
+                    item.model_dump(mode="json") for item in compliance
+                ])
+                if planner.length_report:
+                    self.artifacts.write_json("length_budget.json", planner.length_report)
+                if self.config.policy == "strict" and any(not item.passed for item in compliance):
+                    raise RuntimeError("Professor directives failed compliance; inspect compliance.json")
             write_storyboard(self.artifacts, lesson, narration)
             result.total_scenes = len(lesson.scenes)
 
@@ -347,8 +553,13 @@ class PipelineV2:
                         message="Reused the run's existing narration audio without a paid TTS call.",
                     )
                 elif self.config.enable_tts:
+                    retry_number = self._retry_attempts.get(scene.scene_id)
                     tts_tasks[scene.scene_id] = asyncio.create_task(
-                        self._tts_task(audio, scene, scene_dirs[scene.scene_id]),
+                        self._tts_task(
+                            audio, scene,
+                            scene_dirs[scene.scene_id] if not retry_number
+                            else scene_dirs[scene.scene_id] / "retries" / f"retry-{retry_number:02d}",
+                        ),
                         name=f"tts-{scene.scene_id}",
                     )
                 else:
@@ -415,6 +626,14 @@ class PipelineV2:
             _audit_repeated_visuals(result.scene_results, self.artifacts)
             timed_scenes = [NarratedScene.model_validate(await tts_tasks[scene.scene_id])
                             for scene in narration.scenes]
+            if planner.target_minutes:
+                compliance.append(length_check(
+                    sum(scene.audio_duration_seconds or 0.0 for scene in timed_scenes),
+                    planner.target_minutes,
+                ))
+                self.artifacts.write_json("compliance.json", [
+                    item.model_dump(mode="json") for item in compliance
+                ])
             write_storyboard(self.artifacts, lesson, NarrationPlan(scenes=timed_scenes))
 
             successful = [scene for scene in result.scene_results if scene.success]
@@ -496,6 +715,37 @@ class PipelineV2:
             else:
                 result.status = RunStatus.FAILED
                 result.message = "No deliverable scene videos were produced."
+            if self.config.enable_delivery_checks and result.final_video_path and self.config.enable_tts:
+                clips = [SceneClip(
+                    scene_id=item.scene_id, composed_path=Path(item.final_video_path),
+                    render_path=Path(item.render_video_path) if item.render_video_path else None,
+                    audio_path=Path(item.audio_path) if item.audio_path else None,
+                    narration_seconds=timed_by_id[item.scene_id].audio_duration_seconds,
+                    tail_seconds=timed_by_id[item.scene_id].audio_tail_seconds,
+                    silent_narration=timed_by_id[item.scene_id].audio_is_placeholder,
+                ) for item in successful if item.final_video_path]
+                report = await asyncio.to_thread(
+                    run_delivery_gate, clips, Path(result.final_video_path),
+                    max_repair_rounds=self.config.max_delivery_repair_rounds,
+                    reconcat=lambda paths: concatenate(paths, run_dir / "final.mp4"),
+                )
+                self.artifacts.write_json(
+                    "delivery_report.json", report.model_dump(mode="json"),
+                )
+                result.delivery_status = report.status
+                result.delivery_report_path = str(run_dir / "delivery_report.json")
+                result.delivery_summary = report.summary.splitlines()
+                self.artifacts.event("delivery_checked", stage="delivery", message=report.summary)
+                if report.status != "ready":
+                    result.status = (RunStatus.FAILED if self.config.policy == "strict"
+                                     else RunStatus.PARTIAL_SUCCESS)
+                    if self.config.policy == "strict":
+                        result.final_video_path = None
+                    result.message = "Final media needs review; inspect delivery_report.json."
+            if self.config.policy == "strict" and any(not item.passed for item in compliance):
+                result.status = RunStatus.FAILED
+                result.final_video_path = None
+                result.message = "Strict policy withheld final delivery because professor controls failed."
             if self._retry_scene_ids is not None:
                 scene_list = ", ".join(sorted(self._retry_scene_ids))
                 if not result.message:
@@ -534,13 +784,41 @@ class PipelineV2:
         scene: NarratedScene,
         scene_dir: Path,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "narration": scene.model_dump(mode="json"), "voice": self.config.voice,
+            "stage_version": TTS_TIMING_VERSION, "quality": self.config.quality,
+        }
+        # Pronunciation and pacing overrides enter the hash only for scenes
+        # they touch, so every other scene keeps its cached paid audio.
+        lexicon = lexicon_for(" ".join(beat.text for beat in scene.beats), self._lexicon)
+        speech_rate = self._speech_rates.get(scene.scene_id)
+        if lexicon:
+            payload["lexicon"] = lexicon
+        if speech_rate is not None:
+            payload["speech_rate"] = speech_rate
+
+        def operation() -> Awaitable[Any]:
+            action = self._revision_actions.get(scene.scene_id)
+            previous = self._revision_previous.get(scene.scene_id)
+            recorded = (
+                action is not None and previous is not None and previous.audio_path
+                and Path(previous.audio_path).is_file()
+                and self.store.has_paid_call(scene.scene_id, "tts")
+            )
+            if recorded and action.audio == "retime":
+                return _return(retime(scene, previous))
+            if recorded and action.audio == "repace":
+                raw = raw_audio_path(self.artifacts.run_dir, previous)
+                if raw is not None:
+                    return service.repace(
+                        scene, raw, scene_dir,
+                        speech_rate if speech_rate is not None else service.speech_rate,
+                    )
+            return service.generate(scene, scene_dir, lexicon=lexicon, speech_rate=speech_rate)
+
         async with self._tts_limit:
             return await self._task(
-                f"tts-{scene.scene_id}", "tts", scene.scene_id,
-                {"narration": scene.model_dump(mode="json"), "voice": self.config.voice,
-                 "stage_version": TTS_TIMING_VERSION,
-                 "quality": self.config.quality},
-                lambda: service.generate(scene, scene_dir),
+                f"tts-{scene.scene_id}", "tts", scene.scene_id, payload, operation,
                 dependencies=["narration"],
             )
 
@@ -624,19 +902,55 @@ class PipelineV2:
             )
             fact_ids = {fact_id for beat in timed_scene.beats for fact_id in beat.source_fact_ids}
             facts = [fact for fact in source.facts if fact.fact_id in fact_ids]
+            code_payload: dict[str, Any] = {
+                "scene": timed_scene.model_dump(mode="json"), "prompt_version": CODE_PROMPT_VERSION,
+                "contract": contract.model_dump(mode="json"),
+                "lesson_scene": lesson_scene.model_dump(mode="json"),
+                "visual_history": visual_history,
+                "retry_attempt": retry_attempt,
+            }
+            rules = notation_rules(self.directives)
+            if rules:
+                code_payload["notation_rules"] = rules
+            notation_kwargs = {"notation_rules": rules} if rules else {}
+            action = self._revision_actions.get(scene_id)
+            previous_code = self._previous_code(scene_id) if action is not None else None
+            code_mode = "generate"
+            if action is not None and previous_code is not None:
+                if action.code == "reinstrument":
+                    code_mode = "reinstrument"
+                    code_payload.update({
+                        "code_mode": code_mode, "base_code": _hash_text(previous_code),
+                    })
+                elif action.instruction:
+                    code_mode = "revise"
+                    code_payload.update({
+                        "revision_instruction": action.instruction,
+                        "base_code": _hash_text(previous_code),
+                    })
+
+            def generate_code() -> Awaitable[str]:
+                if code_mode == "reinstrument":
+                    # Same visuals, new narration timing: no model call.
+                    return _return(generator.reinstrument(previous_code, timed_scene, contract))
+                if code_mode == "revise":
+                    return generator.revise(
+                        scene=timed_scene, contract=contract, code=previous_code,
+                        instruction=action.instruction, lesson_scene=lesson_scene,
+                        visual_history=visual_history,
+                        **notation_kwargs,
+                    )
+                return generator.generate(
+                    timed_scene, contract, facts, lesson_scene=lesson_scene,
+                    visual_history=visual_history,
+                    retry_attempt=retry_attempt,
+                    **notation_kwargs,
+                )
+
             async with self._code_limit:
                 code_data = await self._task(
-                    f"code-{scene_id}", "code_generation", scene_id,
-                    {"scene": timed_scene.model_dump(mode="json"), "prompt_version": CODE_PROMPT_VERSION,
-                     "contract": contract.model_dump(mode="json"),
-                     "lesson_scene": lesson_scene.model_dump(mode="json"),
-                     "visual_history": visual_history,
-                     "retry_attempt": retry_attempt},
-                    lambda: generator.generate(
-                        timed_scene, contract, facts, lesson_scene=lesson_scene,
-                        visual_history=visual_history,
-                        retry_attempt=retry_attempt,
-                    ),
+                    f"code-{scene_id}", "code_generation", scene_id, code_payload,
+                    generate_code,
                     dependencies=[f"tts-{scene_id}", f"visual-{_batch_index(scene_id, lesson):03d}"],
                 )
             code = str(code_data)
@@ -667,6 +981,7 @@ class PipelineV2:
                     dependencies=[f"code-{scene_id}"],
                 )
             original = _outcome(original_data)
+            self._check_notation(code, original)
             self.artifacts.write_json(
                 artifact_prefix / "attempt-00" / "diagnostics.json",
                 _serialize(original),
@@ -732,6 +1047,7 @@ class PipelineV2:
                                 dependencies=[repair_task],
                             )
                         repaired = _outcome(repaired_data)
+                        self._check_notation(repaired_code, repaired)
                         self.artifacts.write_json(
                             artifact_prefix / f"attempt-{attempt_label}" / "diagnostics.json",
                             _serialize(repaired),
@@ -795,6 +1111,7 @@ class PipelineV2:
                         dependencies=[selected_preview_task],
                     )
                 final_render = _outcome(final_data)
+                self._check_notation(selected_code, final_render)
                 result.findings = final_render.findings
                 result.frame_paths = final_render.frame_paths or selected.frame_paths
                 if self.config.verifier_mode == "audit":
@@ -803,6 +1120,7 @@ class PipelineV2:
                     final_render, self.config.verifier_mode, self.config.policy,
                 )
                 render_path = Path(final_render.video_path) if final_acceptable and final_render.video_path else Path(selected.video_path)
+                result.render_video_path = str(render_path)
                 if not final_acceptable and self.config.policy == "strict":
                     raise RuntimeError(final_render.error or "High-quality render failed")
                 if not final_acceptable and _source_fallback_allowed(
@@ -902,6 +1220,19 @@ class PipelineV2:
                 "scene_failed", stage="scene", scene_id=scene_id, message=str(exc),
             )
             return result
+
+    def _check_notation(self, code: str, outcome: RenderOutcome) -> None:
+        for message in notation_findings(code, self.directives):
+            outcome.findings.append(VerificationFinding(
+                code="NOTATION_DIRECTIVE", severity="error", message=message,
+            ))
+
+    def _previous_code(self, scene_id: str) -> Optional[str]:
+        previous = self._previous_scene_results.get(scene_id)
+        path = previous.final_code_path if previous else None
+        if not path or not Path(path).is_file():
+            return None
+        return Path(path).read_text(encoding="utf-8")
 
     def _log_audit_outcome(
         self, scene_id: str, stage: str, outcome: RenderOutcome,
@@ -1010,9 +1341,18 @@ class PipelineV2:
         }
         if result:
             payload["result"] = result.to_dict()
+        elif self._previous_result:
+            payload["result"] = self._previous_result
         self.artifacts.write_json("run.json", payload)
 
     def _finalize(self, input_path: Path, result: RunResult) -> RunResult:
+        if self._retry_scene_ids is not None and not result.scene_results:
+            # A retry or revision that stopped early (budget, interruption)
+            # must not erase the scene results later retries build on.
+            result.scene_results = list(self._previous_scene_results.values())
+            result.total_scenes = len(result.scene_results)
+            result.successful_scenes = sum(scene.success for scene in result.scene_results)
+            result.failed_scenes = result.total_scenes - result.successful_scenes
         result.estimated_cost_usd = self.store.total_cost()
         self.store.set_meta("status", result.status.value)
         write_costs(self.artifacts, self.store)
@@ -1030,6 +1370,11 @@ class PipelineV2:
 
 async def _return(value: T) -> T:
     return value
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
 
 def _serialize(value: Any) -> Any:

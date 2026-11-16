@@ -178,6 +178,9 @@ a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <li>Accumulated worker time: {total_compute / 1000:.1f}s ({parallel_ratio:.2f}x wall time)</li></ul>
 <p><a href="storyboard.md">Storyboard</a> | <a href="costs.json">Costs</a> |
 <a href="events.jsonl">Events</a> | <a href="pipeline.log">Human log</a></p>
+<p>{_artifact_link(artifacts.run_dir, 'Delivery checks', result.delivery_report_path)}
+{_artifact_link(artifacts.run_dir, 'Professor compliance', artifacts.run_dir / 'compliance.json')}</p>
+<p>Delivery: {html.escape(result.delivery_status or 'not checked')}</p>
 <h2>Critical path</h2><p>{critical_display} <small>({critical_ms / 1000:.2f}s accumulated)</small></p>
 <h2>Stage activity</h2><table><thead><tr><th>Stage</th><th>Tasks</th><th>Succeeded</th>
 <th>Failed</th><th>Worker time</th></tr></thead><tbody>{stage_rows}</tbody></table>

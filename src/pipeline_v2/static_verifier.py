@@ -16,6 +16,23 @@ class V2StaticVerifier(StaticManimVerifier):
         r"\cancel": "The default Manim TeX template does not load cancel.sty.",
         r"\begin{align}": r"Use aligned inside MathTex instead of a full align environment.",
     }
+    # TeX primitives that read or write files, run shell commands, load
+    # packages, define macros or rebuild a control sequence from characters
+    # (\csname, \scantokens, ^^5c). A superset of the legacy validator's
+    # _TEX_FORBIDDEN. The lookahead keeps \infty, \int, \in and \deg legal.
+    FORBIDDEN_TEX = re.compile(
+        r"\\@{0,2}(?:input|include|includegraphics|InputIfFileExists|lstinputlisting"
+        r"|verbatiminput|openout|openin|newread|newwrite|read|readline|write"
+        r"|immediate|special|catcode|csname|expandafter|expanded|scantokens"
+        r"|directlua|luaexec|ShellEscape|pdffiledump|pdfmdfivesum|usepackage"
+        r"|RequirePackage|def|gdef|edef|xdef)(?![A-Za-z])"
+        r"|\^\^"
+    )
+    # Callables that read a file named by their argument. Generated V2 scenes
+    # ship no asset files, so a path is either broken or an exfiltration try.
+    FILE_ONLY_READERS = {"SVGMobject", "TexTemplateFromFile", "from_file"}
+    FILE_OR_ARRAY_READERS = {"ImageMobject"}
+    PATH_CONSTRUCTORS = {"Path", "PurePath", "PosixPath", "WindowsPath", "str"}
 
     def __init__(
         self,
@@ -98,8 +115,129 @@ class V2StaticVerifier(StaticManimVerifier):
                     code="UNSUPPORTED_LATEX", severity="error",
                     message=f"Unsupported LaTeX {macro}. {guidance}", code_lines=[line],
                 ))
+        self._check_forbidden_tex(tree, source, report.issues)
+        self._check_file_read_mobjects(tree, report.issues)
         report.safe = not any(issue.severity == "error" for issue in report.issues)
         return report
+
+    def _check_forbidden_tex(
+        self, tree: ast.AST, source: str, issues: list[VerificationIssue],
+    ) -> None:
+        # The raw source catches every spelling written out literally, on its
+        # exact line. The parsed strings also catch "\\inp" "ut",
+        # "\\inp" + "ut" and "\x5cinput", which only exist after evaluation.
+        # "^^" is only looked for inside strings: in a comment it is an arrow.
+        hits = {
+            (match.group(0), source.count("\n", 0, match.start()) + 1)
+            for match in self.FORBIDDEN_TEX.finditer(source)
+            if match.group(0) != "^^"
+        }
+        assembled = set()
+        for node in ast.walk(tree):
+            text = self._static_string(node)
+            if text is None:
+                continue
+            last_line = getattr(node, "end_lineno", None) or node.lineno
+            for match in self.FORBIDDEN_TEX.finditer(text):
+                token = match.group(0)
+                already_located = any(
+                    found == token and node.lineno <= line <= last_line
+                    for found, line in hits
+                )
+                if not already_located:
+                    assembled.add((token, node.lineno))
+        for token, line in sorted(hits | assembled, key=lambda item: (item[1], item[0])):
+            issues.append(VerificationIssue(
+                code="FORBIDDEN_TEX", severity="error",
+                message=(
+                    f"Forbidden TeX {token}: file, shell, package, macro-definition "
+                    "and character-escape commands are not allowed in scene text."
+                ),
+                code_lines=[line],
+            ))
+
+    def _check_file_read_mobjects(
+        self, tree: ast.AST, issues: list[VerificationIssue],
+    ) -> None:
+        readers = self.FILE_ONLY_READERS | self.FILE_OR_ARRAY_READERS
+        path_names = {
+            target.id
+            for node in ast.walk(tree) if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name) and self._is_path_expression(node.value)
+        }
+        call_targets = {
+            id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = self._call_name(node.func).rsplit(".", 1)[-1]
+                if name in self.FILE_ONLY_READERS:
+                    reads_file = True
+                elif name in self.FILE_OR_ARRAY_READERS:
+                    argument = node.args[0] if node.args else next(
+                        (kw.value for kw in node.keywords if kw.arg == "filename_or_array"),
+                        None,
+                    )
+                    reads_file = argument is not None and (
+                        self._is_path_expression(argument)
+                        or (isinstance(argument, ast.Name) and argument.id in path_names)
+                    )
+                else:
+                    continue
+                message = (
+                    f"{name}(...) would read a file; generated scenes have no "
+                    "asset files. Build visuals from Manim primitives (an "
+                    "ImageMobject may take a pixel array)."
+                )
+            elif id(node) not in call_targets and (
+                (isinstance(node, ast.Name) and node.id in readers)
+                or (isinstance(node, ast.Attribute) and node.attr in readers)
+            ):
+                # Reader = SVGMobject; Reader("keys.env") hides the call above.
+                name = node.id if isinstance(node, ast.Name) else node.attr
+                reads_file = True
+                message = (
+                    f"{name} reads files and may only be called directly, "
+                    "never aliased or passed around."
+                )
+            else:
+                continue
+            if reads_file:
+                issues.append(VerificationIssue(
+                    code="FILE_READ_MOBJECT", severity="error",
+                    message=message, code_lines=[node.lineno],
+                ))
+
+    @classmethod
+    def _static_string(cls, node: ast.AST) -> str | None:
+        """Text of a string literal, f-string or ``+`` chain of them, else None."""
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else None
+        if isinstance(node, ast.JoinedStr):
+            return "".join(cls._static_string(part) or "" for part in node.values)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = cls._static_string(node.left)
+            right = cls._static_string(node.right)
+            return left + right if left is not None and right is not None else None
+        return None
+
+    @classmethod
+    def _is_path_expression(cls, node: ast.AST) -> bool:
+        """True for expressions that are obviously a file path, not an array."""
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (str, bytes))
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.BinOp):  # "dir/" + name, Path(...) / "x.png"
+            return cls._is_path_expression(node.left) or cls._is_path_expression(node.right)
+        if isinstance(node, ast.Call):
+            callee = cls._call_name(node.func)
+            return (
+                callee.rsplit(".", 1)[-1] in cls.PATH_CONSTRUCTORS
+                or callee.endswith((".format", ".join"))
+            )
+        return False
 
     @staticmethod
     def _literal_first_args(tree: ast.AST, method: str) -> set[str]:

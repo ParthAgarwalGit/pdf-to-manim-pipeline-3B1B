@@ -96,6 +96,13 @@ def pdf2manim() -> None:
 @click.option("--code-workers", type=click.IntRange(1, 8), default=3, show_default=True)
 @click.option("--preview-workers", type=click.IntRange(1, 4), default=2, show_default=True)
 @click.option("--render-workers", type=click.IntRange(1, 2), default=1, show_default=True)
+@click.option("--render-sandbox", type=click.Choice(["native", "docker"]), default="native")
+@click.option("--sandbox-image", default="pdf2manim:latest")
+@click.option("--delivery-check/--no-delivery-check", default=True)
+@click.option("--target-minutes", type=click.FloatRange(min=0.01), default=None)
+@click.option("--brief", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--directives", "directives_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--plan", "plan_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 def convert(
     input_pdf: str,
     output_dir: Path,
@@ -119,11 +126,31 @@ def convert(
     code_workers: int,
     preview_workers: int,
     render_workers: int,
+    render_sandbox: str,
+    sandbox_image: str,
+    delivery_check: bool,
+    target_minutes: Optional[float],
+    brief: Optional[Path],
+    directives_path: Optional[Path],
+    plan_path: Optional[Path],
 ) -> None:
     """Run a new V2 conversion for INPUT_PDF."""
     effective_policy = "strict" if strict else policy
     if min_scenes is not None and min_scenes > max_scenes:
         raise click.UsageError("--min-scenes cannot exceed --max-scenes")
+    if brief and directives_path:
+        raise click.UsageError("Use --brief or --directives, not both.")
+    from src.pipeline_v2.directives import ConceptPlan, interpret_brief, load_directives
+
+    try:
+        directives = (load_directives(directives_path) if directives_path else
+                      interpret_brief(brief.read_text(encoding="utf-8")) if brief else None)
+        concept_plan = ConceptPlan.load(plan_path) if plan_path else None
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if directives:
+        for line in directives.readback():
+            click.echo(f"  Brief: {line}")
     config = PipelineV2Config(
         output_dir=output_dir,
         quality=quality,
@@ -145,6 +172,12 @@ def convert(
         code_workers=code_workers,
         preview_workers=preview_workers,
         render_workers=render_workers,
+        render_sandbox=render_sandbox,
+        render_sandbox_image=sandbox_image,
+        enable_delivery_checks=delivery_check,
+        target_minutes=target_minutes,
+        directives=directives.model_dump(mode="json", by_alias=True) if directives else None,
+        concept_plan=concept_plan.model_dump(mode="json") if concept_plan else None,
     )
     click.echo("pdf2manim V2")
     click.echo(f"  Input:       {input_pdf}")
@@ -159,6 +192,21 @@ def convert(
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
     result = PipelineV2(config).run(input_pdf)
     _print_result(result)
+
+
+@pdf2manim.command("plan")
+@click.argument("input_pdf", callback=_pdf_path)
+@click.option("-o", "--out", type=click.Path(path_type=Path), default=Path("concept_plan.yaml"))
+def plan_command(input_pdf: str, out: Path) -> None:
+    """Create a source-grounded editable outline locally, without API calls."""
+    from src.pipeline_v2.directives import ConceptPlan
+    from src.pipeline_v2.planning import PlanningService, extract_source
+
+    source = extract_source(Path(input_pdf))
+    lesson = PlanningService(None)._fallback_lesson(source)
+    ConceptPlan.from_lesson(lesson, source).save(out)
+    click.echo(f"Concept plan: {out.resolve()}")
+    click.echo("Paid calls made: 0")
 
 
 @pdf2manim.command("resume")
@@ -199,6 +247,102 @@ def retry_scenes_command(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _print_result(result)
+
+
+def _pairs(values: tuple[str, ...], option: str) -> list[tuple[str, str]]:
+    pairs = []
+    for value in values:
+        key, separator, text = value.partition("=")
+        if not separator or not key.strip() or not text.strip():
+            raise click.UsageError(f"{option} expects KEY=VALUE, got {value!r}")
+        pairs.append((key.strip(), text.strip()))
+    return pairs
+
+
+@pdf2manim.command("revise")
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--ops", "ops_file", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="YAML or JSON file with a list of revision ops.",
+)
+@click.option("--edit", "edits", multiple=True, metavar="BEAT_ID=TEXT",
+              help="Replace one narration beat's text.")
+@click.option("--pause", "pauses", multiple=True, metavar="BEAT_ID=SECONDS",
+              help="Set the pause after one beat (0-1.5 s).")
+@click.option("--pronounce", "pronunciations", multiple=True, metavar="WORD=SAY_AS",
+              help="Have the voice say WORD as SAY_AS.")
+@click.option("--fix-visual", "visual_fixes", multiple=True, metavar="SCENE_ID=INSTRUCTION",
+              help="Regenerate one scene's visuals with an instruction; keeps its audio.")
+@click.option("--pacing", type=click.Choice(["standard", "relaxed"]), default=None,
+              help="Re-pace every scene's narration.")
+@click.option("--dry-run", is_flag=True, help="Show the changes and estimate; spend nothing.")
+@click.option("--yes", is_flag=True, help="Apply without asking for confirmation.")
+@click.option(
+    "--max-cost", type=click.FloatRange(min=0.01), default=None,
+    help="New total run budget ceiling, including money already spent.",
+)
+def revise_command(
+    run_directory: Path,
+    ops_file: Optional[Path],
+    edits: tuple[str, ...],
+    pauses: tuple[str, ...],
+    pronunciations: tuple[str, ...],
+    visual_fixes: tuple[str, ...],
+    pacing: Optional[str],
+    dry_run: bool,
+    yes: bool,
+    max_cost: Optional[float],
+) -> None:
+    """Edit a finished run and rebuild only the scenes the edits affect."""
+    from src.pipeline_v2.revision import RevisionError, load_ops, parse_ops, plan_revision
+
+    try:
+        raw_ops: list[dict] = (
+            [op.model_dump(mode="json") for op in load_ops(ops_file)] if ops_file else []
+        )
+        raw_ops += [{"op": "edit_beat", "beat_id": key, "text": text}
+                    for key, text in _pairs(edits, "--edit")]
+        for key, text in _pairs(pauses, "--pause"):
+            try:
+                raw_ops.append({"op": "set_pause", "beat_id": key, "pause_seconds": float(text)})
+            except ValueError as exc:
+                raise click.UsageError(f"--pause expects BEAT_ID=SECONDS, got {text!r}") from exc
+        raw_ops += [{"op": "pronounce", "word": key, "say_as": text}
+                    for key, text in _pairs(pronunciations, "--pronounce")]
+        raw_ops += [{"op": "fix_visual", "scene_id": key, "instruction": text}
+                    for key, text in _pairs(visual_fixes, "--fix-visual")]
+        if pacing:
+            raw_ops.append({"op": "set_pacing", "pacing": pacing})
+        if not raw_ops:
+            raise click.UsageError(
+                "Nothing to revise: pass --ops, --edit, --pause, --pronounce, --fix-visual or --pacing."
+            )
+        ops = parse_ops(raw_ops)
+        plan = plan_revision(run_directory, ops)
+    except RevisionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo("pdf2manim V2 revision")
+    click.echo(f"  Run:      {run_directory.resolve()}")
+    click.echo(f"  Rebuild:  {', '.join(plan.affected_scene_ids) or 'nothing'}")
+    click.echo(f"  Reusing:  planning and {len(plan.reused_scene_ids)} untouched scene(s)")
+    for line in plan.summary_lines():
+        click.echo(f"  {line}")
+    if not plan.actions:
+        click.echo("No scene needs rebuilding.")
+        return
+    if dry_run:
+        click.echo("Dry run: nothing was changed or spent.")
+        return
+    if not yes and not click.confirm("Apply this revision?", default=False):
+        click.echo("Revision cancelled; nothing was changed.")
+        return
+    try:
+        _plan, result = PipelineV2.revise(run_directory, ops, max_cost_usd=max_cost)
+    except RevisionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if result is not None:
+        _print_result(result)
 
 
 @pdf2manim.command()
@@ -462,6 +606,9 @@ def _print_result(result) -> None:
     click.echo(f"Final video:  {result.final_video_path or 'not produced'}")
     if result.message:
         click.echo(f"Message:      {result.message}")
+    if result.delivery_status:
+        click.echo(f"Delivery:     {result.delivery_status}")
+        click.echo(f"Delivery log: {result.delivery_report_path}")
     if result.status == RunStatus.FAILED:
         raise click.ClickException("Conversion failed; inspect the run report.")
     if result.status == RunStatus.PAUSED_BUDGET:

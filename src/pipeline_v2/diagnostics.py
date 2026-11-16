@@ -104,6 +104,9 @@ def analyze_trace(
     for record in records:
         beat_id = record.get("beat_id") or ""
         event = record.get("event") or ""
+        if event in {"beat_late", "scene_overrun"}:
+            _sync_finding(findings, seen_keys, event, record.get("sync"))
+            continue
         if event not in {"add", "remove", "play", "play_sample", "wait", "final"}:
             continue
         expected = expected_by_beat.get(beat_id, set())
@@ -178,6 +181,30 @@ def analyze_trace(
                  f"Preview is {video_duration:.2f}s but narration is {scene.audio_duration_seconds:.2f}s.",
                  video_duration, [])
     return findings
+
+
+def _sync_finding(findings, seen, event, sync):
+    """Report late narration sync recorded by TrackedScene.
+
+    Always a warning: an error would trigger paid vision repair and fail the
+    strict policy, and a late beat is something to report, not to regenerate.
+    """
+
+    try:
+        scheduled = float(sync["scheduled_seconds"])
+        actual = float(sync["actual_seconds"])
+        lag = float(sync["lag_seconds"])
+    except (KeyError, TypeError, ValueError):
+        return
+    if event == "beat_late":
+        _add(findings, seen, "BEAT_LATE", "warning",
+             f"Beat {sync.get('beat_id') or 'unknown'} starts {lag:.2f}s late: its narration "
+             f"begins at {scheduled:.2f}s but its animation begins at {actual:.2f}s.",
+             actual, [])
+    else:
+        _add(findings, seen, "SCENE_OVERRUN", "warning",
+             f"The animation runs {lag:.2f}s past the end of the narration at {scheduled:.2f}s.",
+             actual, [])
 
 
 def _bounds_checks(findings, seen, item, timestamp):

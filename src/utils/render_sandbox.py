@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -44,6 +45,9 @@ CONTAINER_WORKDIR = "/work"
 # Extra wall-clock the host allows on top of the in-container time limit for
 # container start-up and teardown before it force-removes the container.
 DOCKER_GRACE_SECONDS = 30
+
+# How long a killed render gets to hand over its remaining stdout/stderr.
+KILL_DRAIN_SECONDS = 10
 
 # Uid/gid of ``nobody``: the container user when the host user is root.
 NOBODY = "65534:65534"
@@ -128,13 +132,21 @@ def build_docker_argv(
     container_command: Sequence[str],
     timeout_seconds: int,
     name: str,
+    extra_env: Optional[Mapping[str, str]] = None,
 ) -> list:
     """``docker run`` argv that executes ``container_command`` in isolation.
 
     The only host path the container can see is ``scratch_dir`` (mounted
     read-write at ``CONTAINER_WORKDIR``). Environment variables are set
-    explicitly; nothing is inherited from the host and no env file is used.
+    explicitly (the two fixed ones plus ``extra_env``, whose path values must
+    already be container paths); nothing is inherited from the host and no
+    env file is used.
     """
+    extra_env_flags = [
+        item
+        for key, value in (extra_env or {}).items()
+        for item in ("--env", f"{key}={value}")
+    ]
     return [
         config.docker_binary, "run", "--rm",
         "--name", name,
@@ -153,6 +165,7 @@ def build_docker_argv(
         "--workdir", CONTAINER_WORKDIR,
         "--env", "HOME=/tmp",
         "--env", "PYTHONDONTWRITEBYTECODE=1",
+        *extra_env_flags,
         # In-container wall-clock limit: holds even if the host process dies.
         "--entrypoint", "timeout",
         config.image,
@@ -259,7 +272,149 @@ def run_manim(
         raise
 
 
-def _container_path(path: Path, scratch_dir: Path) -> str:
+def host_timeout(sandbox: Optional[RenderSandboxConfig], timeout_seconds: int) -> int:
+    """Host-side wait for a render whose own limit is ``timeout_seconds``."""
+    if sandbox is not None and sandbox.is_docker:
+        return timeout_seconds + DOCKER_GRACE_SECONDS
+    return timeout_seconds
+
+
+def kill_process_tree(process: subprocess.Popen) -> None:
+    """Kill ``process`` and its descendants. Never raises.
+
+    Manim spawns LaTeX, dvisvgm and ffmpeg children; killing only the Python
+    parent leaves them running and holding the scratch dir and the pipes.
+    """
+    try:
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int) and process.poll() is None:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            else:
+                group = os.getpgid(pid)
+                # Only a group the child leads; never the caller's own group.
+                if group == pid and group != os.getpgid(0):
+                    os.killpg(group, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        process.kill()
+    except Exception:
+        pass
+
+
+@dataclass(eq=False)  # identity hash: handles are tracked in sets
+class ManimProcess:
+    """A running render that can be waited on and cancelled."""
+
+    process: subprocess.Popen
+    sandbox: RenderSandboxConfig
+    container_name: Optional[str] = None
+
+    @property
+    def returncode(self) -> Optional[int]:
+        return self.process.returncode
+
+    def communicate(self, timeout: Optional[float] = None) -> tuple[str, str]:
+        """Wait for the render and return ``(stdout, stderr)``.
+
+        On timeout the render is killed and ``subprocess.TimeoutExpired`` is
+        re-raised carrying whatever output could still be collected.
+        """
+        try:
+            stdout, stderr = self.process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            self.kill()
+            stdout, stderr = exc.stdout, exc.stderr
+            try:
+                stdout, stderr = self.process.communicate(timeout=KILL_DRAIN_SECONDS)
+            except Exception:
+                pass
+            raise subprocess.TimeoutExpired(
+                exc.cmd, exc.timeout, output=_text(stdout), stderr=_text(stderr),
+            ) from None
+        return _text(stdout), _text(stderr)
+
+    def kill(self) -> None:
+        """Stop the render: process tree, then the container. Never raises."""
+        kill_process_tree(self.process)
+        if self.container_name:
+            # Killing the docker client does not stop the container.
+            _force_remove(self.sandbox, self.container_name)
+
+
+def start_manim(
+    *,
+    scene_path: Path,
+    scene_class: str,
+    flags: Sequence[str],
+    media_dir: Path,
+    scratch_dir: Path,
+    timeout_seconds: int,
+    sandbox: Optional[RenderSandboxConfig] = None,
+    native_command: Sequence[str] = ("manim",),
+    extra_env: Optional[Mapping[str, str]] = None,
+) -> ManimProcess:
+    """Start Manim like ``run_manim`` but return a cancellable handle.
+
+    ``extra_env`` is added to the child environment; in docker mode its path
+    values must be container paths (see ``container_path``). The caller waits
+    with ``handle.communicate(host_timeout(sandbox, timeout_seconds))``.
+    Raises ``FileNotFoundError`` when the manim/docker binary is missing.
+    """
+    sandbox = sandbox or RenderSandboxConfig()
+    scratch_dir = Path(scratch_dir).resolve()
+    popen_options: Dict[str, object] = dict(
+        cwd=str(scratch_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if os.name != "nt":
+        # Own session, so the whole tree can be killed as one process group.
+        popen_options["start_new_session"] = True
+
+    if not sandbox.is_docker:
+        command = [
+            *native_command, *flags,
+            "--media_dir", str(Path(media_dir).resolve()),
+            str(Path(scene_path).resolve()), scene_class,
+        ]
+        env = native_render_env()
+        env.update(extra_env or {})
+        process = subprocess.Popen(command, env=env, **popen_options)
+        return ManimProcess(process=process, sandbox=sandbox)
+
+    inner = [
+        "python", "-m", "manim", *flags,
+        "--media_dir", container_path(media_dir, scratch_dir),
+        container_path(scene_path, scratch_dir), scene_class,
+    ]
+    name = f"pdf2manim-render-{uuid.uuid4().hex[:12]}"
+    argv = build_docker_argv(
+        config=sandbox,
+        scratch_dir=scratch_dir,
+        container_command=inner,
+        timeout_seconds=timeout_seconds,
+        name=name,
+        extra_env=extra_env,
+    )
+    _grant_container_write(sandbox, scratch_dir)
+    # The docker client itself needs no secrets either.
+    process = subprocess.Popen(argv, env=scrub_secret_env(), **popen_options)
+    return ManimProcess(process=process, sandbox=sandbox, container_name=name)
+
+
+def container_path(path: Path, scratch_dir: Path) -> str:
+    """Where a host path under ``scratch_dir`` appears inside the container."""
+    scratch_dir = Path(scratch_dir).resolve()
     try:
         relative = Path(path).resolve().relative_to(scratch_dir)
     except ValueError:
@@ -270,6 +425,16 @@ def _container_path(path: Path, scratch_dir: Path) -> str:
     if relative == Path("."):
         return CONTAINER_WORKDIR
     return f"{CONTAINER_WORKDIR}/{relative.as_posix()}"
+
+
+_container_path = container_path
+
+
+def _text(value: object) -> str:
+    # TimeoutExpired can carry bytes even for a text-mode process.
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value if isinstance(value, str) else ""
 
 
 def _grant_container_write(config: RenderSandboxConfig, scratch_dir: Path) -> None:

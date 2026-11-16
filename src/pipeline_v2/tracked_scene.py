@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,20 @@ TEXT_CLASS_NAMES = {
     "SingleStringMathTex", "Tex", "Text", "Title", "Variable",
 }
 
+# A beat that starts later than this after its narration is reported, and so
+# is a scene that runs longer than this past the end of the narration.
+LATE_TOLERANCE_SECONDS = 0.25
+# Gaps below one 60 fps frame cannot be rendered and are not worth a wait.
+MIN_SYNC_GAP_SECONDS = 1.0 / 60.0
+
 
 class TrackedScene(Scene):
-    """Ordinary Manim Scene that records artifact state at animation boundaries."""
+    """Ordinary Manim Scene that records artifact state at animation boundaries.
+
+    It also keeps the animation on the narration's clock: each beat waits for
+    its scheduled start, the scene holds until the narration ends, and beats
+    that start late are written to the trace instead of being sped up.
+    """
 
     def setup(self) -> None:
         super().setup()
@@ -30,6 +42,9 @@ class TrackedScene(Scene):
         self._current_beat = ""
         self._beat_schedule = self._schedule_from_environment()
         self._target_duration = self._schedule_duration(self._beat_schedule)
+        self._synced_beats: set[str] = set()
+        self._sync_wait_active = False
+        self._narration_sync_finished = False
         self._auto_counter = 0
         self._checkpoint_index = 0
         self._animation_depth = 0
@@ -50,8 +65,13 @@ class TrackedScene(Scene):
         layout_template: str,
         target_duration: float,
         beat_schedule: list[tuple[str, float, float]],
+        authored_timing: list[str | None] | None = None,
     ) -> None:
-        """Receive deterministic metadata injected after model generation."""
+        """Receive deterministic metadata injected after model generation.
+
+        ``authored_timing`` is a record for deinstrument_scene_code and is not
+        used while rendering.
+        """
 
         self.set_layout(layout_template)
         self._target_duration = max(0.0, float(target_duration))
@@ -147,8 +167,89 @@ class TrackedScene(Scene):
         return mobject
 
     def set_beat(self, beat_id: str) -> None:
+        sync = self._sync_to_beat(beat_id)
         self._current_beat = beat_id
+        if sync:
+            self._checkpoint(sync[0], extra={"sync": sync[1]})
         self._checkpoint("beat")
+
+    def finish_narration_sync(self) -> float:
+        """Hold until the narration ends; returns the seconds waited.
+
+        Injected as the last statement of construct and called again from
+        tear_down, so it runs once and never raises: a scene that renders
+        must not fail because of its closing hold.
+        """
+
+        if getattr(self, "_narration_sync_finished", True):
+            return 0.0
+        self._narration_sync_finished = True
+        try:
+            end = max(self._target_duration, self._schedule_duration(self._beat_schedule))
+            if end <= 0.0:
+                return 0.0
+            waited = self._hold_until(end, round_up=True)
+            now = self._now()
+            sync = {"beat_id": "", "scheduled_seconds": round(end, 4),
+                    "actual_seconds": round(now, 4)}
+            if waited:
+                self._checkpoint(
+                    "sync_wait", extra={"sync": {**sync, "waited_seconds": round(waited, 4)}},
+                )
+            elif now - end > LATE_TOLERANCE_SECONDS:
+                self._checkpoint(
+                    "scene_overrun", extra={"sync": {**sync, "lag_seconds": round(now - end, 4)}},
+                )
+            return waited
+        except Exception:
+            return 0.0
+
+    def _sync_to_beat(self, beat_id: str) -> tuple[str, dict[str, Any]] | None:
+        """Wait for a beat's scheduled start; returns the trace record to write."""
+
+        start = next(
+            (start for known, start, _ in self._beat_schedule if known == beat_id), None,
+        )
+        # A beat is synced the first time it is entered: a marker repeated in a
+        # loop must not report the same beat as late over and over.
+        if start is None or beat_id in self._synced_beats:
+            return None
+        self._synced_beats.add(beat_id)
+        waited = self._hold_until(start)
+        now = self._now()
+        sync = {"beat_id": beat_id, "scheduled_seconds": round(start, 4),
+                "actual_seconds": round(now, 4)}
+        if waited:
+            return "sync_wait", {**sync, "waited_seconds": round(waited, 4)}
+        if now - start > LATE_TOLERANCE_SECONDS:
+            return "beat_late", {**sync, "lag_seconds": round(now - start, 4)}
+        return None
+
+    def _hold_until(self, target: float, *, round_up: bool = False) -> float:
+        """Wait on the scene clock until ``target``; returns the seconds waited."""
+
+        gap = float(target) - self._now()
+        if gap < MIN_SYNC_GAP_SECONDS:
+            return 0.0
+        # Manim renders whole frames, so ask for whole frames. Beat starts take
+        # the nearest frame; the closing hold rounds up so the video is never
+        # shorter than the narration.
+        frame_rate = float(config.frame_rate)
+        frames = math.ceil(gap * frame_rate - 1e-6) if round_up else round(gap * frame_rate)
+        if frames < 1:
+            return 0.0
+        before = self._now()
+        # Scene.wait re-enters play(); its checkpoints would look like the
+        # model's own animation, so they are suppressed while the hold runs.
+        self._sync_wait_active = True
+        try:
+            super().wait(frames / frame_rate)
+        finally:
+            self._sync_wait_active = False
+        return self._now() - before
+
+    def _now(self) -> float:
+        return float(getattr(getattr(self, "renderer", None), "time", 0.0) or 0.0)
 
     def next_section(self, name: str, *args, **kwargs):
         """Use standard Manim section markers as narration beat markers."""
@@ -200,11 +301,20 @@ class TrackedScene(Scene):
         return result
 
     def tear_down(self) -> None:
+        # Covers code instrumented before the sync contract and constructs
+        # that return early; a no-op when construct already finished the hold.
+        self.finish_narration_sync()
         self._checkpoint("final")
         super().tear_down()
 
-    def _checkpoint(self, event: str, *, timestamp: float | None = None) -> None:
-        if not self._trace_path or not hasattr(self, "renderer"):
+    def _checkpoint(
+        self,
+        event: str,
+        *,
+        timestamp: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        if not self._trace_path or not hasattr(self, "renderer") or self._sync_wait_active:
             return
         resolved_time = (
             float(getattr(self.renderer, "time", 0.0)) if timestamp is None else timestamp
@@ -221,6 +331,8 @@ class TrackedScene(Scene):
             "objects": objects,
             "pixel_overlaps": self._pixel_overlap_records(traced_objects),
         }
+        if extra:
+            payload.update(extra)
         self._checkpoint_index += 1
         try:
             with self._trace_path.open("a", encoding="utf-8") as handle:

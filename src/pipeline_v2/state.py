@@ -208,6 +208,37 @@ class RunStore:
         self.set_meta("scene_retry_counts", retry_counts)
         return {scene_id: int(retry_counts[scene_id]) for scene_id in unique_ids}
 
+    def prepare_scene_revision(
+        self,
+        scene_ids: list[str],
+        audio_scene_ids: list[str],
+    ) -> dict[str, int]:
+        """A scene retry that also invalidates narration audio where the script,
+        pronunciation or pacing changed. Other scenes' paid audio is untouched."""
+
+        attempts = self.prepare_scene_retry(scene_ids)
+        audio_ids = sorted(set(audio_scene_ids) & set(scene_ids))
+        if audio_ids:
+            placeholders = ",".join("?" for _ in audio_ids)
+            with self._lock, self._connection:
+                self._connection.execute(
+                    f"""
+                    UPDATE tasks
+                    SET status=?, output_json=NULL, error=NULL, started_at=NULL,
+                        finished_at=NULL, duration_ms=NULL
+                    WHERE scene_id IN ({placeholders}) AND stage='tts'
+                    """,
+                    (TaskStatus.PENDING.value, *audio_ids),
+                )
+        return attempts
+
+    def has_paid_call(self, scene_id: str, stage: str) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM api_calls WHERE scene_id=? AND stage=? AND actual_usd > 0 LIMIT 1",
+            (scene_id, stage),
+        ).fetchone()
+        return row is not None
+
     def interrupt_running(self) -> None:
         with self._lock, self._connection:
             self._connection.execute(

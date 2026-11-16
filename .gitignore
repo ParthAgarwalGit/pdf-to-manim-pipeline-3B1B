@@ -115,6 +115,7 @@ CTO_AUDIT_REPORT.md
 CTO_COMPREHENSIVE_REVIEW.md
 
 # Temporary files
+.pytest-tmp-*/
 *.tmp
 *.bak
 *.swp

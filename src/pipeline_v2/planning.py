@@ -6,8 +6,24 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Optional
 
+from src.schemas.directives import ProfessorDirectives
+
+from .directives import (
+    ComplianceCheck,
+    ConceptPlan,
+    LengthBudget,
+    build_length_budget,
+    effective_audience,
+    effective_target_minutes,
+    enforce_narration_directives,
+    lesson_directive_block,
+    narration_directive_block,
+    scene_cap_for,
+    trim_to_budget,
+    truncate_sentences,
+)
 from .layout import layout_prompt_guide, regions_for
 from .models import (
     ArtifactCategory,
@@ -103,6 +119,11 @@ class PlanningService:
         max_scenes: int = 12,
         min_scenes: int | None = None,
         pacing: str = "standard",
+        *,
+        audience: Optional[str] = None,
+        directives: Optional[ProfessorDirectives] = None,
+        concept_plan: Optional[ConceptPlan] = None,
+        target_minutes: Optional[float] = None,
     ):
         if min_scenes is not None and min_scenes > max_scenes:
             raise ValueError("min_scenes cannot exceed max_scenes")
@@ -110,13 +131,53 @@ class PlanningService:
         self.max_scenes = max_scenes
         self.min_scenes = min_scenes
         self.pacing = pacing
+        self.audience = effective_audience(directives, audience)
+        self.directives = directives
+        self.concept_plan = concept_plan
+        self.target_minutes = effective_target_minutes(directives, target_minutes)
+        # Known before lesson() runs, so a resumed run that reuses the lesson
+        # task still reports what the professor left out.
+        self.omitted_concepts: list[str] = (
+            [entry.concept for entry in concept_plan.skipped()] if concept_plan else []
+        )
+        # Set by narration().
+        self.length_budget: Optional[LengthBudget] = None
+        self.length_report: Optional[dict[str, Any]] = None
+        self.compliance_checks: list[ComplianceCheck] = []
+
+    def _scene_ceiling(self) -> int:
+        if self.target_minutes is None:
+            return self.max_scenes
+        return min(self.max_scenes, scene_cap_for(self.target_minutes))
 
     def _required_min_scenes(self, source: SourceDocument) -> int:
         if self.min_scenes is not None:
-            return self.min_scenes
-        if self.max_scenes > 12:
-            return _full_coverage_scene_floor(source.page_count, self.max_scenes)
-        return 1
+            floor = self.min_scenes
+        elif self.max_scenes > 12:
+            floor = _full_coverage_scene_floor(source.page_count, self.max_scenes)
+        else:
+            floor = 1
+        return min(floor, self._scene_ceiling())
+
+    def _scene_guidance(
+        self, lesson: LessonPlan, source: SourceDocument,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Per-scene depth and binding notes from the plan, or from the brief."""
+
+        plan = self.concept_plan
+        if plan is None and self.directives is not None:
+            plan = ConceptPlan.from_lesson(lesson, source, self.directives)
+        if plan is None:
+            return {}, {}
+        depths: dict[str, str] = {}
+        notes: dict[str, str] = {}
+        for scene in lesson.scenes:
+            depth = plan.depth_for(scene.scene_id)
+            # A scene that is still in the lesson has to be narrated.
+            depths[scene.scene_id] = "brief" if depth == "skip" else depth
+            if plan.notes_for(scene.scene_id):
+                notes[scene.scene_id] = plan.notes_for(scene.scene_id)
+        return depths, notes
 
     async def enrich_low_confidence_pages(
         self,
@@ -176,14 +237,18 @@ class PlanningService:
         return source.model_copy(update={"facts": source.facts + additions})
 
     async def lesson(self, source: SourceDocument) -> LessonPlan:
+        if self.concept_plan is not None:
+            lesson, self.omitted_concepts = self.concept_plan.to_lesson(source)
+            return lesson
         facts = [_lesson_fact_payload(fact) for fact in source.facts]
+        max_scenes = self._scene_ceiling()
         required_min = self._required_min_scenes(source)
         if self.min_scenes is not None or self.max_scenes > 12:
             coverage_floor = required_min
             scene_range = (
-                f"exactly {self.max_scenes}"
-                if coverage_floor == self.max_scenes
-                else f"between {coverage_floor} and {self.max_scenes}"
+                f"exactly {max_scenes}"
+                if coverage_floor == max_scenes
+                else f"between {coverage_floor} and {max_scenes}"
             )
             scene_guidance = (
                 f"Full-coverage mode is requested for this {source.page_count}-page document. "
@@ -201,7 +266,7 @@ class PlanningService:
         else:
             scene_guidance = (
                 "Prefer 4-6 substantial scenes for a short document and use at most "
-                f"{self.max_scenes} scenes. "
+                f"{max_scenes} scenes. "
             )
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
@@ -214,6 +279,10 @@ class PlanningService:
             "items already demonstrated by earlier scenes. Do not invent facts, examples, or "
             "equations. Set delivery_mode to manim.\n\n"
             + json.dumps({"document": source.filename, "facts": facts}, ensure_ascii=False)
+        )
+        prompt += lesson_directive_block(
+            self.directives, self.audience,
+            max_scenes if self.target_minutes is not None else None,
         )
         lesson = await self.router.structured(
             stage="lesson", task_id="lesson", provider=PLANNING_PROVIDER,
@@ -239,7 +308,7 @@ class PlanningService:
             + "\n\nThe previous structurally valid plan contained only "
             + f"{len(lesson.scenes)} scenes. That is below the required minimum of "
             + f"{required_min}. Regenerate the complete plan with between {required_min} and "
-            + f"{self.max_scenes} scenes. Do not merely duplicate scenes: split dense material "
+            + f"{max_scenes} scenes. Do not merely duplicate scenes: split dense material "
             + "along concept, derivation, and worked-example boundaries while preserving full "
             + "source coverage."
         )
@@ -278,6 +347,12 @@ class PlanningService:
             }
             for item in lesson.scenes
         ]
+        depth_by_scene, notes_by_scene = self._scene_guidance(lesson, source)
+        self.length_budget = (
+            build_length_budget(lesson, source, self.target_minutes, target_wpm, depth_by_scene)
+            if self.target_minutes is not None else None
+        )
+        scene_words = self.length_budget.scene_words if self.length_budget else {}
         narrated: list[NarratedScene] = []
         for offset in range(0, len(lesson.scenes), NARRATION_BATCH_SIZE):
             batch = lesson.scenes[offset:offset + NARRATION_BATCH_SIZE]
@@ -342,13 +417,20 @@ class PlanningService:
                 "Timing fields must be zero; the pipeline computes them after TTS.\n\n"
                 + json.dumps(payload, ensure_ascii=False)
             )
+            prompt += narration_directive_block(
+                self.directives,
+                {key: scene_words[key] for key in expected_ids if key in scene_words},
+                {key: depth_by_scene[key] for key in expected_ids if key in depth_by_scene},
+                {key: notes_by_scene[key] for key in expected_ids if key in notes_by_scene},
+                audience=self.audience,
+            )
             task_id = f"narration-{offset // NARRATION_BATCH_SIZE:03d}"
             batch_narration = await self.router.structured(
                 stage="narration", task_id=task_id, provider=PLANNING_PROVIDER,
                 model=PLANNING_MODEL, system="You write clear spoken educational scripts.",
                 prompt=prompt, schema=NarrationPlan,
                 fallback=lambda batch_lesson=batch_lesson: self._fallback_narration(
-                    batch_lesson, source,
+                    batch_lesson, source, scene_words,
                 ),
                 max_output_tokens=7000,
             )
@@ -362,7 +444,16 @@ class PlanningService:
                 item.model_copy(update={"target_words_per_minute": target_wpm})
                 for item in batch_narration.scenes
             )
-        return NarrationPlan(scenes=narrated)
+        plan = NarrationPlan(scenes=narrated)
+        self.compliance_checks = []
+        if self.directives is not None or self.omitted_concepts:
+            plan, self.compliance_checks = enforce_narration_directives(
+                plan, self.directives, self.omitted_concepts,
+            )
+        self.length_report = None
+        if self.length_budget is not None:
+            plan, self.length_report = trim_to_budget(plan, self.length_budget)
+        return plan
 
     async def visual_contracts(
         self,
@@ -452,7 +543,7 @@ class PlanningService:
         if self.min_scenes is not None or self.max_scenes > 12:
             target = self._required_min_scenes(source)
         else:
-            target = min(self.max_scenes, max(1, min(6, source.page_count)))
+            target = min(self._scene_ceiling(), max(1, min(6, source.page_count)))
         chunks = _chunks(source.facts, target)
         scenes = []
         for index, chunk in enumerate(chunks):
@@ -463,14 +554,25 @@ class PlanningService:
                 source_fact_ids=[fact.fact_id for fact in chunk],
             ))
         return LessonPlan(
-            title=Path(source.filename).stem.replace("_", " "), audience="undergraduate",
+            title=Path(source.filename).stem.replace("_", " "),
+            audience=self.audience or "undergraduate",
             objectives=[scene.learning_goal for scene in scenes[:4]], scenes=scenes,
         )
 
     def _fallback_narration(
-        self, lesson: LessonPlan, source: SourceDocument,
+        self,
+        lesson: LessonPlan,
+        source: SourceDocument,
+        scene_words: Optional[dict[str, int]] = None,
     ) -> NarrationPlan:
         facts = {fact.fact_id: fact.text for fact in source.facts}
+        if scene_words is None and self.target_minutes is not None:
+            # Called directly for a replacement lesson: budget that lesson.
+            self.length_budget = build_length_budget(
+                lesson, source, self.target_minutes,
+                115 if self.pacing == "relaxed" else 135,
+            )
+            scene_words = self.length_budget.scene_words
         scenes = []
         for scene in lesson.scenes:
             selected = [facts[fact_id] for fact_id in scene.source_fact_ids if fact_id in facts]
@@ -478,6 +580,8 @@ class PlanningService:
             sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", narration) if part.strip()]
             if not sentences:
                 sentences = [narration]
+            if scene_words and scene.scene_id in scene_words:
+                sentences = truncate_sentences(sentences, scene_words[scene.scene_id])
             groups = _chunks(sentences, min(4, len(sentences)))
             beats = [NarrationBeat(
                 beat_id=f"{scene.scene_id}_beat_{index + 1:02d}",

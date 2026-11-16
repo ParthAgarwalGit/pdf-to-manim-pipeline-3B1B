@@ -10,7 +10,17 @@ from .models import NarratedScene, VisualContract
 
 INSTRUMENTATION_MARKER = "Instrumented automatically by PDF-to-Manim V2."
 _SCENE_BASES = {"Scene", "TrackedScene"}
-_INJECTED_METHODS = {"auto_register", "configure_generated_scene"}
+_INJECTED_METHODS = {
+    "auto_register", "configure_generated_scene", "finish_narration_sync",
+}
+
+# The narration-sync contract. Static retiming only nudges a section towards
+# its beat: durations are never multiplied by less than 1 / MAX_SPEEDUP or by
+# more than MAX_STRETCH. Whatever is left over is handled at render time by
+# TrackedScene, which holds until a beat starts and reports beats that start late.
+MAX_SPEEDUP = 1.5
+MAX_STRETCH = 1.5
+SCENE_SCALE_KEY = "scene"
 
 
 @dataclass(frozen=True)
@@ -18,6 +28,11 @@ class InstrumentationSummary:
     code: str
     section_timing_applied: bool
     registered_names: tuple[str, ...]
+    # (beat_id, applied scale) per retimed section, or one ("scene", scale)
+    # entry when the section markers did not match the beats.
+    timing_scales: tuple[tuple[str, float], ...] = ()
+    # Keys of timing_scales whose required scale was outside the caps.
+    capped_beats: tuple[str, ...] = ()
 
 
 def instrument_scene_code(
@@ -59,7 +74,8 @@ def instrument_scene_code(
         return InstrumentationSummary(clean, False, ())
 
     _ensure_tracked_import(tree)
-    section_timing = _retime_construct(construct, scene)
+    authored_timing = _authored_timing(construct.body)
+    section_timing, timing_scales, capped_beats = _retime_construct(construct, scene)
     injector = _RegistrationInjector()
     construct.body = injector.visit_statement_list(construct.body)
     configure = ast.Expr(
@@ -96,21 +112,39 @@ def instrument_scene_code(
                         ctx=ast.Load(),
                     ),
                 ),
+                # Every duration as the model wrote it, in source order, so
+                # deinstrument_scene_code can undo the retiming exactly.
+                # Without it each repair or revision pass would scale already
+                # scaled durations and compound the speed-up past the cap.
+                ast.keyword(
+                    arg="authored_timing",
+                    value=ast.List(
+                        elts=[ast.Constant(value=item) for item in authored_timing],
+                        ctx=ast.Load(),
+                    ),
+                ),
             ],
         )
     )
     construct.body.insert(0, configure)
+    construct.body.append(_self_call_statement("finish_narration_sync"))
     ast.fix_missing_locations(tree)
     rendered = ast.unparse(tree).strip() + "\n"
     return InstrumentationSummary(
         f"# {INSTRUMENTATION_MARKER}\n{rendered}",
         section_timing,
         tuple(injector.registered_names),
+        tuple(timing_scales),
+        tuple(capped_beats),
     )
 
 
 def deinstrument_scene_code(source: str) -> str:
-    """Remove injected tracking calls before showing code to a repair model."""
+    """Remove injected tracking calls before showing code to a repair model.
+
+    Retimed durations are put back exactly as they were written, so
+    instrumenting the result again scales from the authored durations.
+    """
 
     try:
         tree = ast.parse(source)
@@ -134,6 +168,7 @@ def deinstrument_scene_code(source: str) -> str:
         ]
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "construct":
+                _restore_authored_timing(item)
                 item.body = _remove_injected_statements(item.body)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree).strip() + "\n"
@@ -274,17 +309,28 @@ def _is_injected_call(statement: ast.stmt) -> bool:
     return isinstance(function, ast.Attribute) and function.attr in _INJECTED_METHODS
 
 
-def _retime_construct(construct: ast.FunctionDef, scene: NarratedScene) -> bool:
+def _retime_construct(
+    construct: ast.FunctionDef | ast.AsyncFunctionDef, scene: NarratedScene,
+) -> tuple[bool, list[tuple[str, float]], list[str]]:
+    """Clamp-scale each beat section; returns (section timing, scales, capped)."""
+
     sections = _section_ranges(construct.body)
     beats = {beat.beat_id: beat for beat in scene.beats}
     expected_order = [beat.beat_id for beat in scene.beats]
+    scales: list[tuple[str, float]] = []
+    capped: list[str] = []
     if [beat_id for beat_id, _ in sections] == expected_order:
         for beat_id, statements in sections:
             beat = beats[beat_id]
-            _retime_calls(statements, max(0.1, beat.end_seconds - beat.start_seconds))
-        return True
-    _retime_calls(construct.body, _target_duration(scene))
-    return False
+            scale, was_capped = _retime_calls(
+                statements, max(0.1, beat.end_seconds - beat.start_seconds),
+            )
+            scales.append((beat_id, scale))
+            if was_capped:
+                capped.append(beat_id)
+        return True, scales, capped
+    scale, was_capped = _retime_calls(construct.body, _target_duration(scene))
+    return False, [(SCENE_SCALE_KEY, scale)], [SCENE_SCALE_KEY] if was_capped else []
 
 
 def _section_ranges(statements: list[ast.stmt]) -> list[tuple[str, list[ast.stmt]]]:
@@ -323,8 +369,28 @@ def _section_marker(statement: ast.stmt) -> str | None:
     return None
 
 
-def _retime_calls(statements: list[ast.stmt], target: float) -> None:
-    calls = sorted(
+def _retime_calls(statements: list[ast.stmt], target: float) -> tuple[float, bool]:
+    """Scale the play/wait calls towards ``target``; returns (scale, capped).
+
+    The scale is clamped, so the calls need not add up to the target: a
+    section that ends early is held at render time until the next beat, and
+    one that is still too long starts the next beat late and is reported.
+    """
+
+    calls = _ordered_timed_calls(statements)
+    if not calls:
+        return 1.0, False
+    weights = [_call_duration(call) for call, _ in calls]
+    total = sum(weight * repetitions for weight, (_, repetitions) in zip(weights, calls))
+    required = target / total
+    scale = min(MAX_STRETCH, max(1.0 / MAX_SPEEDUP, required))
+    for (call, _), weight in zip(calls, weights):
+        _set_call_duration(call, max(0.01, weight * scale))
+    return scale, abs(required - scale) > 1e-9
+
+
+def _ordered_timed_calls(statements: list[ast.stmt]) -> list[tuple[ast.Call, int]]:
+    return sorted(
         (
             item
             for statement in statements
@@ -334,17 +400,56 @@ def _retime_calls(statements: list[ast.stmt], target: float) -> None:
             getattr(item[0], "lineno", 0), getattr(item[0], "col_offset", 0)
         ),
     )
-    if not calls:
-        statements.append(_wait_statement(target))
+
+
+def _authored_timing(statements: list[ast.stmt]) -> list[str | None]:
+    """Source of every play/wait duration in order; None where none was written."""
+
+    values: list[str | None] = []
+    for call, _ in _ordered_timed_calls(statements):
+        node = _duration_node(call)
+        values.append(None if node is None else ast.unparse(node))
+    return values
+
+
+def _restore_authored_timing(construct: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+    recorded = _recorded_authored_timing(construct.body)
+    calls = _ordered_timed_calls(construct.body)
+    # Code instrumented before the sync contract records nothing; it is left
+    # as it is, like anything that no longer lines up with the record.
+    if recorded is None or len(recorded) != len(calls):
         return
-    weights = [_call_duration(call) for call, _ in calls]
-    total = sum(weight * repetitions for weight, (_, repetitions) in zip(weights, calls))
-    total = total or float(len(calls))
-    durations = [target * weight / total for weight in weights]
-    actual = sum(duration * repetitions for duration, (_, repetitions) in zip(durations, calls))
-    durations[-1] += (target - actual) / calls[-1][1]
-    for (call, _), duration in zip(calls, durations):
-        _set_call_duration(call, max(0.01, duration))
+    try:
+        nodes = [
+            None if value is None else ast.parse(value, mode="eval").body
+            for value in recorded
+        ]
+    except SyntaxError:
+        return
+    for (call, _), node in zip(calls, nodes):
+        _restore_duration_node(call, node)
+
+
+def _recorded_authored_timing(statements: list[ast.stmt]) -> list[str | None] | None:
+    for statement in statements:
+        if not _is_injected_call(statement):
+            continue
+        call = statement.value
+        if call.func.attr != "configure_generated_scene":
+            continue
+        for keyword in call.keywords:
+            if keyword.arg != "authored_timing":
+                continue
+            try:
+                values = ast.literal_eval(keyword.value)
+            except (ValueError, SyntaxError):
+                return None
+            if isinstance(values, list) and all(
+                item is None or isinstance(item, str) for item in values
+            ):
+                return values
+            return None
+    return None
 
 
 def _timed_calls(node: ast.AST, repetitions: int = 1) -> list[tuple[ast.Call, int]]:
@@ -398,15 +503,42 @@ def _self_method(call: ast.Call) -> str | None:
     return None
 
 
-def _call_duration(call: ast.Call) -> float:
-    method = _self_method(call)
-    if method == "play":
-        for keyword in call.keywords:
-            if keyword.arg == "run_time":
-                return _number(keyword.value, 1.0)
-        return 1.0
+def _duration_node(call: ast.Call) -> ast.expr | None:
+    """The expression that sets how long a self.play / self.wait call lasts."""
+
+    if _self_method(call) == "play":
+        return next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "run_time"),
+            None,
+        )
     if call.args:
-        return _number(call.args[0], 1.0)
+        return call.args[0]
+    return next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "duration"),
+        None,
+    )
+
+
+def _call_duration(call: ast.Call) -> float:
+    node = _duration_node(call)
+    if node is not None:
+        return _number(node, 1.0)
+    if _self_method(call) == "play":
+        # self.play(Create(shape, run_time=3)) lasts 3 s, not the 1 s default.
+        # The play-level run_time written below overrides it, so assuming 1 s
+        # would turn the retiming into a hidden 3x speed-up.
+        nested = [
+            float(keyword.value.value)
+            for argument in call.args
+            for inner in ast.walk(argument)
+            if isinstance(inner, ast.Call)
+            for keyword in inner.keywords
+            if keyword.arg == "run_time"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, (int, float))
+        ]
+        if nested:
+            return max(0.01, max(nested))
     return 1.0
 
 
@@ -421,8 +553,32 @@ def _set_call_duration(call: ast.Call, duration: float) -> None:
         return
     if call.args:
         call.args[0] = value
+        return
+    for keyword in call.keywords:
+        if keyword.arg == "duration":
+            keyword.value = value
+            return
+    call.args.append(value)
+
+
+def _restore_duration_node(call: ast.Call, node: ast.expr | None) -> None:
+    if node is None:
+        # Nothing was written originally, so the retimed value was added by us.
+        if _self_method(call) == "play":
+            call.keywords = [item for item in call.keywords if item.arg != "run_time"]
+        elif call.args:
+            del call.args[0]
+        return
+    if _self_method(call) == "play":
+        for keyword in call.keywords:
+            if keyword.arg == "run_time":
+                keyword.value = node
+    elif call.args:
+        call.args[0] = node
     else:
-        call.args.append(value)
+        for keyword in call.keywords:
+            if keyword.arg == "duration":
+                keyword.value = node
 
 
 def _number(value: ast.AST, fallback: float) -> float:
@@ -431,13 +587,13 @@ def _number(value: ast.AST, fallback: float) -> float:
     return fallback
 
 
-def _wait_statement(duration: float) -> ast.Expr:
+def _self_call_statement(method: str) -> ast.Expr:
     return ast.Expr(
         value=ast.Call(
             func=ast.Attribute(
-                value=ast.Name(id="self", ctx=ast.Load()), attr="wait", ctx=ast.Load()
+                value=ast.Name(id="self", ctx=ast.Load()), attr=method, ctx=ast.Load()
             ),
-            args=[ast.Constant(value=round(max(0.01, duration), 4))],
+            args=[],
             keywords=[],
         )
     )

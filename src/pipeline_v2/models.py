@@ -114,6 +114,7 @@ class NarratedScene(BaseModel):
     audio_path: Optional[str] = None
     audio_duration_seconds: Optional[float] = Field(default=None, gt=0.0)
     audio_tail_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
+    audio_is_placeholder: bool = False
 
 
 class NarrationPlan(BaseModel):
@@ -290,6 +291,7 @@ class SceneResult(BaseModel):
     original_code_path: Optional[str] = None
     final_code_path: Optional[str] = None
     preview_path: Optional[str] = None
+    render_video_path: Optional[str] = None
     final_video_path: Optional[str] = None
     audio_path: Optional[str] = None
     repaired: bool = False
@@ -325,6 +327,17 @@ class PipelineV2Config(BaseModel):
     max_repairs_per_scene: int = Field(default=3, ge=0, le=3)
     preview_timeout_seconds: int = Field(default=120, ge=10)
     render_timeout_seconds: int = Field(default=600, ge=30)
+    # Generated Manim always runs with scrubbed secrets in a scratch directory;
+    # "docker" adds a networkless, resource-limited container.
+    render_sandbox: Literal["native", "docker"] = "native"
+    render_sandbox_image: str = "pdf2manim:latest"
+    enable_delivery_checks: bool = True
+    max_delivery_repair_rounds: int = Field(default=2, ge=0, le=2)
+    # Professor controls. Stored as plain data so run.json round-trips them and
+    # task hashes of runs without controls stay unchanged.
+    target_minutes: Optional[float] = Field(default=None, gt=0.0)
+    directives: Optional[dict[str, Any]] = None
+    concept_plan: Optional[dict[str, Any]] = None
 
     @model_validator(mode="after")
     def validate_scene_range(self) -> "PipelineV2Config":
@@ -345,6 +358,9 @@ class RunResult(BaseModel):
     report_path: Optional[str] = None
     scene_results: list[SceneResult] = Field(default_factory=list)
     message: str = ""
+    delivery_status: Optional[Literal["ready", "needs_review"]] = None
+    delivery_report_path: Optional[str] = None
+    delivery_summary: list[str] = Field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
