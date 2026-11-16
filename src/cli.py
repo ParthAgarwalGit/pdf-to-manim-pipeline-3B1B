@@ -318,11 +318,13 @@ def pdf2manim():
 )
 @click.option(
     '--render-backend',
-    type=click.Choice(['manim', 'did-avatar'], case_sensitive=False),
+    type=click.Choice(['manim', 'did-avatar', 'hybrid'], case_sensitive=False),
     default='manim',
     help='manim (default): animated scenes narrated by TTS. did-avatar: a D-ID talking '
          'professor speaks each scene with its own voice (needs DID_API_KEY and '
-         '--avatar-image-url; skips Manim and TTS)'
+         '--avatar-image-url; skips Manim and TTS). hybrid: Manim for visualization, the '
+         'D-ID presenter for explanation; an agent picks manim, presenter or split per '
+         'scene (needs DID_API_KEY and --avatar-image-url)'
 )
 @click.option(
     '--avatar-image-url',
@@ -334,6 +336,20 @@ def pdf2manim():
     type=click.FloatRange(min=0),
     default=600.0,
     help='did-avatar spend cap: estimated narration seconds sent to D-ID per run (default: 600)'
+)
+@click.option(
+    '--presenter-engine',
+    type=click.Choice(['d-id', 'gemini'], case_sensitive=False),
+    default='d-id',
+    help='hybrid: d-id lip-syncs a portrait to the narration; gemini (Gemini Omni) is a '
+         'fictional lecturer who speaks the lines in its own voice (needs GEMINI_API_KEY, '
+         'no portrait URL)'
+)
+@click.option(
+    '--presenter-persona',
+    default='',
+    help='gemini presenter: words describing the fictional lecturer (default: a friendly '
+         'lecturer in her thirties)'
 )
 @click.option(
     '--render-sandbox',
@@ -383,6 +399,8 @@ def convert(
     max_avatar_seconds: float = 600.0,
     render_sandbox: str = 'native',
     sandbox_image: str = 'pdf2manim:latest',
+    presenter_engine: str = 'd-id',
+    presenter_persona: str = '',
 ) -> None:
     """
     Convert a PDF document to an animated Manim video.
@@ -403,7 +421,9 @@ def convert(
             --avatar-image-url https://example.com/licensed-professor.jpg
     """
     render_backend = render_backend.lower()
-    if render_backend == 'did-avatar':
+    presenter_engine = presenter_engine.lower()
+    gemini_presenter = render_backend == 'hybrid' and presenter_engine == 'gemini'
+    if render_backend in ('did-avatar', 'hybrid') and not gemini_presenter:
         from src.agents.did_avatar_renderer import validate_avatar_image_url
 
         try:
@@ -411,7 +431,7 @@ def convert(
         except ValueError as exc:
             raise click.BadParameter(str(exc), param_hint="'--avatar-image-url'")
     elif avatar_image_url:
-        click.echo(click.style("Note: --avatar-image-url is ignored without --render-backend did-avatar.", fg="yellow"))
+        click.echo(click.style("Note: --avatar-image-url is ignored with --render-backend manim.", fg="yellow"))
         avatar_image_url = None
     try:
         # Setup logging
@@ -446,11 +466,15 @@ def convert(
 
         click.echo(click.style("Rendering Configuration:", bold=True))
         click.echo(f"  Backend:      {render_backend}")
-        if render_backend == 'did-avatar':
+        if render_backend in ('did-avatar', 'hybrid'):
             from src.agents.did_avatar_renderer import display_url
 
-            click.echo(f"  Avatar Image: {display_url(avatar_image_url)}")
-            click.echo("  Narration:    D-ID native avatar voice (TTS and Manim skipped)")
+            click.echo(f"  Presenter:    {'Gemini Omni (fictional lecturer)' if gemini_presenter else display_url(avatar_image_url)}")
+            click.echo("  Narration:    " + (
+                "D-ID native avatar voice (TTS and Manim skipped)" if render_backend == 'did-avatar'
+                else ("TTS for animations; the Gemini presenter speaks its own lines"
+                      if gemini_presenter else "one TTS voice; D-ID lip-syncs the presenter to it")
+            ))
         click.echo(f"  Quality:      {quality}")
         click.echo(f"  Voice:        {voice}")
         click.echo(f"  TTS Enabled:  {not skip_tts}")
@@ -490,6 +514,8 @@ def convert(
             render_backend=render_backend,
             avatar_image_url=avatar_image_url,
             max_avatar_seconds=max_avatar_seconds,
+            presenter_engine=presenter_engine,
+            presenter_persona=presenter_persona,
             render_sandbox=render_sandbox.lower(),
             render_sandbox_image=sandbox_image,
         )
@@ -888,7 +914,7 @@ def cost(input_pdf: str) -> None:
 )
 @click.option(
     '--render-backend',
-    type=click.Choice(['manim', 'did-avatar'], case_sensitive=False),
+    type=click.Choice(['manim', 'did-avatar', 'hybrid'], case_sensitive=False),
     default=None,
     help="Render backend (default: the run's own)"
 )
@@ -995,6 +1021,11 @@ def revise(
             "avatar_image_url": avatar_image_url or getattr(run_config, "avatar_image_url", None),
             "did_voice_id": getattr(run_config, "avatar_voice_id", None) or DEFAULT_VOICE_ID,
             "max_avatar_seconds": max_avatar_seconds,
+        }
+    elif backend == "hybrid":
+        avatar_kwargs = {
+            "avatar_image_url": avatar_image_url or getattr(run_config, "avatar_image_url", None),
+            "presenter_engine": "gemini" if getattr(run_config, "avatar_provider", "") == "gemini-omni" else "d-id",
         }
     pipeline_config = PipelineConfig(
         render_backend=backend,

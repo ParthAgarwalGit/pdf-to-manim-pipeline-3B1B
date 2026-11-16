@@ -70,12 +70,23 @@ def scrub_secret_env(source: Optional[Mapping[str, str]] = None) -> Dict[str, st
     return {key: value for key, value in env.items() if not is_secret_env_name(key)}
 
 
-def native_render_env(source: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """Environment for a native Manim subprocess: scrubbed, repo on PYTHONPATH."""
+def native_render_env(
+    source: Optional[Mapping[str, str]] = None,
+    audit_path: Optional[Path] = None,
+) -> Dict[str, str]:
+    """Environment for a native Manim subprocess: scrubbed, repo on PYTHONPATH.
+
+    With ``audit_path``, the layout audit's sitecustomize goes first on the
+    path and writes its findings there (src/utils/layout_audit.py).
+    """
     env = scrub_secret_env(source)
-    env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(REPO_ROOT), env.get("PYTHONPATH")) if part
-    )
+    parts = [str(REPO_ROOT), env.get("PYTHONPATH")]
+    if audit_path is not None:
+        from src.utils.layout_audit import ENV_VAR, SITE_DIR
+
+        parts.insert(1, str(SITE_DIR))  # after the repo root, before site-packages
+        env[ENV_VAR] = str(Path(audit_path).resolve())
+    env["PYTHONPATH"] = os.pathsep.join(part for part in parts if part)
     return env
 
 
@@ -203,6 +214,7 @@ def run_manim(
     timeout_seconds: int,
     sandbox: Optional[RenderSandboxConfig] = None,
     native_command: Sequence[str] = ("manim",),
+    audit_path: Optional[Path] = None,
 ) -> subprocess.CompletedProcess:
     """Run Manim on a generated scene file under the configured isolation.
 
@@ -224,7 +236,7 @@ def run_manim(
         return subprocess.run(
             command,
             cwd=str(scratch_dir),
-            env=native_render_env(),
+            env=native_render_env(audit_path=audit_path),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,

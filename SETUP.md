@@ -155,6 +155,12 @@ are written to `<run>/avatar/`, concatenated into
 Polling defaults (5 s interval, 120 polls, 60 s request timeout) are
 `PipelineConfig.did_*` settings.
 
+`--render-backend hybrid` combines both: Manim scenes for visualization, the
+D-ID presenter (lip-synced to the pipeline's TTS narration) for explanation,
+and split screens for concept introductions. It needs `DID_API_KEY`, an
+`OPENAI_API_KEY` (TTS, frame director, comprehension verifier) and the usual
+codegen key; see the README's Hybrid section.
+
 ### Update Agent Implementations
 
 To enable real LLM calls, you'll need to update these files:

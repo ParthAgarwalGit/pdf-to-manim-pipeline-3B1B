@@ -429,6 +429,23 @@ class TestRevisionRuns:
         assert len(orchestrator.media.narrated) == base_manifest.total_scenes
         assert all(r.reused_video_from and not r.reused_audio_from for r in manifest.scenes)
 
+    def test_presenter_voice_is_not_carried_onto_a_plain_scene(self, tmp_path):
+        """A split scene the verifier turned into plain animation gets the narrator again."""
+        script = _script()
+        run_dir, _ = _base_run(tmp_path, script)
+        manifest_path = run_dir / "manifest.json"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        first = data["scenes"][0]
+        spoken = (run_dir / first["audio_path"]).with_name(f"{first['scene_id']}_presenter.m4a")
+        spoken.write_bytes((run_dir / first["audio_path"]).read_bytes())
+        first["audio_path"] = spoken.relative_to(run_dir).as_posix()
+        manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+        orchestrator = _orchestrator(tmp_path)
+        orchestrator.run_revision(str(run_dir), script)
+        assert orchestrator.media.narrated == [first["scene_id"]]
+        assert orchestrator.media.rendered == []
+
     def test_dry_run_plans_without_spending(self, tmp_path):
         script = _script()
         run_dir, _ = _base_run(tmp_path, script)

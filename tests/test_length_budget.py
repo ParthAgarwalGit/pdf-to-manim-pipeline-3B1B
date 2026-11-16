@@ -53,12 +53,16 @@ def _long_script(**locked):
     ])
 
 
+ONE_MINUTE = round(60 * ScriptArchitectAgent.SPOKEN_WORDS_PER_SECOND)  # words in a 1-minute budget
+SHARE_A, SHARE_B = round(ONE_MINUTE * 300 / 400), round(ONE_MINUTE * 100 / 400)
+
+
 class TestBudget:
     def test_budget_is_split_by_source_size(self):
         agent = _agent()
         budgets = agent._segment_word_budgets([_segment("a", 300), _segment("b", 100, 1)], _config(1))
-        assert agent._length_budget_words(_config(1)) == 150
-        assert budgets == {"a": 112, "b": 38}
+        assert agent._length_budget_words(_config(1)) == ONE_MINUTE
+        assert budgets == {"a": SHARE_A, "b": SHARE_B}
 
     def test_every_segment_keeps_one_short_beat(self):
         segments = [_segment(f"s{i}", 10, i) for i in range(10)]
@@ -105,7 +109,7 @@ class TestPrompt:
         agent._generate_segmented_video_script(
             [_segment("a", 300), _segment("b", 100, 1)], _config(1), review_feedback=[],
         )
-        assert "about 112 words" in prompts[0] and "about 38 words" in prompts[1]
+        assert f"about {SHARE_A} words" in prompts[0] and f"about {SHARE_B} words" in prompts[1]
 
 
 class TestTrim:
@@ -114,7 +118,7 @@ class TestTrim:
         assert [b.beat_id for b in script.beats] == ["beat_001", "beat_003", "beat_005"]
         assert report["removed_beats"] == ["beat_002", "beat_004", "beat_006"]
         assert report["words_before"] == 240 and report["words_after"] == 120
-        assert report["budget_words"] == 150 and report["within_budget"] is True
+        assert report["budget_words"] == ONE_MINUTE and report["within_budget"] is True
 
     def test_professor_locked_beats_survive(self):
         script, report = _agent()._enforce_length_budget(

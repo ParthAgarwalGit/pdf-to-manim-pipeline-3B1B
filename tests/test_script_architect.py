@@ -1058,3 +1058,22 @@ class TestNonTextVisualInvariant:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+class TestFallbackVisualIntentEquation:
+    """The narration-derived fallback plan stamped sin(θ) = opposite/hypotenuse
+    on any scene whose narration contained "sin", "pi" or "equation" as a
+    substring, so "singular" put a trig identity into 8 of 14 SVD scenes."""
+
+    def _has_trig(self, narration):
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict, agent.client = False, None
+        intent = agent._generate_fallback_visual_intent(narration)
+        return any("opposite" in (o.content or "") for o in intent.mathematical_objects)
+
+    def test_unrelated_words_do_not_add_the_trig_identity(self):
+        assert not self._has_trig("Each singular value measures how far the sheet stretches.")
+        assert not self._has_trig("Spin the vector, pick the principal direction; this equation says so.")
+
+    def test_trig_narration_still_gets_it(self):
+        assert self._has_trig("The sine of an angle is the opposite side over the hypotenuse.")
+

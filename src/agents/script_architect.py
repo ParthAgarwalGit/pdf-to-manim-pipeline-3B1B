@@ -57,6 +57,12 @@ from src.utils.visual_archetypes import archetype_prompt_block, classify_concept
 UNIFIED_SCRIPT_MODEL = "claude-sonnet-5"   # Anthropic
 SEGMENT_SCRIPT_MODEL = "gpt-5.4-mini"      # OpenAI
 VISUAL_INTENT_MODEL = "gpt-5.4-mini"       # OpenAI
+FLOW_EDIT_MODEL = "gpt-5.4"                 # OpenAI; one whole-script edit per run
+
+# Narration about the trig ratios (fallback visual plans only). Whole words.
+_TRIG_NARRATION = re.compile(
+    r"(?i)\b(sine|cosine|tangent|sin|cos|tan|hypotenuse|opposite side|adjacent side)\b"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +112,20 @@ def _canonicalize_concept(label: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────
 
 _LLM_BEAT_ROLES = frozenset({"core", "analogy", "example", "derivation", "intuition", "recap"})
+
+SPOKEN_STYLE_RULES = """SPOKEN NARRATION (it is read aloud; it must sound like a person talking, not an AI or a textbook):
+- Talk the way a good lecturer talks to one student at the board: plain words, contractions
+  (it's, we'll, that's), mostly short sentences with the occasional longer one.
+- One idea per sentence. No semicolons, parentheses, em dashes, lists or headings.
+- Each beat picks up exactly where the previous one stopped. Use a connective only when it
+  carries meaning ("so", "but", "which means"); never restart with a summary.
+- Never use stock phrases: "let's dive in", "here's the key", "here's the twist",
+  "it's important to note", "crucial", "fascinating", "in essence", "delve", "in this video",
+  "simply put", "basically", "essentially". No exclamation marks. At most one question per segment.
+- Say math the way you would out loud: "A equals U times D times V transpose", "sigma one",
+  "the length of A v". Never put symbols such as ^T, _k, ||x|| or LaTeX in the narration.
+- Mention the picture only when the visual hint shows it ("watch the circle stretch into an ellipse").
+"""
 
 TYPED_BEAT_PROMPT_RULES = """BEAT TAGS:
 - "role": core | analogy | example | derivation | intuition | recap.
@@ -232,7 +252,9 @@ _PRIMITIVE_TO_OBJECT_TYPE = {
 
 # Manim safe area (frame is x ∈ [-7.1, 7.1], y ∈ [-4.0, 4.0]; margin keeps
 # content off the bezel). Plan bboxes are clamped into this box.
-SAFE_X, SAFE_Y = 6.5, 3.5
+SAFE_X, SAFE_Y = 6.3, 3.4  # tightened from 6.5, 3.5 after live overlap findings
+# Clearance left between time-overlapping planned boxes (was 0.1).
+PLAN_GAP = 0.25
 
 
 def _coerce_visual_object(raw: Any) -> Any:
@@ -310,10 +332,10 @@ def _resolve_bbox_overlaps(objs: List[Any], iterations: int = 4) -> None:
                     continue  # no spatial intersection
                 if dx <= dy:  # push along x (smaller penetration)
                     direction = 1.0 if b.bbox.x >= a.bbox.x else -1.0
-                    b.bbox.x = max(-SAFE_X, min(SAFE_X, b.bbox.x + direction * (dx + 0.1)))
+                    b.bbox.x = max(-SAFE_X, min(SAFE_X, b.bbox.x + direction * (dx + PLAN_GAP)))
                 else:
                     direction = 1.0 if b.bbox.y >= a.bbox.y else -1.0
-                    b.bbox.y = max(-SAFE_Y, min(SAFE_Y, b.bbox.y + direction * (dy + 0.1)))
+                    b.bbox.y = max(-SAFE_Y, min(SAFE_Y, b.bbox.y + direction * (dy + PLAN_GAP)))
                 moved = True
         if not moved:
             return
@@ -471,10 +493,11 @@ class ScriptArchitectAgent(Agent):
     # Smaller beats => more beats per document => more, shorter videos that
     # cover the same breadth without compressing topics together.
     WORDS_PER_BEAT = 45
-    # Length budget (--target-minutes, or a brief's length). Measured speech
-    # (TTS and D-ID voices) runs ~2.4-2.5 words/s, slower than the 3.0 used
-    # for scene estimates, so the budget uses the real pace.
-    SPOKEN_WORDS_PER_SECOND = 2.5
+    # Length budget (--target-minutes, or a brief's length), at the real pace.
+    # The spoken-style narration (short sentences, math said in words) runs
+    # faster than the old textbook prose (~2.5 words/s): measured 2.96 words/s
+    # for the TTS narrator and 2.57 for the Gemini presenter (Nov 2026).
+    SPOKEN_WORDS_PER_SECOND = 2.8
     BUDGET_WORDS_PER_BEAT = 40
     MIN_SEGMENT_WORDS = 25  # one short beat: every segment keeps a voice
     LENGTH_TOLERANCE = 1.25  # trim only when the script overshoots by more
@@ -501,6 +524,7 @@ class ScriptArchitectAgent(Agent):
         self.last_video_script = None
         self.last_compliance = []
         self.last_length_repair = None  # beats trimmed to meet a length budget
+        self.last_flow = None  # whole-script repetition / smoothing report
         super().__init__()
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
@@ -581,6 +605,10 @@ class ScriptArchitectAgent(Agent):
                 f"Generated video script: {len(video_script.beats)} beats, "
                 f"{len(video_script.concept_ledger())} unique concepts"
             )
+            # One continuous talk, not stitched sections: cut repeated
+            # explanations and smooth the hand-offs between beats.
+            video_script, self.last_flow = self._smooth_narration(video_script, config)
+
             # Professor directives are binding: repair violations in the
             # script (only the offending beats) before any visual is planned.
             self.last_compliance = []
@@ -1553,6 +1581,8 @@ STYLE:
 - Audience ({config.audience}): {audience_line}
 - Verbosity ({config.verbosity}): {verbosity_line}
 - Tone: Friendly, intuitive, conversational.
+
+{SPOKEN_STYLE_RULES}
 - Visual hint per beat: 1–2 sentences describing what is on screen.
 {self._professor_block(config)}{self._concept_plan_block(concept_plan.entries if concept_plan else None)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
 
@@ -1664,6 +1694,7 @@ Return JSON in this EXACT shape:
                 known_analogies=list(known_analogies.values()),
                 plan_entries=concept_plan.for_segment(segment.segment_id) if concept_plan else None,
                 word_budget=word_budgets.get(segment.segment_id),
+                prior_narration=[b.narration for b in all_beats],
             )
             # Failure isolation: a single bad segment response (API error, invalid
             # JSON, or a malformed beat) must never abort the whole storyboard —
@@ -1795,6 +1826,8 @@ Return JSON in this EXACT shape:
         known_analogies: Optional[List[Analogy]] = None,
         plan_entries: Optional[List[Any]] = None,
         word_budget: Optional[int] = None,
+        previous_line: str = "",
+        prior_narration: Optional[List[str]] = None,
     ) -> str:
         audience_line = {
             "high-school": "Use real-world analogies; avoid jargon.",
@@ -1836,6 +1869,16 @@ Return JSON in this EXACT shape:
             )
 
         target_beats = self._budgeted_beat_count(segment.text, word_budget)
+        continuity_block = ""
+        if prior_narration:
+            continuity_block = self._said_so_far_block(prior_narration)
+        elif previous_line:
+            continuity_block = (
+                "\nTHE NARRATION SO FAR ENDED WITH:\n"
+                f"\"{previous_line.strip()[-400:]}\"\n"
+                "Your first beat continues from that line as the next thing the lecturer says. "
+                "Do not repeat it or summarize it.\n"
+            )
         task = (
             "Explain THIS segment fully as part of a larger continuous video."
             if word_budget is None
@@ -1852,7 +1895,7 @@ SOURCE SEGMENT:
 
 TEXT:
 {segment.text}
-{math_block}{already_block}{analogies_block}{self._professor_block(config)}{self._concept_plan_block(plan_entries)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
+{math_block}{already_block}{analogies_block}{continuity_block}{self._professor_block(config, whole_video=True)}{self._concept_plan_block(plan_entries)}{review_block}{self._length_block(word_budget, getattr(config, "target_minutes", None))}
 TASK: {task}
 Do not preview or re-explain other sections. If a concept was already covered,
 reference it by name without redefining it.
@@ -1867,6 +1910,8 @@ STYLE:
 - Audience ({config.audience}): {audience_line}
 - Verbosity ({config.verbosity}): {verbosity_line}
 - Tone: Friendly, intuitive, conversational.
+
+{SPOKEN_STYLE_RULES}
 
 Return JSON in this exact shape:
 {{
@@ -1895,15 +1940,52 @@ Return JSON in this exact shape:
 """
 
     @staticmethod
-    def _professor_block(config) -> str:
-        """The professor's brief, compiled into binding script instructions."""
+    def _professor_block(config, whole_video: bool = False) -> str:
+        """The professor's brief, compiled into binding script instructions.
+
+        ``whole_video`` is for prompts that write one section of the video:
+        the brief describes the whole video, so its content asks are met once
+        (where they belong), not restated by every section.
+        """
         notes = list(getattr(config, "professor_notes", None) or [])
         if not notes:
             return ""
+        scope = (
+            "Rules about wording, tone, audience and what to leave out (for example skipping proofs) "
+            "apply to every line. A content request (explain X, "
+            "show Y, use an analogy) is met ONCE in the whole video: do it here only if this "
+            "section's TEXT is where it belongs and the lecturer has not already done it.\n"
+            if whole_video else ""
+        )
         return (
-            "\nPROFESSOR INSTRUCTIONS (binding; they override the style defaults):\n"
+            "\nPROFESSOR INSTRUCTIONS (binding; they override the style defaults"
+            + ("; they describe the whole video, not this section" if whole_video else "")
+            + "):\n"
             + "\n".join(f"- {note}" for note in notes)
-            + "\n"
+            + "\n" + scope
+        )
+
+    SAID_SO_FAR_WORDS = 1200
+
+    @classmethod
+    def _said_so_far_block(cls, narrations: List[str]) -> str:
+        """Everything the listener has already heard, so a section adds instead of restating."""
+        kept: List[str] = []
+        words = 0
+        for text in reversed(narrations):
+            words += len(text.split())
+            if words > cls.SAID_SO_FAR_WORDS and kept:
+                break
+            kept.append(text.strip())
+        kept.reverse()
+        omitted = "(earlier lines omitted)\n" if len(kept) < len(narrations) else ""
+        return (
+            "\nWHAT THE LECTURER HAS ALREADY SAID (in order; the listener heard all of it):\n"
+            + omitted
+            + "\n".join(f"- {text}" for text in kept)
+            + "\nDo not say any of this again: no second definition, no restated formula or analogy, "
+            "no recap of it. Refer back in a few words at most and add something new. Your first beat "
+            "follows straight on from the last line above, as the next thing the lecturer says.\n"
         )
 
     @staticmethod
@@ -1935,8 +2017,9 @@ Return JSON in this exact shape:
 
         Each segment keeps at least one short beat, so on documents with many
         tiny segments coverage wins and the trim repair handles the overshoot.
+        Room for proposed presenter bridges is reserved first.
         """
-        total = self._length_budget_words(config)
+        total = self._content_word_target(config)
         if total is None or not segments:
             return {}
         weights = {s.segment_id: max(1, len((s.text or "").split())) for s in segments}
@@ -1963,6 +2046,94 @@ Return JSON in this exact shape:
             "definition and the main idea first; leave out secondary results, asides, derivations "
             "and repetition rather than exceed the budget.\n"
         )
+
+    def _smooth_narration(self, video_script, config):
+        """One LLM pass over the whole script: each idea said once, beats that follow on.
+
+        Sections are written one at a time, so the draft can restate the same
+        definition or formula in several places. The rewrite is validated by
+        ``narration_flow.apply_smoothing`` (no lost concepts, no longer, no
+        more repetitive) and the draft is kept on any failure. Returns
+        (script, report); report is None when no LLM is available.
+        """
+        from src.utils.narration_flow import apply_smoothing, repetition, smoothing_prompt
+
+        if self.client is None or not getattr(config, "smooth_narration", True) or len(video_script.beats) < 2:
+            return video_script, None
+        target = self._content_word_target(config)
+        notes = list(getattr(config, "professor_notes", None) or [])
+
+        def words(script) -> int:
+            return sum(len(b.narration.split()) for b in script.beats)
+
+        script, passes = video_script, []
+        # The video has a set length: an edit landing far under the target
+        # is rejected, the same as one that runs long.
+        min_words = round(min(target, words(video_script)) * self.SMOOTHING_FLOOR) if target else None
+        retry_note = ""
+        # Two passes at most: the second only when the first is still well
+        # over the target, or cut far too much and was rejected.
+        for attempt in range(self.SMOOTHING_PASSES):
+            if attempt and not retry_note and (target is None or words(script) <= target * 1.1):
+                break
+            over = target is not None and words(script) > target * 1.05
+            try:
+                response = self.client.chat.completions.create(
+                    model=FLOW_EDIT_MODEL,
+                    messages=[{"role": "user", "content": smoothing_prompt(
+                        script.beats, target, SPOKEN_STYLE_RULES, notes, retry_note)}],
+                    response_format={"type": "json_object"},
+                )
+                data = json.loads(response.choices[0].message.content)
+            except Exception as exc:
+                logger.warning("Narration smoothing failed (%s); keeping the draft.", exc)
+                draft = repetition([b.narration for b in script.beats])
+                passes.append({"applied": False, "reason": str(exc)[:200],
+                               "before": {k: draft[k] for k in ("total_words", "repeated_words", "ratio")}})
+                break
+            script, report = apply_smoothing(script, data, allow_cuts=over, min_words=min_words)
+            passes.append(report)
+            logger.info(
+                "Narration smoothing pass %d %s: %s -> %s words (target %s), repeated %s -> %s%s.",
+                attempt + 1, "applied" if report["applied"] else "rejected",
+                report["before"]["total_words"], report.get("after", {}).get("total_words", "-"), target,
+                report["before"]["repeated_words"], report.get("after", {}).get("repeated_words", "-"),
+                "" if report["applied"] else f" ({report.get('reason')})",
+            )
+            retry_note = ""
+            if not report["applied"]:
+                if not str(report.get("reason", "")).startswith("the rewrite cut too much"):
+                    break
+                retry_note = (
+                    f"- Your last edit came to {report['after']['total_words']} words, far too short: "
+                    f"the video needs about {target}. Keep most of each beat; cut only real repeats.\n"
+                )
+        summary = {
+            "applied": any(p.get("applied") for p in passes),
+            "target_words": target,
+            "before": passes[0]["before"],
+            "after": next((p["after"] for p in reversed(passes) if p.get("applied")), passes[0]["before"]),
+            "dropped_beats": sorted({b for p in passes for b in p.get("dropped_beats", [])}),
+            "passes": passes,
+        }
+        return script, summary
+
+    SMOOTHING_PASSES = 2
+    # Share of the word target an edit may not go under. 0.8 let the editor
+    # land 11-20% short every run (videos came out ~4:15 for 5:00).
+    SMOOTHING_FLOOR = 0.9
+    # Proposed presenter bridges add on-camera talk the script budget never
+    # saw (capped at MAX_RUNTIME_SHARE of runtime); reserve part of it.
+    BRIDGE_RESERVE = 0.15
+
+    def _content_word_target(self, config) -> Optional[int]:
+        """Words the content beats may use: the length budget minus room for bridges."""
+        budget = self._length_budget_words(config)
+        if budget is None:
+            return None
+        if getattr(config, "presenter_bridges", "off") == "propose":
+            return round(budget * (1 - self.BRIDGE_RESERVE))
+        return budget
 
     def _enforce_length_budget(self, video_script, config):
         """Deterministic length repair after scripting.
@@ -2282,12 +2453,11 @@ Return JSON in this exact shape:
             )
         ]
 
-        # If narration mentions trig/equations, add a centred MathTex.
-        import re as _re
-        latex_hints = _re.findall(
-            r"(sin|cos|tan|theta|pi|equation|formula)", narration.lower()
-        )
-        if latex_hints:
+        # Only a scene actually about the trig ratios gets the trig identity.
+        # Whole words: "singular", "spin" or "equation" used to match as
+        # substrings and stamp sin(θ) = opposite/hypotenuse on unrelated
+        # scenes (a live SVD video got it in 8 of 14 scenes).
+        if _TRIG_NARRATION.search(narration or ""):
             tex = r"\sin(\theta) = \frac{\text{opposite}}{\text{hypotenuse}}"
             objs.append(MathematicalObject(
                 object_id="main_equation",

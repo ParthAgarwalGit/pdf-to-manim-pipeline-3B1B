@@ -299,6 +299,45 @@ TTS cost is incurred; codegen and the Manim reviews are skipped too.
   are re-rendered; unchanged clips are reused. Visual-fix feedback does not
   apply (there are no scene visuals) and is ignored with a warning.
 
+### Hybrid: Manim for Visualization, a Presenter for Explanation
+
+```bash
+pdf2manim convert notes.pdf --render-backend hybrid \
+  --avatar-image-url https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg \
+  --target-minutes 5 --voice nova --approve-bridges --max-presenter-seconds 120
+```
+
+Every scene is shown as one of three frame types, chosen per scene by a
+**frame director** agent from how much the concept has to be *seen*:
+
+| Frame | Used for |
+|---|---|
+| `manim` | Full-screen animation: geometry, transformations, plots, worked examples |
+| `presenter` | The D-ID presenter alone: openings, transitions between concepts (bridges), verbal intuition, recaps |
+| `split` | Presenter left, a simple animation right: introducing a concept with one clear picture |
+
+- One TTS voice narrates every scene; D-ID lip-syncs the stock presenter to
+  that same audio (`POST /audios` + an audio-script talk), so the voice never
+  changes at a cut. Manim scenes are timed to the measured narration.
+- The director scores each scene's visual need (beat roles, the planned
+  visual, visual verbs in the narration) and, with an LLM, reviews each
+  choice; Manim stays the backbone (presenter + split at most 45% of the
+  runtime) and presenter time is capped by `--max-presenter-seconds`.
+  Decisions and reasons: `frame_plan.json`.
+- After rendering, a **comprehension verifier** (vision model) compares each
+  split scene with the same animation full-screen and keeps whichever is
+  easier to understand (switching to full-screen costs nothing); for other
+  scenes it records recommendations. Verdicts: `frame_review.json`.
+- Changes of frame type dip briefly through Manim's background colour, so the
+  cuts are smooth. Presenter and split frames are labelled "AI-generated
+  presenter" and the video ends with a credits card.
+- If D-ID can't render a presenter scene (credits, errors), it falls back to
+  a narrated title card; a split scene falls back to its full-screen
+  animation. Nothing is dropped.
+- D-ID bills about one credit per 15 s of presenter video, rounded up per
+  clip; a dry run (`--dry-run`) writes `frame_plan.json` with the presenter
+  seconds before anything is spent.
+
 ### Feedback in Plain Words
 
 ```bash

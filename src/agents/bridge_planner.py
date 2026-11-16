@@ -111,16 +111,33 @@ class BridgePlannerAgent:
                 "The professor appears on camera between animated scenes of their lecture video. "
                 "Write each bridge in the professor's first-person voice, 15-45 words: an opening "
                 "hook, a transition that motivates what comes next, a 'why this matters' before "
-                "a hard step, or a recap. Never introduce new content.\n"
-                f"{listing}\nRespond as {{\"bridges\": [{{\"slot\": 0, \"text\": \"...\"}}]}}"
+                "a hard step, or a recap. Never introduce new content. The AFTER text is spoken "
+                "right after your bridge, so never say what it says: no formula, definition or "
+                "analogy from it. At most, raise the question it answers or say why it matters. "
+                "Sound like a person talking: contractions, short sentences, no stock phrases "
+                "(let's dive in, here's the key), no em dashes, math said in words.\n"
+                f"{listing}\nRespond in JSON as {{\"bridges\": [{{\"slot\": 0, \"text\": \"...\"}}]}}"
             )
             for item in data.get("bridges") or []:
                 slot, text = item.get("slot"), str(item.get("text") or "").strip()
                 if slot in texts and text:
+                    if self._echoes(text, beats, slot):
+                        logger.info("Bridge at slot %s repeats its neighbour; using the template.", slot)
+                        continue
                     texts[slot] = text
         except Exception as exc:
             logger.warning("Bridge writing by LLM failed (%s); using templates.", exc)
         return texts
+
+    ECHO_OVERLAP = 0.3
+
+    @classmethod
+    def _echoes(cls, text: str, beats: List[Beat], slot: int) -> bool:
+        """True when a bridge mostly restates the beat before or after it."""
+        from src.utils.narration_flow import overlaps
+
+        neighbours = [beats[j].narration for j in (slot - 1, slot) if 0 <= j < len(beats)]
+        return any(overlaps(text, other) >= cls.ECHO_OVERLAP for other in neighbours)
 
     @staticmethod
     def _template(beats: List[Beat], i: int, kind: str) -> str:

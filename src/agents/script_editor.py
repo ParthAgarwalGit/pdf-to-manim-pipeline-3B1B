@@ -37,14 +37,23 @@ LLM = Callable[[str], Dict[str, Any]]
 DENSITY_MAX_DEPTH = {"essential": 0, "standard": 1, "rich": MAX_BEAT_DEPTH}
 
 _STYLE = (
-    "Write like a friendly, intuitive 3Blue1Brown-style narrator. Each beat is "
-    "30-60 words of spoken narration plus a one-sentence visual_hint describing "
-    "what is on screen. Return JSON only."
+    "Write like a friendly lecturer talking to one student: plain words, contractions, "
+    "mostly short sentences, no stock phrases (let's dive in, here's the key, crucial), "
+    "no em dashes, and math said in words (A equals U D V transpose), never symbols. "
+    "Each beat is 30-60 words of spoken narration that continues from the one before it, "
+    "plus a one-sentence visual_hint describing what is on screen. Return JSON only."
 )
 
 
 class EditError(Exception):
     """An op that cannot be applied; the message is shown to the professor."""
+
+
+def ensure_json_instruction(prompt: str) -> str:
+    """OpenAI's JSON mode rejects (HTTP 400) a prompt that never says "json";
+    several agents' prompts ended with "Respond as {...}" and silently fell
+    back to templates or rules."""
+    return prompt if "json" in prompt.lower() else prompt + "\nRespond with JSON only."
 
 
 def default_llm() -> Optional[LLM]:
@@ -58,7 +67,7 @@ def default_llm() -> Optional[LLM]:
     def call(prompt: str) -> Dict[str, Any]:
         response = client.chat.completions.create(
             model=EDITOR_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": ensure_json_instruction(prompt)}],
             response_format={"type": "json_object"},
         )
         return json.loads(response.choices[0].message.content)
