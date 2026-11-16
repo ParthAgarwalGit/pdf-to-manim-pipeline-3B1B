@@ -7,7 +7,11 @@ rendered scene. This module runs inside the Manim subprocess: after every
 
 - ``overlaps``: two texts whose boxes intersect by more than OVERLAP_RATIO of
   the smaller one (labels on top of labels, formulas over titles);
-- ``off_frame``: text extending past the frame edge by more than FRAME_SLACK.
+- ``off_frame``: text extending past the frame edge by more than FRAME_SLACK;
+- ``long_text``: prose shown as text that is long enough to be a sentence
+  (LONG_TEXT_WORDS or more words) rather than a label;
+- ``fill``: the largest share of the frame the picture ever reaches, and how
+  many times the scene was measured.
 
 It is switched on by ``PDF2MANIM_LAYOUT_AUDIT=<json path>`` through the
 ``layout_audit_site`` sitecustomize that the native renderer puts on the
@@ -26,6 +30,11 @@ SITE_DIR = Path(__file__).resolve().parent / "layout_audit_site"
 OVERLAP_RATIO = 0.12   # of the smaller box's area
 FRAME_SLACK = 0.05     # scene units past the frame edge
 MAX_FINDINGS = 12
+LONG_TEXT_WORDS = 7    # a Text with this many words is a sentence, not a label
+MIN_FILL = 0.30        # share of the frame the picture should reach at least once
+MIN_FILL_OBSERVATIONS = 3
+# Tex (but not its parent MathTex) is prose too: Title and BulletedList are built on it.
+_PROSE_CLASSES = ("Text", "MarkupText", "Paragraph", "Tex", "Title", "BulletedList")
 
 _TEXT_CLASSES = (
     "Text", "MarkupText", "Paragraph", "Tex", "MathTex", "SingleStringMathTex",
@@ -85,6 +94,43 @@ def visible_texts(mobjects) -> List[Any]:
     return found
 
 
+def _raw_text(mob) -> str:
+    # Tex-based prose (Tex, Title, BulletedList) keeps its words in tex_string only.
+    raw = (
+        getattr(mob, "original_text", None) or getattr(mob, "text", None)
+        or getattr(mob, "tex_string", None) or ""
+    )
+    return " ".join(str(raw).split())
+
+
+def long_texts(mobjects) -> List[Dict[str, Any]]:
+    """Visible prose mobjects (not formulas) long enough to be a sentence."""
+    found = []
+    for mob in visible_texts(mobjects):
+        if not any(cls.__name__ in _PROSE_CLASSES for cls in type(mob).__mro__):
+            continue
+        words = len(_raw_text(mob).split())
+        if words >= LONG_TEXT_WORDS:
+            found.append({"text": _label(mob), "words": words})
+    return found
+
+
+def content_fill(mobjects, frame_width: float, frame_height: float) -> float:
+    """Share of the frame covered by the bounding box of everything visible (0..1)."""
+    boxes = [_box(m) for m in mobjects if _visible(m)]
+    boxes = [b for b in boxes if b is not None]
+    if not boxes or frame_width <= 0 or frame_height <= 0:
+        return 0.0
+    hw, hh = frame_width / 2, frame_height / 2
+    left = max(-hw, min(b[0] for b in boxes))
+    right = min(hw, max(b[1] for b in boxes))
+    bottom = max(-hh, min(b[2] for b in boxes))
+    top = min(hh, max(b[3] for b in boxes))
+    if right <= left or top <= bottom:
+        return 0.0
+    return round((right - left) * (top - bottom) / (frame_width * frame_height), 3)
+
+
 def check(mobjects, frame_width: float, frame_height: float) -> Dict[str, List[Dict[str, Any]]]:
     """Overlapping and off-frame text among ``mobjects`` (pure geometry)."""
     texts = [(m, _box(m)) for m in visible_texts(mobjects)]
@@ -113,15 +159,24 @@ class _Recorder:
         self.path = path
         self.overlaps: Dict[tuple, Dict[str, Any]] = {}
         self.off_frame: Dict[str, Dict[str, Any]] = {}
+        self.long_text: Dict[str, Dict[str, Any]] = {}
+        self.max_fill = 0.0
+        self.observations = 0
 
     def observe(self, scene) -> None:
         try:
             from manim import config
 
             found = check(scene.mobjects, config.frame_width, config.frame_height)
+            long = long_texts(scene.mobjects)
+            fill = content_fill(scene.mobjects, config.frame_width, config.frame_height)
         except Exception:
             return
         t = round(float(getattr(getattr(scene, "renderer", None), "time", 0.0) or 0.0), 2)
+        self.observations += 1
+        self.max_fill = max(self.max_fill, fill)
+        for item in long:
+            self.long_text.setdefault(item["text"], {**item, "t": t})
         for item in found["overlaps"]:
             key = tuple(sorted((item["a"], item["b"])))
             if key not in self.overlaps or item["ratio"] > self.overlaps[key]["ratio"]:
@@ -132,7 +187,12 @@ class _Recorder:
     def dump(self) -> None:
         overlaps = sorted(self.overlaps.values(), key=lambda x: -x["ratio"])[:MAX_FINDINGS]
         off = list(self.off_frame.values())[:MAX_FINDINGS]
-        Path(self.path).write_text(json.dumps({"overlaps": overlaps, "off_frame": off}, indent=2), encoding="utf-8")
+        Path(self.path).write_text(json.dumps({
+            "overlaps": overlaps,
+            "off_frame": off,
+            "long_text": list(self.long_text.values())[:MAX_FINDINGS],
+            "fill": {"max": round(self.max_fill, 3), "observations": self.observations},
+        }, indent=2), encoding="utf-8")
 
 
 def install(path: Optional[str] = None) -> bool:
@@ -188,6 +248,21 @@ def read_audit(path: Path) -> List[str]:
         f"Text \"{o['text']}\" runs off the frame edge at {o.get('t', 0)}s."
         for o in data.get("off_frame") or []
     ]
+    issues += [
+        f"Text \"{o['text']}\" is a {o.get('words', '?')}-word sentence on screen at "
+        f"{o.get('t', 0)}s; on-screen text must be a label of at most four words."
+        for o in data.get("long_text") or []
+    ]
+    fill = data.get("fill")
+    if (
+        isinstance(fill, dict)
+        and fill.get("observations", 0) >= MIN_FILL_OBSERVATIONS
+        and float(fill.get("max", 1.0)) < MIN_FILL
+    ):
+        issues.append(
+            f"The picture never covers more than {int(float(fill['max']) * 100)}% of the frame; "
+            "the main visual must be much larger."
+        )
     return issues
 
 
@@ -200,4 +275,8 @@ def audit_feedback(issues: List[str]) -> List[str]:
         "font_size at most 36). Never place a label or formula on top of other text: use "
         "LayoutTracker.place_label for labels, arrange stacked text with .arrange(DOWN, buff=0.3), "
         "and FadeOut text before putting new text in the same place.",
+        "Remove every sentence, title or caption from the screen: the narrator says it. "
+        "On-screen text is a label of at most four words, or a formula.",
+        "Make the main visual fill the frame: a coordinate system with x_length 9 to 11 and "
+        "y_length 5.5 to 6.5, or scale the main group with scale_to_fit_height(5) and centre it.",
     ]

@@ -136,6 +136,7 @@ class ScriptEditorAgent:
             beats=self._beats or original.beats,
             analogies=[a for a in self._analogies.values() if a.analogy_id in used],
             pronunciations=self._pronunciations,
+            plan=original.plan,
         )
         result.diff = self.diff(original, result.script, result)
         return result

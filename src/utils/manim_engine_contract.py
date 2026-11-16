@@ -432,8 +432,11 @@ def build_3b1b_quality_prompt() -> str:
 
 2. BREATHING ROOM (minimum self.wait() durations):
 {wait_block}
-- ALWAYS call self.wait() between consecutive self.play() calls.
+- Give each key reveal a moment to land: a short self.wait() after it.
+- Animations that belong to one thought may run back to back with no wait.
 - After revealing a major equation or concept, wait >= 1.0s.
+- When the scene has a NARRATION SYNC block, sync_to() supplies the pauses
+  between beats: never add waits to fill time.
 
 3. PROGRESSIVE REVEAL:
 - NEVER Write() a complex equation (>3 terms) in a single shot.
@@ -455,9 +458,12 @@ def build_3b1b_quality_prompt() -> str:
 
 6. ANTI-PATTERNS TO AVOID:
 - FadeOut immediately followed by FadeIn of a related object (use Transform instead).
-- Multiple self.play() calls with no self.wait() in between.
+- A long run of self.play() calls with no pause anywhere for a reveal to land.
 - More than 3 Text objects visible simultaneously (creates a "text wall").
+- A sentence of prose on screen: the narrator says it, the screen shows it.
 - Creating a new Axes/NumberPlane when one is already active (reuse it).
+- Clearing the screen in the middle of a scene to start a different diagram.
+- A main visual smaller than about a third of the frame.
 """
 
 

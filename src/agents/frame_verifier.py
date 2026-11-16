@@ -16,10 +16,11 @@ import logging
 import os
 import subprocess
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from src.prompts.review import FRAME_ISSUE_CODES, frame_issue_instructions
 from src.utils.ffmpeg_finder import get_ffmpeg
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class FrameVerdict:
     reason: str
     action: str  # keep | switch_to_manim | recommend
     compared: bool = False
+    issues: List[str] = field(default_factory=list)
 
 
 def default_vision() -> Optional[Vision]:
@@ -145,14 +147,17 @@ class FrameVerifierAgent:
             f"The images are stills of the scene as rendered, frame type '{chosen}'. Which frame type "
             "would make this scene EASIEST TO UNDERSTAND? Is any on-screen visual legible?\n"
             'Respond as {"easiest": "manim|presenter|split", "legible": true|false, "reason": "one sentence"}'
-        )
+        ) + frame_issue_instructions()
         data = self.vision(prompt, frames) or {}
+        issues = [str(c) for c in (data.get("issues") or []) if str(c) in FRAME_ISSUE_CODES]
         easiest = str(data.get("easiest", chosen)).strip().lower()
         if easiest not in ("manim", "presenter", "split"):
             easiest = chosen
         legible = data.get("legible") if isinstance(data.get("legible"), bool) else None
         action = "keep" if easiest == chosen else "recommend"
-        return FrameVerdict(sid, chosen, easiest, legible, str(data.get("reason") or ""), action)
+        return FrameVerdict(
+            sid, chosen, easiest, legible, str(data.get("reason") or ""), action, issues=issues,
+        )
 
 
 def verdicts_report(verdicts: List[FrameVerdict]) -> Dict[str, Any]:
@@ -162,4 +167,5 @@ def verdicts_report(verdicts: List[FrameVerdict]) -> Dict[str, Any]:
         "agreed": sum(1 for v in verdicts if v.action == "keep"),
         "switched": [v.scene_id for v in verdicts if v.action == "switch_to_manim"],
         "recommended": {v.scene_id: v.easiest for v in verdicts if v.action == "recommend"},
+        "issues": {v.scene_id: v.issues for v in verdicts if v.issues},
     }

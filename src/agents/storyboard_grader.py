@@ -27,14 +27,18 @@ from src.agents.base import (
     BackoffStrategy,
     RetryPolicy,
 )
+from src.prompts.narrative import plan_summary_for_review
+from src.prompts.review import (
+    PLANNED_CRITERIA_WEIGHTS, REPORTED_ONLY_CRITERION, storyboard_review_prompt,
+)
 from src.schemas.storyboard import StoryboardJSON
 from src.schemas.source_segment import SourceSegment
 
 logger = logging.getLogger(__name__)
 
-# Per-task model tiering. Storyboard grading is cheap rubric scoring (LLM-as-
-# judge) with no cascade risk, so it runs on the cheapest capable tier.
-GRADER_MODEL = "gpt-5.4-nano"
+# Per-task model tiering. Storyboard grading judges a whole script against
+# its lesson plan; the smallest model cannot do that, so it runs on mini.
+GRADER_MODEL = "gpt-5.4-mini"
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +78,7 @@ class StoryboardGraderInput(AgentInput):
         source_segments: Optional[List[SourceSegment]] = None,
         pass_threshold: float = 6.0,
         ignore_visuals: bool = False,
+        lesson_plan: Optional[Any] = None,
     ):
         self.storyboard = storyboard
         self.source_text_summary = source_text_summary
@@ -82,6 +87,8 @@ class StoryboardGraderInput(AgentInput):
         # did-avatar runs render no scene visuals: grade narration, flow and
         # coverage only, and pass on no visual critique to the planner.
         self.ignore_visuals = ignore_visuals
+        # A planned script is graded against its LessonPlan with its own rubric.
+        self.lesson_plan = lesson_plan
 
 
 class StoryboardGraderOutput(AgentOutput):
@@ -156,7 +163,12 @@ class StoryboardGraderAgent(Agent):
 
         storyboard = input_data.storyboard
 
-        if self.client:
+        plan = getattr(input_data, "lesson_plan", None)
+        if self.client and plan is not None:
+            report = self._grade_planned_with_llm(
+                storyboard, plan, input_data.source_text_summary, input_data.source_segments,
+            )
+        elif self.client:
             report = self._grade_with_llm(
                 storyboard,
                 input_data.source_text_summary,
@@ -185,8 +197,8 @@ class StoryboardGraderAgent(Agent):
     _VISUAL_WORDS = re.compile(r"(?i)\b(visual|animat|diagram|graphic|object|transform)")
 
     def _without_visuals(self, report: GradingReport) -> GradingReport:
-        """The report re-weighted without ``visual_richness``."""
-        kept = [c for c in report.criteria if c.name != "visual_richness"]
+        """The report re-weighted without its visual criteria."""
+        kept = [c for c in report.criteria if c.name not in ("visual_richness", "visual_design")]
         total = sum(c.weight for c in kept) or 1.0
         return GradingReport(
             overall_score=round(sum(c.score * c.weight for c in kept) / total, 2),
@@ -306,6 +318,89 @@ Return ONLY valid JSON:
             criteria=criteria,
             summary=data.get("summary", ""),
             improvement_suggestions=data.get("improvement_suggestions", []),
+        )
+
+    # ------------------------------------------------------------------
+    # LLM grading of a planned video (script + visual plan vs. LessonPlan)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _scene_for_review(scene) -> Dict[str, Any]:
+        beats = list(getattr(scene, "source_beats", None) or [])
+        objects = list(scene.visual_intent.mathematical_objects)
+        return {
+            "scene_id": scene.scene_id,
+            "act_id": next((getattr(b, "act_id", "") for b in beats if getattr(b, "act_id", "")), ""),
+            "scene_type": getattr(scene, "scene_type", "manim"),
+            "seconds": scene.duration_estimate,
+            "narration": scene.narration,
+            "visual_hints": [b.visual_hint for b in beats if (b.visual_hint or "").strip()],
+            "primitives": [(o.primitive or o.object_type) for o in objects][:12],
+            "transformations": len(scene.visual_intent.transformations),
+            "plan_source": getattr(scene, "visual_plan_source", "planner"),
+        }
+
+    def _grade_planned_with_llm(
+        self,
+        storyboard: StoryboardJSON,
+        plan: Any,
+        source_summary: str,
+        source_segments: Optional[List[SourceSegment]] = None,
+    ) -> GradingReport:
+        """Grade a planned script and visual plan with the planned-video rubric."""
+        assert self.client is not None, "LLM client not initialized"
+        prompt = storyboard_review_prompt(
+            plan_summary_for_review(plan),
+            [self._scene_for_review(s) for s in storyboard.scenes],
+            plan.coverage_report(),
+            source_summary,
+        )
+        try:
+            response = self.client.chat.completions.create(
+                model=GRADER_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(response.choices[0].message.content)
+            return self._parse_planned_response(data)
+        except Exception as e:
+            logger.error(f"LLM grading failed: {e} — falling back to heuristic.")
+            return self._grade_heuristic(storyboard, source_segments=source_segments)
+
+    def _parse_planned_response(self, data: Dict[str, Any]) -> GradingReport:
+        def read(name: str):
+            entry = data.get(name)
+            if not isinstance(entry, dict):
+                entry = {}
+            try:
+                score = float(entry.get("score", 5.0))
+            except (TypeError, ValueError):
+                score = 5.0
+            score = max(0.0, min(10.0, score))
+            feedback = str(entry.get("feedback") or "No feedback.")
+            return score, feedback
+
+        criteria: List[GradingCriterion] = []
+        weighted_sum = 0.0
+        for name, weight in PLANNED_CRITERIA_WEIGHTS.items():
+            score, feedback = read(name)
+            criteria.append(GradingCriterion(name=name, weight=weight, score=score, feedback=feedback))
+            weighted_sum += score * weight
+
+        # Reported alongside the rubric; weight 0 keeps it out of the score.
+        score, feedback = read(REPORTED_ONLY_CRITERION)
+        criteria.append(GradingCriterion(
+            name=REPORTED_ONLY_CRITERION, weight=0.0, score=score, feedback=feedback,
+        ))
+
+        raw = data.get("improvement_suggestions")
+        suggestions = [s for s in raw if isinstance(s, str) and s] if isinstance(raw, list) else []
+        return GradingReport(
+            overall_score=round(weighted_sum, 2),
+            passed=False,  # caller sets this
+            criteria=criteria,
+            summary=str(data.get("summary") or ""),
+            improvement_suggestions=suggestions,
         )
 
     # ------------------------------------------------------------------

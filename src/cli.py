@@ -200,6 +200,12 @@ def pdf2manim():
          '(default: ungoverned by length)'
 )
 @click.option(
+    '--lesson-plan/--no-lesson-plan',
+    default=True,
+    help='Plan the lesson (one question, acts, a running example) before scripting. '
+         '--no-lesson-plan uses the older segment-by-segment script.',
+)
+@click.option(
     '-q', '--quality',
     type=click.Choice(['low', 'medium', 'high'], case_sensitive=False),
     default='medium',
@@ -374,6 +380,7 @@ def convert(
     audience: str,
     granularity: str,
     target_minutes: Optional[float],
+    lesson_plan: bool,
     quality: str,
     voice: str,
     skip_tts: bool,
@@ -462,6 +469,7 @@ def convert(
         click.echo(f"  Audience:     {audience}")
         click.echo(f"  Granularity:  {granularity}")
         click.echo(f"  Target Length:{' ' + str(target_minutes) + ' min' if target_minutes else ' auto'}")
+        click.echo(f"  Lesson Plan:  {'on' if lesson_plan else 'off'}")
         click.echo()
 
         click.echo(click.style("Rendering Configuration:", bold=True))
@@ -493,6 +501,7 @@ def convert(
             audience=audience,
             granularity=granularity,
             target_minutes=target_minutes,
+            lesson_plan=lesson_plan,
             base_output_dir=output_dir,
             enable_ocr_debug=False,
             strict=strict,

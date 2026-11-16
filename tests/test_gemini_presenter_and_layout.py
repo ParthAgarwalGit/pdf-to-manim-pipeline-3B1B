@@ -258,7 +258,7 @@ class TestLayoutAudit:
             'Text "title" runs off the frame edge at 0.5s.',
         ]
         feedback = audit_feedback(issues)
-        assert "fix every one" in feedback[0] and "LayoutTracker.place_label" in feedback[-1]
+        assert "fix every one" in feedback[0] and "LayoutTracker.place_label" in feedback[-3]
 
 
 class TestLayoutRepair:

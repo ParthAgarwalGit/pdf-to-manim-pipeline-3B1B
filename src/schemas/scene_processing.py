@@ -120,6 +120,10 @@ class SharedContext(BaseModel):
         default_factory=list,
         description="Professor notation directives (binding), e.g. 'Write j, not i.'"
     )
+    visual_world: List[str] = Field(
+        default_factory=list,
+        description="The video's recurring look (running example, motifs), one fact per line.",
+    )
 
 
 class SceneSpec(BaseModel):
@@ -144,6 +148,14 @@ class SceneSpec(BaseModel):
     beat_timings: Dict[str, List[float]] = Field(
         default_factory=dict,
         description="Timing track (beat_id -> [start, end] s) for the sync contract",
+    )
+    visual_hints: List[str] = Field(
+        default_factory=list,
+        description="The script's per-beat description of what changes on screen ('beat_id: hint').",
+    )
+    plan_source: str = Field(
+        default="planner",
+        description="Scene.visual_plan_source: planner | repaired | fallback.",
     )
 
     @field_validator('scene_id')

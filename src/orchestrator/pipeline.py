@@ -60,6 +60,7 @@ from src.agents.audio_video_composer import (
 from src.agents.video_quality_reviewer import VideoQualityReviewerAgent, VideoQualityReviewerInput
 from src.agents.persistence import PersistenceAgent, PersistenceInput
 from src.schemas.file_reference import FileReference
+from src.schemas.lesson_plan import LessonPlan
 from src.schemas.output_manifest import OutputFile, OutputManifest
 from src.schemas.scene_processing import FailedScene, SceneProcessingReport
 from src.schemas.storyboard import Configuration
@@ -101,6 +102,9 @@ class PipelineConfig:
     storyboard_quality_threshold: float = 6.0
     granularity: str = "balanced"
     target_minutes: Optional[float] = None  # requested finished length; None = ungoverned
+    # Plan the lesson (one question, acts in viewing order, a running example)
+    # before scripting. False = the older segment-by-segment script.
+    lesson_plan: bool = True
     enable_manim_dry_run_validation: bool = False
     enable_final_video_review: bool = True
     strict: bool = False
@@ -171,6 +175,7 @@ class PipelineConfig:
             granularity=self.granularity,
             target_minutes=self.target_minutes,
             presenter_bridges=self.presenter_bridges,
+            lesson_plan=self.lesson_plan,
         )
 
 
@@ -2103,6 +2108,14 @@ class Orchestrator:
                 self._quality_reports["narration_flow"] = flow
             else:
                 self._quality_reports.pop("narration_flow", None)
+            lesson_plan = getattr(self.script_architect_agent, "last_lesson_plan", None)
+            if isinstance(lesson_plan, LessonPlan):
+                self._quality_reports["lesson_plan"] = {
+                    **lesson_plan.model_dump(mode="json"),
+                    "coverage_report": lesson_plan.coverage_report(),
+                }
+            else:
+                self._quality_reports.pop("lesson_plan", None)
 
             if not self.config.enable_quality_loops:
                 self._quality_reports["storyboard_review"] = {
@@ -2117,6 +2130,7 @@ class Orchestrator:
                 source_segments=source_segments,
                 pass_threshold=self.config.storyboard_quality_threshold,
                 ignore_visuals=self._avatar_backend(),
+                lesson_plan=getattr(self.script_architect_agent, "last_lesson_plan", None),
             )
             grader_input.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=60)
             grade_result = self._execute_agent(
@@ -3708,6 +3722,7 @@ class Orchestrator:
             "did_avatar": "did_avatar.json",
             "length_budget": "length_budget.json",
             "narration_flow": "narration_flow.json",
+            "lesson_plan": "lesson_plan.json",
             "frame_plan": "frame_plan.json",
             "layout_audit": "layout_audit.json",
             "frame_review": "frame_review.json",
@@ -3734,6 +3749,7 @@ class Orchestrator:
                 storyboard,
                 title=getattr(source, "title", "") or "",
                 analogies=getattr(source, "analogies", None) or [],
+                plan=getattr(source, "plan", None),
             )
             if script is None:
                 return

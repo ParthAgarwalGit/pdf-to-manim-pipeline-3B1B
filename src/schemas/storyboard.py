@@ -64,6 +64,15 @@ class Configuration(BaseModel):
         default="off",
         description="'propose' inserts presenter bridge beats (await approval); 'off' none",
     )
+    lesson_plan: bool = Field(
+        default=True,
+        description="Plan the lesson (question, acts, running example) before scripting.",
+    )
+    visual_world: List[str] = Field(
+        default_factory=list,
+        description="The video's recurring look (running example, motifs), one fact per line, "
+                    "for the visual planner and the code generator. Set by the script architect.",
+    )
 
     @field_validator('verbosity')
     @classmethod
@@ -578,6 +587,11 @@ class Scene(BaseModel):
                     "the hybrid backend."
     )
     frame_reason: str = Field(default="", description="Why the frame director chose frame_type")
+    visual_plan_source: str = Field(
+        default="planner",
+        description="Where the visual plan came from: 'planner' (as designed), 'repaired' "
+                    "(cut down to its budgets), or 'fallback' (planner failed; stub plan).",
+    )
 
     @property
     def is_presenter(self) -> bool:

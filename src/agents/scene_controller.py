@@ -242,6 +242,9 @@ class SceneControllerAgent(Agent):
             notation_rules=list(
                 getattr(getattr(storyboard, "configuration", None), "notation_rules", None) or []
             ),
+            visual_world=list(
+                getattr(getattr(storyboard, "configuration", None), "visual_world", None) or []
+            ),
         )
 
     def _scene_to_spec(self, scene: Scene) -> SceneSpec:
@@ -260,6 +263,12 @@ class SceneControllerAgent(Agent):
             duration_estimate=scene.duration_estimate,
             audio_duration_seconds=scene.audio_duration_seconds,
             beat_timings=dict(getattr(scene, "beat_timings", None) or {}),
+            visual_hints=[
+                f"{b.beat_id}: {b.visual_hint.strip()}"
+                for b in (getattr(scene, "source_beats", None) or [])
+                if (b.visual_hint or "").strip()
+            ],
+            plan_source=getattr(scene, "visual_plan_source", "planner") or "planner",
         )
 
     def _process_scene_with_generator(

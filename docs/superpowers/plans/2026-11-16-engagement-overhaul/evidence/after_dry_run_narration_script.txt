@@ -1,0 +1,109 @@
+================================================================================
+NARRATION SCRIPT
+PDF: svd_half.pdf
+Total Scenes: 10
+================================================================================
+
+[SCENE 1: scene_001]
+Duration: 12.3s
+--------------------------------------------------------------------------------
+Picture a cloud of data points. I want one line through them that captures almost everything. How do I find the single best direction, and why does that same idea reveal what any matrix is really doing?
+
+================================================================================
+
+[SCENE 2: scene_002]
+Duration: 18.0s
+--------------------------------------------------------------------------------
+Five points sit scattered on the plane. A thin line through the origin starts sweeping around, testing one angle after another.
+
+At each angle, dashed segments drop from every dot straight down to the line. Some angles leave short drops, others leave long ones, and it's not obvious yet which angle wins or why.
+
+================================================================================
+
+[SCENE 3: scene_003]
+Duration: 41.3s
+--------------------------------------------------------------------------------
+Pick one point and look at the triangle it makes with the line. Its distance to the origin splits into two pieces, how far it falls along the line, and how far it sits off the line.
+
+That's just Pythagoras. The squared distance from the origin equals the squared length along the line plus the squared length off the line, and the total distance stays fixed for that point.
+
+So shrinking the distances off the line is the same job as growing the distances along the line. Minimizing one quantity means maximizing the other.
+
+As the line sweeps toward its best angle, watch the projections stretch out while the dashed perpendiculars shrink. The line that captures the most projection also leaves the least error.
+
+================================================================================
+
+[SCENE 4: scene_004]
+Duration: 39.7s
+--------------------------------------------------------------------------------
+The line finally locks into place. This winning direction has a name. It's called the first singular vector, and we write it as v one.
+
+How much of the cloud does that one line capture? The total length of the projections onto it is measured by the first singular value, sigma one.
+
+There's still whatever v one left behind. Looking only at directions perpendicular to it, one of them captures the most remaining spread, and that becomes v two.
+
+Its spread gets measured the same way, giving sigma two, always smaller than sigma one since v one already grabbed the biggest direction.
+
+Picking the best direction, then the best leftover direction, actually gives the best pair of directions together.
+
+================================================================================
+
+[SCENE 5: scene_005]
+Duration: 8.0s
+--------------------------------------------------------------------------------
+That gives the data a direction, but it still leaves the matrix itself mysterious.
+
+================================================================================
+
+[SCENE 6: scene_006]
+Duration: 40.3s
+--------------------------------------------------------------------------------
+Those two directions describe the cloud of data. But the same matrix A can be seen differently, as something that moves every point in the plane, not just the five we started with.
+
+First the circle turns so v one and v two line up with the plain horizontal and vertical axes. That rotation is the V transpose part of A.
+
+Then it stretches, by sigma one along one axis and sigma two along the other, like pulling a rubber sheet harder along its grain in one direction than the other.
+
+A second rotation turns that stretched shape so its axes land on two new directions, u one and u two, which come from A v one and A v two.
+
+================================================================================
+
+[SCENE 7: scene_007]
+Duration: 8.0s
+--------------------------------------------------------------------------------
+Rotate, stretch, rotate. That whole sequence, done in one step, is what the matrix A does to every single point in the plane.
+
+================================================================================
+
+[SCENE 8: scene_008]
+Duration: 40.7s
+--------------------------------------------------------------------------------
+Snap every one of the five points onto the v one line instead of leaving them scattered. That single line is the closest any line through the origin could get to all five at once.
+
+Fade in v two as well and you get a flat two-dimensional version of the cloud, which for points already in the plane just gives it back exactly.
+
+A ghost of the full ellipse from before hovers behind the flattened line, showing what got dropped by keeping only sigma one. The gap between them is the error you accept for the simpler picture.
+
+That gap is exactly sigma two, the next singular value in line. No other rank one matrix can get closer to A than that.
+
+================================================================================
+
+[SCENE 9: scene_009]
+Duration: 35.7s
+--------------------------------------------------------------------------------
+Back to that first scatter of five points. A was never just a grid of numbers. It was always rotate, stretch, rotate, happening quietly underneath.
+
+Watch the sequence run once more. The circle turns to meet v one and v two, stretches by sigma one and sigma two, then turns again to land on u one and u two.
+
+U, D, V transpose. Three stages, one for each part of the motion, glowing in order under the shape as it moves.
+
+Those stretch directions are not some separate fact about the matrix. They are the exact same best-fit line we went looking for at the very start.
+
+================================================================================
+
+[SCENE 10: scene_010]
+Duration: 12.0s
+--------------------------------------------------------------------------------
+A equals U times D times V transpose means every matrix rotates space, stretches it along perpendicular axes by its singular values, and rotates once more, and those axes are the best-fit directions through the data.
+
+================================================================================
