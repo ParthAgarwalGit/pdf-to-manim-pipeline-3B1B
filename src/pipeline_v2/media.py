@@ -98,12 +98,19 @@ def source_page_fallback(
     return output_path.resolve()
 
 
-def concatenate(videos: list[Path], output: Path) -> Path:
+def concatenate(
+    videos: list[Path],
+    output: Path,
+    *,
+    fades: Optional[list[tuple[float, float]]] = None,
+) -> Path:
     """Join clips into one uniform file, whatever each clip's own format is.
 
     Every clip is scaled and padded to the most common frame size and rate
     and resampled to 48 kHz stereo (silence when it has no audio track), so
     a 1080p fallback page or a silent clip cannot corrupt the joined video.
+    ``fades`` gives each clip a (fade-in, fade-out) through black in seconds;
+    only the picture fades, the audio is untouched.
     """
     if not videos:
         raise RuntimeError("No scene videos are available for final composition")
@@ -120,10 +127,14 @@ def concatenate(videos: list[Path], output: Path) -> Path:
     rate = f"{fps or 30.0:g}"
     chains: list[str] = []
     for index, info in enumerate(infos):
+        fade = _fade_filters(
+            fades[index] if fades and index < len(fades) else (0.0, 0.0),
+            info.video.duration or info.duration,
+        )
         chains.append(
             f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,fps={rate},setsar=1,"
-            f"format=yuv420p[v{index}]"
+            f"{fade}format=yuv420p[v{index}]"
         )
         if info.audio is not None:
             chains.append(
@@ -162,6 +173,17 @@ def concatenate(videos: list[Path], output: Path) -> Path:
             900, "final concatenation",
         )
     return output.resolve()
+
+
+def _fade_filters(fade: tuple[float, float], seconds: Optional[float]) -> str:
+    """Video fade-in/out filters (each ending in a comma), or "" for none."""
+    fade_in, fade_out = fade
+    parts = []
+    if fade_in > 0:
+        parts.append(f"fade=t=in:st=0:d={fade_in:.3f},")
+    if fade_out > 0 and seconds and seconds > fade_out:
+        parts.append(f"fade=t=out:st={seconds - fade_out:.3f}:d={fade_out:.3f},")
+    return "".join(parts)
 
 
 def _concatenate_demuxer(videos: list[Path], output: Path) -> Path:

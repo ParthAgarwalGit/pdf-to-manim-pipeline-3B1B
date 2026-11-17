@@ -316,6 +316,7 @@ class Orchestrator:
                 self.hybrid_provider = GeminiOmniPresenter(
                     persona=self.config.presenter_persona or None,
                     cache_dir=self._presenter_cache_dir(),
+                    voice=None,  # legacy: Omni keeps its own voice
                 )
             return self.hybrid_provider, "gemini-omni"
         if self._hybrid_backend():

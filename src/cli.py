@@ -123,6 +123,28 @@ def pdf2manim() -> None:
 @click.option("--brief", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--directives", "directives_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--plan", "plan_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--presenter",
+    type=click.Choice(["off", "gemini", "d-id"]),
+    default="off",
+    show_default=True,
+    help="On-camera presenter bridges between scenes. gemini: a fictional lecturer in the "
+    "narration's voice; d-id: the professor's consented avatar.",
+)
+@click.option(
+    "--approve-bridges", is_flag=True,
+    help="Approve every proposed bridge (otherwise approve with `pdf2manim bridges`).",
+)
+@click.option(
+    "--max-presenter-seconds", type=click.FloatRange(min=0), default=60.0, show_default=True,
+    help="Cap on presenter video in one run.",
+)
+@click.option("--presenter-persona", default="", help="gemini: a worded description of the fictional presenter.")
+@click.option(
+    "--profile", "presenter_profile", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="d-id: professor profile with signed consent.",
+)
+@click.option("--avatar-image-url", default=None, help="d-id: HTTPS URL of the avatar image.")
 def convert(
     input_pdf: str,
     output_dir: Path,
@@ -155,6 +177,12 @@ def convert(
     brief: Optional[Path],
     directives_path: Optional[Path],
     plan_path: Optional[Path],
+    presenter: str,
+    approve_bridges: bool,
+    max_presenter_seconds: float,
+    presenter_persona: str,
+    presenter_profile: Optional[Path],
+    avatar_image_url: Optional[str],
 ) -> None:
     """Run a new V2 conversion for INPUT_PDF."""
     effective_policy = "strict" if strict else policy
@@ -204,6 +232,12 @@ def convert(
         target_minutes=target_minutes,
         directives=directives.model_dump(mode="json", by_alias=True) if directives else None,
         concept_plan=concept_plan.model_dump(mode="json") if concept_plan else None,
+        presenter=presenter,
+        approve_bridges=approve_bridges,
+        max_presenter_seconds=max_presenter_seconds,
+        presenter_persona=presenter_persona,
+        presenter_profile=presenter_profile.resolve() if presenter_profile else None,
+        avatar_image_url=avatar_image_url,
     )
     click.echo("pdf2manim V2")
     click.echo(f"  Input:       {input_pdf}")
@@ -216,8 +250,58 @@ def convert(
     click.echo(f"  Scene range: {min_scenes or 'auto'}-{max_scenes}")
     click.echo(f"  Pacing:      {pacing}")
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
+    if presenter != "off":
+        approval = "all approved" if approve_bridges else "approve with `pdf2manim bridges`"
+        click.echo(f"  Presenter:   {presenter}, up to {max_presenter_seconds:g}s ({approval})")
     result = PipelineV2(config).run(input_pdf)
     _print_result(result)
+
+
+@pdf2manim.command("bridges")
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--approve", "approve", multiple=True, metavar="all|BRIDGE_ID",
+              help="Approve a bridge (repeat as needed), or all of them.")
+@click.option("--reject", "reject", multiple=True, metavar="BRIDGE_ID",
+              help="Withdraw approval of a bridge (repeat as needed).")
+def bridges_command(run_directory: Path, approve: tuple[str, ...], reject: tuple[str, ...]) -> None:
+    """List a run's presenter bridges and approve or reject them.
+
+    After approving, run `pdf2manim resume RUN_DIRECTORY` to render them.
+    """
+    from src.pipeline_v2.presenter import approve_bridges, load_bridges, save_bridges
+
+    bridges = load_bridges(run_directory)
+    if not bridges:
+        raise click.ClickException(
+            f"No presenter bridges in {run_directory}; convert with --presenter gemini or d-id."
+        )
+    known = {bridge.bridge_id for bridge in bridges}
+    named = (set(approve) - {"all"}) | set(reject)
+    unknown = sorted(named - known)
+    if unknown:
+        raise click.ClickException(
+            f"Unknown bridge id(s): {', '.join(unknown)}. Available: {', '.join(sorted(known))}"
+        )
+    both = sorted(set(approve) & set(reject))
+    if both:
+        raise click.UsageError(f"Bridge(s) both approved and rejected: {', '.join(both)}")
+    if approve:
+        approve_bridges(run_directory, None if "all" in approve else list(approve))
+    if reject:
+        save_bridges(run_directory, [
+            bridge.model_copy(update={"approved": False}) if bridge.bridge_id in reject else bridge
+            for bridge in load_bridges(run_directory)
+        ])
+    click.echo(f"Presenter bridges in {run_directory.resolve()}:")
+    for bridge in load_bridges(run_directory):
+        place = f"before {bridge.before_scene_id}" if bridge.before_scene_id else "at the end"
+        click.echo(
+            f"  {bridge.bridge_id}  {bridge.kind:<10} {bridge.estimated_seconds:5.1f}s  "
+            f"{'approved' if bridge.approved else 'not approved'}  ({place})"
+        )
+        click.echo(f"      {bridge.text}")
+    if approve or reject:
+        click.echo(f"Run `pdf2manim resume {run_directory}` to render the approved bridges.")
 
 
 @pdf2manim.command("plan")

@@ -134,7 +134,7 @@ class TestGeminiPresenterClips:
         call = fake.calls[0]
         assert call["model"] == "gemini-omni-1.2-flash" and call["format"]["duration"] == "4s"  # sized by words
         assert 'says exactly these words, nothing more and nothing less: "So A equals U D V transpose."' in call["input"]
-        assert "fictional" in call["input"] and "#1C1C1C" in call["input"]
+        assert "fictional" in call["input"] and "#0B0B0B" in call["input"]
         assert presenter.reference_image is not None and presenter.reference_image.is_file()
 
     def test_later_clips_keep_the_same_lecturer(self, tmp_path, speech_clip):

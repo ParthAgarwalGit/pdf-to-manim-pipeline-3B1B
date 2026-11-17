@@ -49,7 +49,8 @@ DEFAULT_PERSONA = (
     "and glasses, wearing a navy blazer over a plain gray t-shirt"
 )
 VOICE = "a warm, clear, natural female voice with a neutral accent and an unhurried, conversational pace"
-BACKGROUND = "a plain, very dark gray studio background (hex #1C1C1C)"
+# Near-black so cuts to and from Manim scenes (black background) are not jarring.
+BACKGROUND = "a plain, near-black studio background (hex #0B0B0B), evenly lit, with no visible props"
 
 Transcriber = Callable[[str], Optional[str]]
 
@@ -193,6 +194,7 @@ class GeminiOmniPresenter:
         use_default_transcriber: bool = True,
         reference_image: Optional[Path] = None,
         cache_dir: Optional[Path] = None,
+        voice: Optional[str] = None,
     ):
         if client is None:
             key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")
@@ -206,6 +208,9 @@ class GeminiOmniPresenter:
             client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS))
         self.client = client
         self.persona = persona or DEFAULT_PERSONA
+        # A prebuilt Gemini voice (e.g. "Sulafat"): the presenter then speaks in
+        # the narration's voice. None keeps Omni's own voice (legacy behaviour).
+        self.voice = voice or None
         self.transcriber = transcriber if transcriber is not None else (
             default_transcriber() if use_default_transcriber else None
         )
@@ -270,12 +275,16 @@ class GeminiOmniPresenter:
                  "mime_type": "image/png"},
                 {"type": "text", "text": prompt},
             ]
+        options: Dict[str, Any] = {}
+        if self.voice:
+            options["generation_config"] = {"speech_config": [{"voice": self.voice, "language": "en-US"}]}
         interaction = self.client.interactions.create(
             model=OMNI_MODEL,
             input=payload,
             response_format={
                 "type": "video", "duration": f"{seconds}s", "aspect_ratio": "16:9", "resolution": "720p",
             },
+            **options,
         )
         return base64.b64decode(interaction.output_video.data)
 
@@ -296,7 +305,9 @@ class GeminiOmniPresenter:
             return None
         import hashlib
 
-        key = hashlib.sha256(f"{OMNI_MODEL}|{self.persona}|{text}".encode("utf-8")).hexdigest()[:24]
+        key = hashlib.sha256(
+            f"{OMNI_MODEL}|{self.persona}|{self.voice or ''}|{text}".encode("utf-8")
+        ).hexdigest()[:24]
         return self.cache_dir / f"{key}.mp4"
 
     def _clip(self, text: str, seconds: int, dest: Path) -> Path:

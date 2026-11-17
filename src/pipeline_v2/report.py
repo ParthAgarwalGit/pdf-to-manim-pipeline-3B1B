@@ -162,7 +162,7 @@ def write_html_report(
             f"<td>{'yes' if scene.repaired else 'no'}</td><td>{'yes' if scene.fallback_used else 'no'}</td>"
             f"<td>{issues}</td><td>{artifact_links or 'None'}</td></tr>"
         )
-    script_review = _script_review_html(artifacts.run_dir)
+    script_review = _script_review_html(artifacts.run_dir) + _presenter_html(artifacts.run_dir)
     critical_display = " &rarr; ".join(html.escape(item) for item in critical_path) or "None"
     parallel_ratio = total_compute / (wall_seconds * 1000) if wall_seconds else 0.0
     document = f"""<!doctype html>
@@ -220,6 +220,41 @@ def _script_review_html(run_dir: Path) -> str:
         f"<h2>Script review</h2><p>Score {final.overall_score:.2f}/10 ({verdict}, "
         f"{len(attempts)} review(s)){weakest_text} "
         f"{_artifact_link(run_dir, 'Details', path)}</p>"
+    )
+
+
+def _presenter_html(run_dir: Path) -> str:
+    """Each presenter bridge: kind, text, approval, outcome, seconds and cost."""
+
+    path = run_dir / "presenter" / "render.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        bridges = list(data.get("bridges") or [])
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+    if not bridges:
+        return ""
+    rows = []
+    for item in bridges:
+        reason = f" <small>({html.escape(str(item['reason']))})</small>" if item.get("reason") else ""
+        seconds = item.get("seconds")
+        rows.append(
+            f"<tr><td>{html.escape(str(item.get('bridge_id', '')))}</td>"
+            f"<td>{html.escape(str(item.get('kind', '')))}</td>"
+            f"<td>{html.escape(str(item.get('text', '')))}</td>"
+            f"<td>{'yes' if item.get('approved') else 'no'}</td>"
+            f"<td>{html.escape(str(item.get('status', '')))}{reason}</td>"
+            f"<td>{f'{float(seconds):.1f}s' if seconds is not None else '-'}</td>"
+            f"<td>${float(item.get('cost_usd') or 0.0):.4f}</td></tr>"
+        )
+    return (
+        f"<h2>Presenter bridges</h2><p>Provider: {html.escape(str(data.get('provider', '')))}; "
+        f"voice: {html.escape(str(data.get('voice', '')))}; presenter video "
+        f"{float(data.get('presenter_seconds') or 0.0):.1f}s of "
+        f"{float(data.get('max_presenter_seconds') or 0.0):g}s allowed.</p>"
+        "<table><thead><tr><th>Bridge</th><th>Kind</th><th>Text</th><th>Approved</th>"
+        "<th>Outcome</th><th>Seconds</th><th>Cost</th></tr></thead><tbody>"
+        + "".join(rows) + "</tbody></table>"
     )
 
 

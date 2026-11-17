@@ -400,8 +400,14 @@ class PipelineV2Config(BaseModel):
     # Pre-TTS review of the planned script: "revise" rewrites the narration once
     # when the review fails and keeps the better-scoring script.
     script_review: Literal["off", "report", "revise"] = "revise"
-    # On-camera presenter backend (behaviour arrives in a later package).
+    # On-camera presenter bridges between Manim scenes. Proposals are saved to
+    # presenter/bridges.json; only approved bridges are rendered.
     presenter: Literal["off", "gemini", "d-id"] = "off"
+    approve_bridges: bool = False
+    max_presenter_seconds: float = Field(default=60.0, ge=0)
+    presenter_persona: str = ""
+    presenter_profile: Optional[Path] = None  # d-id: professor profile with consent
+    avatar_image_url: Optional[str] = None    # d-id: the avatar image
 
     @model_validator(mode="after")
     def validate_scene_range(self) -> "PipelineV2Config":
