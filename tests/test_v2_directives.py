@@ -765,13 +765,13 @@ class TestPlanningService:
         lesson_prompt, narration_prompt = plain[0][0], plain[1][0]
         # Nothing is appended after the JSON payload each prompt has always ended with.
         assert lesson_prompt.endswith(json.dumps(
-            {"document": "notes.pdf", "facts": [
+            {"document": "notes.pdf", "page_count": source.page_count, "facts": [
                 {"fact_id": fact.fact_id, "page_number": fact.page_number,
                  "kind": fact.kind, "text": fact.text}
                 for fact in source.facts
             ]}, ensure_ascii=False,
         ))
-        assert "use at most 12 scenes. Merge" in lesson_prompt
+        assert "use at most 12 scenes." in lesson_prompt
         assert narration_prompt.endswith('"learning_goal": "Understand Topic 3"}]}'.replace(
             '"learning_goal": "Understand Topic 3"}]}', '"next_scene": null}}',
         ))
@@ -813,7 +813,7 @@ class TestPlanningService:
         lesson = asyncio.run(planner.lesson(source))
 
         prompt = router.prompts("lesson")[0]
-        assert "use at most 2 scenes. Merge" in prompt
+        assert "use at most 2 scenes." in prompt
         assert "- Length: plan at most 2 scene(s)" in prompt
         assert len(lesson.scenes) == 2  # the fallback lesson honours the clamp
         assert len(asyncio.run(PlanningService(FakeRouter()).lesson(source)).scenes) == 6
@@ -826,7 +826,9 @@ class TestPlanningService:
 
         lesson = asyncio.run(planner.lesson(source))
 
-        assert lesson == three
+        # The planner fills one coverage entry per page; everything else is the model's plan.
+        assert lesson.model_copy(update={"coverage": []}) == three
+        assert len(lesson.coverage) == source.page_count
         assert len(router.prompts("lesson")) == 1  # 3 scenes meet the clamped floor: no retry
         assert "Produce exactly 3 substantial scenes." in router.prompts("lesson")[0]
 

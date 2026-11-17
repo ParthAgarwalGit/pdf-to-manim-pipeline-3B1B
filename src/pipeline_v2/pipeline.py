@@ -56,6 +56,8 @@ from .planning import (
 from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VERSION
 from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
+from .script_review import SCRIPT_REVIEW_PROMPT_VERSION, ScriptReview, review_script
+from .model_config import TEXT_MODEL
 from .revision import (
     FROZEN_PLANNING_FILE,
     RevisionError,
@@ -353,6 +355,7 @@ class PipelineV2:
             concept_plan=(ConceptPlan.model_validate(self.config.concept_plan)
                           if self.config.concept_plan is not None else None),
             target_minutes=self.config.target_minutes,
+            presenter_opens=self.config.presenter != "off",
         )
         controls = {
             key: value for key, value in {
@@ -487,6 +490,21 @@ class PipelineV2:
                 narration, self.directives, planner.omitted_concepts,
             )
             compliance.extend(narration_checks)
+            # Only freshly planned scripts are reviewed: a scene retry or a
+            # professor revision reuses a storyboard that must not be rewritten.
+            if (
+                self.config.script_review != "off"
+                and self._retry_scene_ids is None and frozen_plan is None
+            ):
+                reviewed, replacement_checks = await self._review_script(
+                    router, planner, lesson, narration, source, controls,
+                )
+                if replacement_checks is not None:
+                    narration = reviewed
+                    compliance = [
+                        item for item in compliance
+                        if not any(item is check for check in narration_checks)
+                    ] + replacement_checks
             if controls:
                 self.artifacts.write_json("professor_controls.json", controls)
                 self.artifacts.write_json("compliance.json", [
@@ -823,6 +841,108 @@ class PipelineV2:
                 dependencies=["narration"],
             )
 
+    async def _review_script(
+        self,
+        router: ProviderRouter,
+        planner: PlanningService,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        source: SourceDocument,
+        controls: dict[str, Any],
+    ) -> tuple[NarrationPlan, Optional[list]]:
+        """Review the planned script before TTS; in revise mode rewrite a failing one once.
+
+        Returns the narration to use and, when a rewritten script replaced the
+        original, the rewrite's narration-directive checks (otherwise ``None``).
+        """
+
+        async def review(candidate: NarrationPlan, attempt: int) -> Optional[ScriptReview]:
+            data = await self._task(
+                f"script-review-{attempt}", "script_review", None,
+                {"narration": candidate.model_dump(mode="json"),
+                 "lesson": lesson.model_dump(mode="json"), "attempt": attempt,
+                 "model": TEXT_MODEL, "prompt_version": SCRIPT_REVIEW_PROMPT_VERSION},
+                lambda: review_script(router, lesson, candidate, source, attempt=attempt),
+                dependencies=["narration" if attempt == 1 else "narration-revised"],
+            )
+            return ScriptReview.model_validate(data) if data else None
+
+        first = await review(narration, 1)
+        if first is None:
+            return narration, None
+        attempts = [first]
+        kept: tuple[NarrationPlan, Optional[list]] = (narration, None)
+        if self.config.script_review == "revise" and not first.passed:
+            if not first.improvement_suggestions:
+                self.artifacts.event(
+                    "script_review_rewrite_skipped", stage="script_review",
+                    message="The review failed without improvement suggestions; kept the script.",
+                    score=first.overall_score,
+                )
+            else:
+                planner_state = (
+                    planner.length_budget, planner.length_report, planner.compliance_checks,
+                )
+                second: Optional[ScriptReview] = None
+                try:
+                    revised_data = await self._task(
+                        "narration-revised", "narration", None,
+                        {"lesson": lesson.model_dump(mode="json"),
+                         "review_feedback": first.improvement_suggestions,
+                         "prompt_version": NARRATION_PROMPT_VERSION,
+                         "pacing": self.config.pacing,
+                         **controls,
+                         "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                         "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                        lambda: planner.narration(
+                            lesson, source, review_feedback=first.improvement_suggestions,
+                        ),
+                        dependencies=["script-review-1"],
+                    )
+                    revised = NarrationPlan.model_validate(revised_data)
+                    grounding_errors = validate_grounding(lesson, revised, source)
+                    if grounding_errors:
+                        self.artifacts.event(
+                            "script_review_rewrite_rejected", stage="script_review",
+                            message="; ".join(grounding_errors),
+                        )
+                    else:
+                        revised, revised_checks = enforce_narration_directives(
+                            revised, self.directives, planner.omitted_concepts,
+                        )
+                        second = await review(revised, 2)
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self.artifacts.event(
+                        "script_review_rewrite_rejected", stage="script_review",
+                        message=f"The rewrite failed; kept the reviewed script: {exc}",
+                    )
+                if second is not None:
+                    attempts.append(second)
+                if second is not None and second.overall_score > first.overall_score:
+                    kept = (revised, revised_checks)
+                else:
+                    (planner.length_budget, planner.length_report,
+                     planner.compliance_checks) = planner_state
+        final = attempts[-1] if kept[1] is not None else first
+        self.artifacts.write_json(
+            "script_review.json", [item.model_dump(mode="json") for item in attempts],
+        )
+        self.artifacts.event(
+            "script_reviewed", stage="script_review",
+            message=(
+                f"Script review scored {final.overall_score:.2f}/10 "
+                f"({'passed' if final.passed else 'below the pass mark'}) after "
+                f"{len(attempts)} review(s); "
+                + ("the rewritten script was kept." if kept[1] is not None
+                   else "the original script was kept.")
+            ),
+            score=final.overall_score, passed=final.passed, attempts=len(attempts),
+            rewritten=kept[1] is not None,
+        )
+        return kept
+
     async def _contract_task(
         self,
         planner: PlanningService,
@@ -914,6 +1034,12 @@ class PipelineV2:
             if rules:
                 code_payload["notation_rules"] = rules
             notation_kwargs = {"notation_rules": rules} if rules else {}
+            # Added only when the lesson has a running example or motifs, so
+            # runs without a spine keep their code task hashes and requests.
+            world = lesson.visual_world()
+            if world:
+                code_payload["visual_world"] = world
+            world_kwargs = {"visual_world": world} if world else {}
             action = self._revision_actions.get(scene_id)
             previous_code = self._previous_code(scene_id) if action is not None else None
             code_mode = "generate"
@@ -940,12 +1066,14 @@ class PipelineV2:
                         instruction=action.instruction, lesson_scene=lesson_scene,
                         visual_history=visual_history,
                         **notation_kwargs,
+                        **world_kwargs,
                     )
                 return generator.generate(
                     timed_scene, contract, facts, lesson_scene=lesson_scene,
                     visual_history=visual_history,
                     retry_attempt=retry_attempt,
                     **notation_kwargs,
+                    **world_kwargs,
                 )
 
             async with self._code_limit:
@@ -1018,6 +1146,7 @@ class PipelineV2:
                                 findings=selected.findings, frame_paths=selected.frame_paths,
                                 lesson_scene=lesson_scene,
                                 visual_history=visual_history,
+                                **world_kwargs,
                             ),
                             dependencies=[selected_preview_task],
                         )

@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from src.prompts.narrative import spoken_plain
 from src.schemas.directives import ProfessorDirectives
 
 from .directives import (
@@ -37,12 +38,14 @@ from .models import (
     NarrationBeat,
     NarrationPlan,
     OCRBatch,
+    PageCoverage,
     SourceDocument,
     SourceFact,
     VisualContract,
     VisualContractBatch,
 )
 from .model_config import OCR_MODEL, TEXT_MODEL
+from .prompt_text import lesson_instructions, narration_instructions
 from .providers import MissingProviderKey, ProviderRouter, clean_json_text
 
 try:
@@ -51,9 +54,10 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.4.2-argon"
-NARRATION_PROMPT_VERSION = "v2.5.0-argon"
+PROMPT_VERSION = "v2.5.0-spine"
+NARRATION_PROMPT_VERSION = "v2.6.0-spoken"
 NARRATION_BATCH_SIZE = 5
+MAX_SPINE_MOTIFS = 4
 PLANNING_PROVIDER = "google"
 PLANNING_MODEL = TEXT_MODEL
 
@@ -125,10 +129,12 @@ class PlanningService:
         directives: Optional[ProfessorDirectives] = None,
         concept_plan: Optional[ConceptPlan] = None,
         target_minutes: Optional[float] = None,
+        presenter_opens: bool = False,
     ):
         if min_scenes is not None and min_scenes > max_scenes:
             raise ValueError("min_scenes cannot exceed max_scenes")
         self.router = router
+        self.presenter_opens = presenter_opens
         self.max_scenes = max_scenes
         self.min_scenes = min_scenes
         self.pacing = pacing
@@ -271,15 +277,11 @@ class PlanningService:
             )
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            "Create a source-grounded educational lesson plan. "
-            + scene_guidance
-            + "Merge "
-            "adjacent scenes that teach the same relationship; do not fragment one example into "
-            "several tiny scenes. Every scene must cite source_fact_ids from the input. For every "
-            "scene set visual_objective, the one new_visual_fact it contributes, and do_not_repeat "
-            "items already demonstrated by earlier scenes. Do not invent facts, examples, or "
-            "equations. Set delivery_mode to manim.\n\n"
-            + json.dumps({"document": source.filename, "facts": facts}, ensure_ascii=False)
+            + lesson_instructions(scene_guidance, self.presenter_opens) + "\n\n"
+            + json.dumps(
+                {"document": source.filename, "page_count": source.page_count, "facts": facts},
+                ensure_ascii=False,
+            )
         )
         prompt += lesson_directive_block(
             self.directives, self.audience,
@@ -291,6 +293,7 @@ class PlanningService:
             prompt=prompt, schema=LessonPlan, fallback=lambda: self._fallback_lesson(source),
             max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
         )
+        lesson = _normalise_spine(lesson, source)
         if len(lesson.scenes) >= required_min:
             return lesson
 
@@ -320,6 +323,7 @@ class PlanningService:
             fallback=lambda: self._fallback_lesson(source),
             max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
         )
+        expanded = _normalise_spine(expanded, source)
         if len(expanded.scenes) < required_min:
             raise RuntimeError(
                 f"Lesson planner returned {len(expanded.scenes)} scenes after regeneration; "
@@ -327,8 +331,18 @@ class PlanningService:
             )
         return expanded
 
-    async def narration(self, lesson: LessonPlan, source: SourceDocument) -> NarrationPlan:
+    async def narration(
+        self,
+        lesson: LessonPlan,
+        source: SourceDocument,
+        review_feedback: Optional[list[str]] = None,
+    ) -> NarrationPlan:
         facts = {fact.fact_id: fact.text for fact in source.facts}
+        feedback_block = (
+            "A REVIEWER REJECTED THE PREVIOUS SCRIPT. Fix every point:\n"
+            + "".join(f"- {point}\n" for point in review_feedback)
+            if review_feedback else ""
+        )
         relaxed = self.pacing == "relaxed"
         target_wpm = 115 if relaxed else 135
         pace_guidance = (
@@ -345,6 +359,7 @@ class PlanningService:
                 "title": item.title,
                 "learning_goal": item.learning_goal,
                 "new_visual_fact": item.new_visual_fact,
+                "viewer_question": item.viewer_question,
             }
             for item in lesson.scenes
         ]
@@ -377,6 +392,7 @@ class PlanningService:
             )
             payload = {
                 "lesson_title": lesson.title,
+                "lesson_spine": lesson.spine(),
                 "global_scene_outline": outline,
                 "required_scene_ids": expected_ids,
                 "scenes_to_write": [item.model_dump(mode="json") for item in batch],
@@ -402,20 +418,8 @@ class PlanningService:
             }
             prompt = (
                 f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\n"
-                "Write the requested consecutive section of one continuity-aware spoken lesson. "
-                + pace_guidance
-                + "Return exactly the required_scene_ids once each and in the supplied order; do "
-                "not write narration for any other scene. Keep one main idea per sentence. Avoid "
-                "dense clauses, breathless lists, repeated definitions, and abrupt openings. The "
-                "first beat of each scene must connect naturally to what the learner just saw; the "
-                "final beat must either pause for reflection or bridge to the next scene. Populate "
-                "role, pause_after_seconds (normally 0.25-0.55, or 0.6-0.9 for reflection and scene "
-                "endings), visual_action, continuity_note, transition_in, and transition_out. Every "
-                "visual_action must introduce, transform, compare, highlight, or remove visual "
-                "information; never request the same complete construction more than once. Every "
-                "beat must cite only supplied source_fact_ids. Preserve mathematical notation and "
-                f"do not add unsupported claims. Set target_words_per_minute to {target_wpm}. "
-                "Timing fields must be zero; the pipeline computes them after TTS.\n\n"
+                + feedback_block
+                + narration_instructions(pace_guidance, target_wpm, self.presenter_opens) + "\n\n"
                 + json.dumps(payload, ensure_ascii=False)
             )
             prompt += narration_directive_block(
@@ -442,7 +446,7 @@ class PlanningService:
                     f"expected {expected_ids}."
                 )
             narrated.extend(
-                item.model_copy(update={"target_words_per_minute": target_wpm})
+                _spoken_scene(item).model_copy(update={"target_words_per_minute": target_wpm})
                 for item in batch_narration.scenes
             )
         plan = NarrationPlan(scenes=narrated)
@@ -744,6 +748,53 @@ def validate_visual_contract(
                     f"{region.value}: {sorted(artifact_ids)}; combine related content into one VGroup"
                 )
     return errors
+
+
+def _spoken_scene(scene: NarratedScene) -> NarratedScene:
+    """Turn leaked snake_case ids in beat text into words; narration follows the beats."""
+
+    beats = [
+        beat.model_copy(update={"text": spoken_plain(beat.text)}) for beat in scene.beats
+    ]
+    return scene.model_copy(update={
+        "beats": beats, "narration": " ".join(beat.text for beat in beats),
+    })
+
+
+def _normalise_spine(lesson: LessonPlan, source: SourceDocument) -> LessonPlan:
+    """One coverage entry per source page, a reason for every page left out, tidy motifs."""
+
+    fact_pages = {fact.fact_id: fact.page_number for fact in source.facts}
+    cited_pages = {
+        fact_pages[fact_id]
+        for scene in lesson.scenes
+        for fact_id in scene.source_fact_ids
+        if fact_id in fact_pages
+    }
+    by_page: dict[int, PageCoverage] = {}
+    for entry in lesson.coverage:
+        if 1 <= entry.page_number <= source.page_count and entry.page_number not in by_page:
+            if entry.treatment != "covered" and not entry.reason.strip():
+                entry = entry.model_copy(update={"reason": "No reason given by the planner."})
+            by_page[entry.page_number] = entry
+    coverage = []
+    for page in range(1, source.page_count + 1):
+        if page in by_page:
+            coverage.append(by_page[page])
+        elif page in cited_pages:
+            coverage.append(PageCoverage(
+                page_number=page, treatment="covered", reason="Cited by a scene.",
+            ))
+        else:
+            coverage.append(PageCoverage(
+                page_number=page, treatment="omitted",
+                reason="The lesson plan did not place this page.",
+            ))
+    motifs = [
+        motif.model_copy(update={"color": motif.color.strip().upper().replace(" ", "_")})
+        for motif in lesson.motifs[:MAX_SPINE_MOTIFS]
+    ]
+    return lesson.model_copy(update={"coverage": coverage, "motifs": motifs})
 
 
 def _lesson_fact_payload(fact: SourceFact) -> dict[str, object]:

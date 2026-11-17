@@ -73,6 +73,27 @@ class LessonScene(BaseModel):
     new_visual_fact: str = ""
     do_not_repeat: list[str] = Field(default_factory=list)
     delivery_mode: Literal["manim", "presenter", "mixed", "transition"] = "manim"
+    viewer_question: str = ""
+
+
+class RunningExample(BaseModel):
+    description: str = ""
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+class VisualMotif(BaseModel):
+    motif_id: str
+    what: str = ""
+    color: str = ""
+    stands_for: str = ""
+
+
+class PageCoverage(BaseModel):
+    # Not range-checked here: the planner's cleanup drops pages outside the
+    # document, so one bad entry never discards the whole lesson plan.
+    page_number: int
+    treatment: Literal["covered", "compressed", "deferred", "omitted"] = "covered"
+    reason: str = ""
 
 
 class LessonPlan(BaseModel):
@@ -82,6 +103,13 @@ class LessonPlan(BaseModel):
     prerequisites: list[str] = Field(default_factory=list)
     concept_dependencies: dict[str, list[str]] = Field(default_factory=dict)
     scenes: list[LessonScene] = Field(min_length=1, max_length=MAX_V2_SCENES)
+    central_question: str = ""
+    hook: str = ""
+    takeaway: str = ""
+    running_example: RunningExample = Field(default_factory=RunningExample)
+    # The planner's cleanup keeps the first four; no hard cap that would reject the plan.
+    motifs: list[VisualMotif] = Field(default_factory=list)
+    coverage: list[PageCoverage] = Field(default_factory=list)
 
     @field_validator("scenes")
     @classmethod
@@ -90,6 +118,34 @@ class LessonPlan(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("scene_id values must be unique")
         return scenes
+
+    def visual_world(self) -> list[str]:
+        """The running example and motifs as one fact per line, for code generation."""
+
+        lines: list[str] = []
+        example = self.running_example
+        if example.description or example.values:
+            lines.append(f"Running example: {example.description}")
+            lines.extend(f"Value: {name} = {value}" for name, value in example.values.items())
+        for motif in self.motifs:
+            parts = [f"Motif {motif.motif_id}: {motif.what}"]
+            if motif.color:
+                parts.append(f"color {motif.color}")
+            if motif.stands_for:
+                parts.append(f"stands for {motif.stands_for}")
+            lines.append("; ".join(parts))
+        return lines
+
+    def spine(self) -> dict[str, Any]:
+        """The decisions every later stage writes against, as plain JSON values."""
+
+        return {
+            "central_question": self.central_question,
+            "hook": self.hook,
+            "takeaway": self.takeaway,
+            "running_example": self.running_example.model_dump(mode="json"),
+            "motifs": [motif.model_dump(mode="json") for motif in self.motifs],
+        }
 
 
 class NarrationBeat(BaseModel):
@@ -341,6 +397,11 @@ class PipelineV2Config(BaseModel):
     target_minutes: Optional[float] = Field(default=None, gt=0.0)
     directives: Optional[dict[str, Any]] = None
     concept_plan: Optional[dict[str, Any]] = None
+    # Pre-TTS review of the planned script: "revise" rewrites the narration once
+    # when the review fails and keeps the better-scoring script.
+    script_review: Literal["off", "report", "revise"] = "revise"
+    # On-camera presenter backend (behaviour arrives in a later package).
+    presenter: Literal["off", "gemini", "d-id"] = "off"
 
     @model_validator(mode="after")
     def validate_scene_range(self) -> "PipelineV2Config":

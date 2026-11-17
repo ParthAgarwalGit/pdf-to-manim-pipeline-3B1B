@@ -101,6 +101,13 @@ def pdf2manim() -> None:
     show_default=True,
     help="Use less-dense narration and slower speech in relaxed mode.",
 )
+@click.option(
+    "--script-review",
+    type=click.Choice(["off", "report", "revise"]),
+    default="revise",
+    show_default=True,
+    help="Review the planned script before TTS; revise rewrites a failing script once.",
+)
 @click.option("--skip-tts", is_flag=True)
 @click.option("--skip-render", is_flag=True)
 @click.option("--dry-run", is_flag=True, help="Stop after grounded lesson and narration planning.")
@@ -132,6 +139,7 @@ def convert(
     min_scenes: Optional[int],
     max_scenes: int,
     pacing: str,
+    script_review: str,
     skip_tts: bool,
     skip_render: bool,
     dry_run: bool,
@@ -181,6 +189,7 @@ def convert(
         min_scenes=min_scenes,
         max_scenes=max_scenes,
         pacing=pacing,
+        script_review=script_review,
         enable_tts=not skip_tts,
         enable_render=not skip_render,
         dry_run=dry_run,

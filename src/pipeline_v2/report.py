@@ -13,6 +13,7 @@ from urllib.parse import quote
 from .models import LessonPlan, NarrationPlan, RunResult, VerificationFinding
 from .observability import RunArtifacts
 from .providers import PRICES, PRICING_SNAPSHOT_DATE
+from .script_review import ScriptReview
 from .state import RunStore
 
 
@@ -161,6 +162,7 @@ def write_html_report(
             f"<td>{'yes' if scene.repaired else 'no'}</td><td>{'yes' if scene.fallback_used else 'no'}</td>"
             f"<td>{issues}</td><td>{artifact_links or 'None'}</td></tr>"
         )
+    script_review = _script_review_html(artifacts.run_dir)
     critical_display = " &rarr; ".join(html.escape(item) for item in critical_path) or "None"
     parallel_ratio = total_compute / (wall_seconds * 1000) if wall_seconds else 0.0
     document = f"""<!doctype html>
@@ -181,6 +183,7 @@ a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <p>{_artifact_link(artifacts.run_dir, 'Delivery checks', result.delivery_report_path)}
 {_artifact_link(artifacts.run_dir, 'Professor compliance', artifacts.run_dir / 'compliance.json')}</p>
 <p>Delivery: {html.escape(result.delivery_status or 'not checked')}</p>
+{script_review}
 <h2>Critical path</h2><p>{critical_display} <small>({critical_ms / 1000:.2f}s accumulated)</small></p>
 <h2>Stage activity</h2><table><thead><tr><th>Stage</th><th>Tasks</th><th>Succeeded</th>
 <th>Failed</th><th>Worker time</th></tr></thead><tbody>{stage_rows}</tbody></table>
@@ -188,6 +191,36 @@ a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <th>Fallback</th><th>Findings</th><th>Artifacts</th></tr></thead><tbody>{''.join(scene_rows)}</tbody></table>
 </body></html>"""
     return artifacts.write_text("report.html", document)
+
+
+def _script_review_html(run_dir: Path) -> str:
+    """Final script-review score and its weakest criterion, when a review ran."""
+
+    path = run_dir / "script_review.json"
+    try:
+        attempts = [
+            ScriptReview.model_validate(item)
+            for item in json.loads(path.read_text(encoding="utf-8"))
+        ]
+    except (OSError, ValueError, TypeError):
+        return ""
+    if not attempts:
+        return ""
+    # The pipeline keeps a rewrite only when it scored strictly higher.
+    final = max(attempts, key=lambda item: item.overall_score)
+    weakest = final.weakest_criterion()
+    weakest_text = (
+        f"; weakest: {html.escape(weakest[0])} {float(weakest[1]['score']):.1f}/10"
+        + (f" &mdash; {html.escape(str(weakest[1].get('feedback') or ''))}"
+           if weakest[1].get("feedback") else "")
+        if weakest else ""
+    )
+    verdict = "passed" if final.passed else "below the pass mark"
+    return (
+        f"<h2>Script review</h2><p>Score {final.overall_score:.2f}/10 ({verdict}, "
+        f"{len(attempts)} review(s)){weakest_text} "
+        f"{_artifact_link(run_dir, 'Details', path)}</p>"
+    )
 
 
 def _artifact_link(run_dir: Path, label: str, value: str | Path | None) -> str:

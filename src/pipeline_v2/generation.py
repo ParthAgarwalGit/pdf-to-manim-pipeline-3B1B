@@ -11,10 +11,11 @@ from .instrumentation import deinstrument_scene_code, instrument_scene_code
 from .layout import region_bounds
 from .model_config import CODE_MODEL
 from .models import LessonScene, NarratedScene, SourceFact, VerificationFinding, VisualContract
+from .prompt_text import CODEGEN_STYLE_RULES
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-creative-code-3-sync-argon"
+CODE_PROMPT_VERSION = "v2-creative-code-3-sync-argon-style"
 
 
 class CodeGenerationService:
@@ -30,6 +31,7 @@ class CodeGenerationService:
         visual_history: list[dict[str, object]] | None = None,
         retry_attempt: int = 0,
         notation_rules: list[str] | None = None,
+        visual_world: list[str] | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system, prompt = generation_request(
@@ -41,6 +43,7 @@ class CodeGenerationService:
             visual_history=visual_history,
             retry_attempt=retry_attempt,
             notation_rules=notation_rules,
+            visual_world=visual_world,
         )
         try:
             response = await self.router.text(
@@ -80,6 +83,7 @@ class CodeGenerationService:
         frame_paths: list[str],
         lesson_scene: LessonScene | None = None,
         visual_history: list[dict[str, object]] | None = None,
+        visual_world: list[str] | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system = f"""PROMPT_VERSION={CODE_PROMPT_VERSION}
@@ -88,15 +92,19 @@ Return one complete executable Python script only. Define exactly one Scene subc
 {class_name}. Make the smallest visual correction that fixes the reported problem. Preserve
 correct mathematics, the explanatory idea, and every self.next_section("beat_id") marker.
 Do not add tracking, layout-engine, artifact-registration, or audio-timing code; the runtime
-adds those automatically. Do not claim success; the pipeline will render and measure the result."""
+adds those automatically. Do not claim success; the pipeline will render and measure the result.
+{CODEGEN_STYLE_RULES}"""
         raw_code = deinstrument_scene_code(code)
-        prompt = json.dumps({
+        repair_payload: dict[str, object] = {
             "brief": _lesson_brief(lesson_scene, scene),
             "visual_history": visual_history or [],
             "narration_beats": _beat_payload(scene),
             "findings": [item.model_dump(mode="json") for item in findings[:8]],
             "existing_code": raw_code,
-        }, ensure_ascii=False)
+        }
+        if visual_world:
+            repair_payload["visual_world"] = visual_world
+        prompt = json.dumps(repair_payload, ensure_ascii=False)
         response = await self.router.vision(
             stage="vision_repair", task_id=f"repair-{scene.scene_id}", scene_id=scene.scene_id,
             model=CODE_MODEL, system=system, prompt=prompt,
@@ -125,6 +133,7 @@ adds those automatically. Do not claim success; the pipeline will render and mea
         lesson_scene: LessonScene | None = None,
         visual_history: list[dict[str, object]] | None = None,
         notation_rules: list[str] | None = None,
+        visual_world: list[str] | None = None,
     ) -> str:
         """Apply a professor's visual correction to one scene's existing code."""
 
@@ -135,7 +144,8 @@ professor who owns the lesson. Return one complete executable Python script only
 one Scene subclass named {class_name}. Apply the correction exactly and change nothing else:
 preserve correct mathematics, the explanatory idea, and every self.next_section("beat_id") marker.
 Allowed imports are `from manim import *` and `import numpy as np`. Do not add tracking,
-layout-engine, artifact-registration, or audio-timing code; the runtime adds those automatically."""
+layout-engine, artifact-registration, or audio-timing code; the runtime adds those automatically.
+{CODEGEN_STYLE_RULES}"""
         payload: dict[str, object] = {
             "professor_correction": instruction,
             "brief": _lesson_brief(lesson_scene, scene),
@@ -145,6 +155,8 @@ layout-engine, artifact-registration, or audio-timing code; the runtime adds tho
         }
         if notation_rules:
             payload["notation_rules"] = notation_rules
+        if visual_world:
+            payload["visual_world"] = visual_world
         try:
             response = await self.router.text(
                 stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
@@ -177,6 +189,7 @@ def generation_request(
     visual_history: list[dict[str, object]] | None = None,
     retry_attempt: int = 0,
     notation_rules: list[str] | None = None,
+    visual_world: list[str] | None = None,
 ) -> tuple[str, str]:
     """Build the deliberately small model-facing creative request."""
 
@@ -196,7 +209,8 @@ Treat the scene as a progression, not a slideshow or replay. Each beat must pres
 and introduce, transform, compare, highlight, or remove information according to visual_action.
 Never rebuild or replay a complete construction listed in visual_history or do_not_repeat. Refer
 back to it briefly and begin from the new contribution instead. Do not repeat one animation merely
-to fill narration time; use a calm hold or a focused highlight when no new construction is needed."""
+to fill narration time; use a calm hold or a focused highlight when no new construction is needed.
+{CODEGEN_STYLE_RULES}"""
     payload = {
         "brief": _lesson_brief(lesson_scene, scene),
         "target_duration_seconds": round(_target_duration(scene), 3),
@@ -226,6 +240,8 @@ to fill narration time; use a calm hold or a focused highlight when no new const
         # Added only when the professor set notation, so requests (and their
         # cache keys) for runs without directives are unchanged.
         payload["notation_rules"] = notation_rules
+    if visual_world:
+        payload["visual_world"] = visual_world
     return system, json.dumps(payload, ensure_ascii=False)
 
 
