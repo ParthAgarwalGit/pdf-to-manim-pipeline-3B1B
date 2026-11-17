@@ -101,6 +101,11 @@ That key drives every paid stage. The model ids live in `src/pipeline_v2/model_c
 | Narration audio (Gemini TTS, default voice `Sulafat`) | `TTS_MODEL` | `gemini-3.8-flash-tts` |
 | On-camera presenter | `PRESENTER_MODEL` | `gemini-omni-1.2-flash` |
 
+Narration is recorded one beat per Gemini TTS request, so each beat's timing is measured
+exactly. Gemini TTS has a small per-minute request quota (10 per model on Tier 1); every
+request waits for a slot and a rate-limited request waits the delay the API asks for. On a
+higher tier, set `GEMINI_TTS_RPM` in `keys.env` to your quota to record faster.
+
 ### Optional keys
 
 ```bash
