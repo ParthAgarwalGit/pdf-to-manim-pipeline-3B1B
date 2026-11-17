@@ -31,6 +31,13 @@ from src.pipeline_v2.tts import (
 )
 
 RATE = 24000
+
+
+@pytest.fixture(autouse=True)
+def _no_quota_waits(monkeypatch):
+    """Each test gets its own unlimited pacer: no waiting on the real quota."""
+
+    monkeypatch.setattr(tts, "TTS_PACER", tts.RequestPacer(10_000))
 FIRST = "A queue holds the frontier."
 SECOND = "Each step removes one node."
 
@@ -259,7 +266,7 @@ def test_a_rate_limited_styled_request_is_retried_before_falling_back(monkeypatc
     import httpx
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
-    monkeypatch.setattr(tts, "STYLE_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(tts, "DEFAULT_QUOTA_WAIT_SECONDS", 0.0)
     counts: Counter = Counter()
 
     def flaky(text, voice, style):
@@ -279,5 +286,83 @@ def test_a_rate_limited_styled_request_is_retried_before_falling_back(monkeypatc
 
     assert counts == {FIRST: 2, SECOND: 2}
     assert _events(artifacts, "tts_style_fallback") == []
+    assert len(result.beat_speech_spans) == 2
+    store.close()
+
+
+def test_quota_errors_wait_the_delay_the_api_asks_for():
+    import httpx
+
+    class GenaiStyleError(Exception):
+        code = 429
+
+    message = (
+        "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: generate_requests_per_model, "
+        "limit: 10, model: gemini-3.8-flash-tts. Please retry in 22.242536622s."
+    )
+    assert tts._rate_limit_delay(GenaiStyleError(message)) == pytest.approx(23.24, abs=0.01)
+
+    request = httpx.Request("POST", tts.GEMINI_INTERACTIONS_URL)
+    body = {"error": {"code": 429, "details": [
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "22s"},
+    ]}}
+    limited = httpx.HTTPStatusError(
+        "429", request=request, response=httpx.Response(429, request=request, json=body),
+    )
+    assert tts._rate_limit_delay(limited) == 23.0
+    bare = httpx.HTTPStatusError("429", request=request, response=httpx.Response(429, request=request))
+    assert tts._rate_limit_delay(bare) == tts.DEFAULT_QUOTA_WAIT_SECONDS
+    long_wait = GenaiStyleError("RESOURCE_EXHAUSTED. Please retry in 300s.")
+    assert tts._rate_limit_delay(long_wait) == tts.MAX_QUOTA_WAIT_SECONDS
+
+    server = httpx.HTTPStatusError("503", request=request, response=httpx.Response(503, request=request))
+    rejected = httpx.HTTPStatusError("400", request=request, response=httpx.Response(400, request=request))
+    assert tts._rate_limit_delay(server) is None and tts._transient(server)
+    assert tts._rate_limit_delay(rejected) is None and not tts._transient(rejected)
+
+
+def test_pacer_holds_requests_to_its_limit_per_window():
+    import time
+
+    async def three(pacer):
+        started = time.monotonic()
+        for _ in range(3):
+            await pacer.acquire()
+        return time.monotonic() - started
+
+    assert asyncio.run(three(tts.RequestPacer(3, window=0.4))) < 0.2
+    assert asyncio.run(three(tts.RequestPacer(2, window=0.4))) >= 0.35
+
+    paused = tts.RequestPacer(10, window=60.0)
+    paused.pause(0.3)
+    started = time.monotonic()
+    asyncio.run(paused.acquire())
+    assert time.monotonic() - started >= 0.25
+
+
+def test_a_rate_limited_plain_request_waits_and_succeeds(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setattr(tts, "DEFAULT_QUOTA_WAIT_SECONDS", 0.0)
+    calls: Counter = Counter()
+
+    class Quota(Exception):
+        code = 429
+
+    def styled_unavailable(text, voice, style):
+        raise RuntimeError("400 speech_metadata not supported")
+
+    def plain(text, voice):
+        calls[text] += 1
+        if calls[text] == 1:
+            raise Quota("429 RESOURCE_EXHAUSTED")
+        return _speech(1.5), RATE
+
+    monkeypatch.setattr(tts, "_interactions_tts", styled_unavailable)
+    monkeypatch.setattr(tts, "_generate_content_tts", plain)
+    store, artifacts, service = _service(tmp_path)
+
+    result = asyncio.run(service.generate(_scene(), tmp_path / "scene"))
+
+    assert calls == {FIRST: 2, SECOND: 2}
     assert len(result.beat_speech_spans) == 2
     store.close()

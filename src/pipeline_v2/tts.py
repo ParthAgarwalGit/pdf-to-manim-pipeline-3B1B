@@ -6,10 +6,12 @@ import asyncio
 import base64
 import io
 import os
+import re
 import subprocess
 import time
 import uuid
 import wave
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
@@ -50,10 +52,16 @@ MIN_WORDS_PER_SECOND = 1.9
 MAX_WORDS_PER_SECOND = 5.5
 EXTRA_SECONDS_ALLOWED = 1.5
 MAX_BEAT_TAKES = 3
-# A styled request that hits a rate limit or server error is tried again
-# before the beat falls back to plain, unstyled speech.
-STYLE_ATTEMPTS = 3
-STYLE_RETRY_SECONDS = 2.0
+# Gemini TTS allows few requests per minute per model (10 on Tier 1;
+# GenerateRequestsPerMinutePerProjectPerModel). Every TTS request in the
+# process waits for a slot; set GEMINI_TTS_RPM to the project's quota.
+TTS_REQUESTS_PER_MINUTE = max(1, int(os.getenv("GEMINI_TTS_RPM", "10")))
+# One request is tried this many times: a rate limit waits the delay the
+# API asks for, a server error or dropped connection a short backoff.
+TTS_REQUEST_ATTEMPTS = 4
+RETRY_SECONDS = 2.0
+DEFAULT_QUOTA_WAIT_SECONDS = 30.0
+MAX_QUOTA_WAIT_SECONDS = 65.0
 # Silence placed before the first beat and between beats (at least the
 # beat's own pause_after_seconds), after each take's silence is trimmed.
 LEAD_IN_SECONDS = 0.15
@@ -240,11 +248,9 @@ class NarrationAudioService:
         original_path = audio_dir / f"{scene.scene_id}.mp3"
         recorded: list[BeatTake] = []
         try:
-            async def record(text: str) -> BeatTake:
-                async with self.api_limit:
-                    return await asyncio.to_thread(self._gemini_beat, text, style)
-
-            recorded = list(await asyncio.gather(*(record(text) for text in texts)))
+            recorded = list(await asyncio.gather(
+                *(self._gemini_beat(text, style) for text in texts)
+            ))
             pcm, rate, spans = assemble_beats(
                 [take.pcm for take in recorded], recorded[0].rate,
                 [beat.pause_after_seconds for beat in scene.beats],
@@ -307,7 +313,7 @@ class NarrationAudioService:
         )
         return original_path, seconds, spans
 
-    def _gemini_beat(self, text: str, style: str) -> "BeatTake":
+    async def _gemini_beat(self, text: str, style: str) -> "BeatTake":
         """Record one beat, retaking it when its length does not fit its words."""
 
         words = len(text.split())
@@ -315,7 +321,7 @@ class NarrationAudioService:
         generated = 0.0
         takes = 0
         for takes in range(1, MAX_BEAT_TAKES + 1):
-            pcm, rate, fallback = self._gemini_clip(text, style)
+            pcm, rate, fallback = await self._gemini_clip(text, style)
             generated += len(pcm) / (2 * rate)
             trimmed = trim_silence(pcm, rate)
             seconds = len(trimmed) / (2 * rate)
@@ -333,26 +339,49 @@ class NarrationAudioService:
         best.generated_seconds = generated
         return best
 
-    def _gemini_clip(self, text: str, style: str) -> tuple[bytes, int, str]:
-        """One Gemini TTS request for ``text`` alone; returns PCM, its rate and any fallback reason.
+    async def _gemini_clip(self, text: str, style: str) -> tuple[bytes, int, str]:
+        """One Gemini TTS recording of ``text`` alone; returns PCM, its rate and any fallback reason.
 
         Only the words to be spoken are sent as text. Delivery goes in the
-        speech_metadata style annotation; if that request fails, the beat is
-        recorded from the plain text with no direction at all.
+        speech_metadata style annotation; if that request still fails after
+        its retries, the beat is recorded from the plain text with no
+        direction at all.
         """
 
-        reason = ""
-        for attempt in range(STYLE_ATTEMPTS):
-            try:
-                pcm, rate = _interactions_tts(text, self.voice, style)
-                return pcm, rate, ""
-            except Exception as exc:
-                reason = f"{type(exc).__name__}: {str(exc)[:200]}"
-                if not _transient(exc) or attempt == STYLE_ATTEMPTS - 1:
-                    break
-                time.sleep(STYLE_RETRY_SECONDS * (attempt + 1))
-        pcm, rate = _generate_content_tts(text, self.voice)
+        try:
+            pcm, rate = await self._tts_request(
+                lambda: _interactions_tts(text, self.voice, style),
+            )
+            return pcm, rate, ""
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        pcm, rate = await self._tts_request(lambda: _generate_content_tts(text, self.voice))
         return pcm, rate, reason
+
+    async def _tts_request(self, call):
+        """Run one TTS request inside the per-minute quota, retrying what is worth retrying.
+
+        The quota slot is taken before the shared API slot, so a beat waiting
+        for quota never holds a slot another stage could use.
+        """
+
+        for attempt in range(1, TTS_REQUEST_ATTEMPTS + 1):
+            await TTS_PACER.acquire()
+            try:
+                async with self.api_limit:
+                    return await asyncio.to_thread(call)
+            except Exception as exc:
+                if attempt == TTS_REQUEST_ATTEMPTS:
+                    raise
+                delay = _rate_limit_delay(exc)
+                if delay is not None:
+                    TTS_PACER.pause(delay)  # every waiting beat backs off together
+                elif _transient(exc):
+                    delay = RETRY_SECONDS * attempt
+                else:
+                    raise
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def _record_openai(
         self,
@@ -585,14 +614,80 @@ def _decode_audio(raw: bytes) -> tuple[bytes, int]:
         return handle.readframes(handle.getnframes()), handle.getframerate()
 
 
+class RequestPacer:
+    """At most ``limit`` request starts in any ``window`` seconds, for one event loop.
+
+    Single-threaded by construction: callers await ``acquire`` on the loop,
+    so checking and recording a slot cannot interleave.
+    """
+
+    def __init__(self, limit: int, window: float = 60.0):
+        self.limit = limit
+        self.window = window
+        self._starts: deque[float] = deque()
+        self._paused_until = 0.0
+
+    async def acquire(self) -> None:
+        while True:
+            now = time.monotonic()
+            while self._starts and now - self._starts[0] >= self.window:
+                self._starts.popleft()
+            wait = self._paused_until - now
+            if wait <= 0 and len(self._starts) < self.limit:
+                self._starts.append(now)
+                return
+            if wait <= 0:
+                wait = self.window - (now - self._starts[0]) + 0.05
+            await asyncio.sleep(wait)
+
+    def pause(self, seconds: float) -> None:
+        """Hold every new request for ``seconds`` (the API asked us to wait)."""
+
+        self._paused_until = max(self._paused_until, time.monotonic() + seconds)
+
+
+TTS_PACER = RequestPacer(TTS_REQUESTS_PER_MINUTE)
+
+
+def _rate_limit_delay(exc: Exception) -> Optional[float]:
+    """Seconds to wait when ``exc`` is a rate limit (429), else ``None``.
+
+    Uses the delay the API asks for ("Please retry in 22.2s" or RetryInfo
+    "retryDelay": "22s") plus a second, or a default when none is given.
+    """
+
+    import httpx
+
+    status = getattr(exc, "code", None)
+    text = str(exc)
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        try:
+            text += " " + exc.response.text
+        except Exception:
+            pass
+    if status != 429 and "RESOURCE_EXHAUSTED" not in text:
+        return None
+    match = (
+        re.search(r"retry in ([0-9.]+)\s*s", text)
+        or re.search(r"retryDelay\W+([0-9.]+)s", text)
+    )
+    if not match:
+        return DEFAULT_QUOTA_WAIT_SECONDS
+    return min(MAX_QUOTA_WAIT_SECONDS, float(match.group(1)) + 1.0)
+
+
 def _transient(exc: Exception) -> bool:
-    """A rate limit, server error or dropped connection: worth one more styled try."""
+    """A server error or dropped connection: worth another try after a short backoff."""
 
     import httpx
 
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code == 429 or exc.response.status_code >= 500
-    return isinstance(exc, httpx.TransportError)
+        return exc.response.status_code >= 500
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and code >= 500:
+        return True
+    return isinstance(exc, (httpx.TransportError, TimeoutError, ConnectionError))
 
 
 def _interactions_tts(text: str, voice: str, style: str) -> tuple[bytes, int]:
