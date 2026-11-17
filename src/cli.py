@@ -106,7 +106,10 @@ def pdf2manim() -> None:
     type=click.Choice(["off", "report", "revise"]),
     default="revise",
     show_default=True,
-    help="Review the planned script before TTS; revise rewrites a failing script once.",
+    help=(
+        "Review the planned script before TTS; revise fixes a failing script once "
+        "(only the beats with flagged sentences, else the whole script)."
+    ),
 )
 @click.option("--skip-tts", is_flag=True)
 @click.option("--skip-render", is_flag=True)

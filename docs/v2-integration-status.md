@@ -20,7 +20,9 @@ Main merged at `c4b3a38` (parent `origin/main` at `e4c779a`).
   sentences) and rewritten whole when it fails. The script review scores
   `logical_flow` and lists every sentence that does not follow from the one
   before; a break in the narration fails the review, a break in the hook triggers
-  a hook rewrite.
+  a hook rewrite. In `revise` mode only the beats holding flagged sentences are
+  rewritten (the whole narration only when the review fails without one); the
+  fixed script is reviewed once more and kept if it passes or scores higher.
 - `convert` accepts professor briefs/directives, concept plans, and duration targets.
 - Scope, notation and narration compliance are persisted and checked.
 - `plan` creates an editable, source-derived outline locally without API calls.

@@ -402,8 +402,9 @@ class PipelineV2Config(BaseModel):
     target_minutes: Optional[float] = Field(default=None, gt=0.0)
     directives: Optional[dict[str, Any]] = None
     concept_plan: Optional[dict[str, Any]] = None
-    # Pre-TTS review of the planned script: "revise" rewrites the narration once
-    # when the review fails and keeps the better-scoring script.
+    # Pre-TTS review of the planned script: when the review fails, "revise"
+    # rewrites only the beats holding flagged sentences (or, with none flagged,
+    # the whole narration) once, and keeps it if it passes or scores higher.
     script_review: Literal["off", "report", "revise"] = "revise"
     # On-camera presenter bridges between Manim scenes. Proposals are saved to
     # presenter/bridges.json; only approved bridges are rendered.
