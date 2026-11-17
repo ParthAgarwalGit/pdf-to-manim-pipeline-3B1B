@@ -15,12 +15,12 @@ from src.prompts.review import (
 
 from .model_config import TEXT_MODEL
 from .models import LessonPlan, NarrationPlan, SourceDocument
-from .prompt_text import REVIEW_PASS_SCORE
+from .prompt_text import FLOW_PASS_SCORE, REVIEW_PASS_SCORE
 from .providers import clean_json_text
 from .state import BudgetExceeded
 
 
-SCRIPT_REVIEW_PROMPT_VERSION = "script-review-1"
+SCRIPT_REVIEW_PROMPT_VERSION = "script-review-2-flow"
 SOURCE_SUMMARY_CHARS = 3000
 TREATMENTS = ("covered", "compressed", "deferred", "omitted")
 
@@ -31,7 +31,15 @@ class ScriptReview(BaseModel):
     criteria: dict[str, dict[str, Any]]  # name -> {"score", "feedback", "weight"}
     summary: str = ""
     improvement_suggestions: list[str] = Field(default_factory=list)
+    # Sentences that do not follow from what came before:
+    # {"where": "hook" or a scene_id, "sentence": ..., "problem": ...}.
+    flow_breaks: list[dict[str, str]] = Field(default_factory=list)
     attempt: int = 1
+
+    def hook_breaks(self) -> list[dict[str, str]]:
+        """Flow breaks in the hook, which only a new hook can fix."""
+
+        return [item for item in self.flow_breaks if _is_hook(item)]
 
     def weakest_criterion(self) -> Optional[tuple[str, dict[str, Any]]]:
         """The lowest-scoring criterion that counts towards the overall score."""
@@ -110,15 +118,47 @@ def parse_review(data: dict[str, Any], attempt: int = 1) -> ScriptReview:
         [item for item in raw if isinstance(item, str) and item.strip()]
         if isinstance(raw, list) else []
     )
+    breaks = _flow_breaks(data.get("flow_breaks"))
+    scene_breaks = [item for item in breaks if not _is_hook(item)]
+    # Each broken sentence in the narration goes to the rewrite as its own fix.
+    suggestions += [
+        f'In {item["where"] or "the narration"}, the sentence "{item["sentence"]}" does not '
+        f'follow from what came before: {item["problem"]} Rewrite it so it does.'
+        for item in scene_breaks
+    ]
     overall = round(weighted_sum, 2)
+    flow = criteria.get("logical_flow", {}).get("score", 10.0)
     return ScriptReview(
         overall_score=overall,
-        passed=overall >= REVIEW_PASS_SCORE,
+        passed=overall >= REVIEW_PASS_SCORE and flow >= FLOW_PASS_SCORE and not scene_breaks,
         criteria=criteria,
         summary=str(data.get("summary") or ""),
         improvement_suggestions=suggestions,
+        flow_breaks=breaks,
         attempt=attempt,
     )
+
+
+def _flow_breaks(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    breaks = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        sentence = " ".join(str(item.get("sentence") or "").split())
+        if not sentence:
+            continue
+        breaks.append({
+            "where": " ".join(str(item.get("where") or "").split()),
+            "sentence": sentence,
+            "problem": " ".join(str(item.get("problem") or "").split()),
+        })
+    return breaks
+
+
+def _is_hook(item: dict[str, str]) -> bool:
+    return item.get("where", "").strip().lower() == "hook"
 
 
 def _plan_summary(lesson: LessonPlan, narration: NarrationPlan) -> dict[str, Any]:

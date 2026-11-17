@@ -44,6 +44,7 @@ from .models import (
 )
 from .observability import RunArtifacts
 from .planning import (
+    HOOK_PROMPT_VERSION,
     NARRATION_PROMPT_VERSION,
     PLANNING_MODEL,
     PLANNING_PROVIDER,
@@ -51,6 +52,7 @@ from .planning import (
     PlanningService,
     apply_audio_timing,
     extract_source,
+    hook_problems,
     validate_grounding,
     validate_visual_contract,
 )
@@ -111,6 +113,8 @@ from src.utils.fingerprints import lexicon_for
 
 
 T = TypeVar("T")
+# A hook rewrite, then at most one more that fixes only the first one's shape.
+HOOK_REWRITE_ATTEMPTS = 2
 
 # A fade through black at every cut between a presenter clip and a Manim scene:
 # the outgoing clip fades out and the incoming one fades in, each this long.
@@ -491,6 +495,7 @@ class PipelineV2:
                         for scene in lesson.scenes
                     ]
                 })
+                lesson = await self._settle_hook(planner, lesson)
                 narration_data = await self._task(
                     "narration", "narration", None,
                     {"lesson": lesson.model_dump(mode="json"),
@@ -1292,6 +1297,9 @@ class PipelineV2:
 
         Returns the narration to use and, when a rewritten script replaced the
         original, the rewrite's narration-directive checks (otherwise ``None``).
+        The hook was settled before the narration was written, so a hook
+        sentence the review flags is reported, never rewritten here: a new hook
+        now could no longer match the narration that follows it.
         """
 
         async def review(candidate: NarrationPlan, attempt: int) -> Optional[ScriptReview]:
@@ -1308,6 +1316,12 @@ class PipelineV2:
         first = await review(narration, 1)
         if first is None:
             return narration, None
+        if first.hook_breaks():
+            self.artifacts.event(
+                "hook_flow_reported", stage="script_review",
+                message="The script review flagged hook sentences; the hook was settled earlier.",
+                breaks=first.hook_breaks(),
+            )
         attempts = [first]
         kept: tuple[NarrationPlan, Optional[list]] = (narration, None)
         if self.config.script_review == "revise" and not first.passed:
@@ -1358,7 +1372,10 @@ class PipelineV2:
                     )
                 if second is not None:
                     attempts.append(second)
-                if second is not None and second.overall_score > first.overall_score:
+                # A rewrite that passes beats one that does not; then the higher score wins.
+                if second is not None and (
+                    (second.passed, second.overall_score) > (first.passed, first.overall_score)
+                ):
                     kept = (revised, revised_checks)
                 else:
                     (planner.length_budget, planner.length_report,
@@ -1380,6 +1397,118 @@ class PipelineV2:
             rewritten=kept[1] is not None,
         )
         return kept
+
+    async def _settle_hook(self, planner: PlanningService, lesson: LessonPlan) -> LessonPlan:
+        """Check the planned hook before any narration is written; rewrite it once if needed.
+
+        The checkable shape (length, one closing question, no dashes, a chain
+        of sentences) is always enforced. Whether each sentence follows is
+        checked by a model when the script review is on; in report mode those
+        findings are logged and the hook is kept.
+        """
+
+        if not (lesson.hook or "").strip():
+            return lesson
+        problems = hook_problems(lesson.hook, planner.presenter_opens)
+        flow: list[str] = []
+        if self.config.script_review != "off":
+            async def check() -> dict[str, list[str]]:
+                return {"problems": await planner.check_hook(lesson)}
+
+            data = await self._task(
+                "hook-check", "lesson", None,
+                {"hook": lesson.hook, "central_question": lesson.central_question,
+                 "running_example": lesson.running_example.model_dump(mode="json"),
+                 "prompt_version": HOOK_PROMPT_VERSION,
+                 "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                 "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                check,
+                dependencies=["lesson"],
+            )
+            flow = [str(item) for item in data.get("problems") or []]
+            self.artifacts.event(
+                "hook_checked", stage="lesson", task_id="hook-check",
+                message=(
+                    f"{len(flow)} hook sentence(s) do not follow."
+                    if flow else "Every hook sentence follows from the one before."
+                ),
+                problems=flow,
+            )
+        if self.config.script_review != "revise":
+            flow = []
+        if not problems and not flow:
+            return lesson
+        return await self._rewrite_hook(
+            planner, lesson, problems + flow, "hook-rewrite", prefer_rewrite=bool(flow),
+        )
+
+    async def _rewrite_hook(
+        self,
+        planner: PlanningService,
+        lesson: LessonPlan,
+        problems: list[str],
+        task_id: str,
+        *,
+        prefer_rewrite: bool = False,
+    ) -> LessonPlan:
+        """Rewrite the hook to fix ``problems``; once more if the rewrite misses the shape.
+
+        A hook is never trimmed to fit: cutting sentences out of a chain of
+        reasoning is what makes it stop following, so it is rewritten whole.
+        The second request only fixes the first rewrite's checkable shape
+        (length, punctuation), keeping its reasoning. ``prefer_rewrite`` (the
+        planned hook does not follow): any rewrite beats it, the one with the
+        fewest shape problems winning; otherwise a rewrite must not fail more
+        shape checks than the planned hook.
+        """
+
+        presenter = planner.presenter_opens
+        original = len(hook_problems(lesson.hook, presenter))
+        best: Optional[tuple[int, str]] = None
+        attempts: list[dict[str, Any]] = []
+        current, asked = lesson, list(problems)
+        for attempt in range(1, HOOK_REWRITE_ATTEMPTS + 1):
+            attempt_id = task_id if attempt == 1 else f"{task_id}-{attempt}"
+
+            async def operation(plan: LessonPlan = current, todo: list[str] = asked) -> dict[str, str]:
+                return {"hook": await planner.rewrite_hook(plan, todo)}
+
+            data = await self._task(
+                attempt_id, "lesson", None,
+                {"lesson": current.model_dump(mode="json"), "problems": asked,
+                 "presenter_opens": presenter,
+                 "prompt_version": HOOK_PROMPT_VERSION,
+                 "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                 "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                operation,
+                dependencies=["lesson"],
+            )
+            hook = " ".join(str(data.get("hook") or "").split())
+            if not hook or hook == current.hook:
+                attempts.append({"hook": hook, "problems": None})
+                break
+            remaining = hook_problems(hook, presenter)
+            attempts.append({"hook": hook, "problems": remaining})
+            if (prefer_rewrite or len(remaining) <= original) and (
+                best is None or len(remaining) <= best[0]
+            ):
+                best = (len(remaining), hook)
+            if not remaining:
+                break
+            current, asked = lesson.model_copy(update={"hook": hook}), remaining
+        kept = best is not None
+        self.artifacts.event(
+            "hook_rewritten" if kept else "hook_rewrite_rejected", stage="lesson",
+            task_id=task_id,
+            message=(
+                "Replaced the hook so each sentence follows from the one before."
+                if kept else
+                "Kept the planned hook: no rewrite was usable or passed more checks."
+            ),
+            problems=problems, before=lesson.hook, after=best[1] if kept else lesson.hook,
+            attempts=attempts,
+        )
+        return lesson.model_copy(update={"hook": best[1]}) if kept else lesson
 
     async def _contract_task(
         self,

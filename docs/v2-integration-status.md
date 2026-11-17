@@ -11,6 +11,16 @@ Main merged at `c4b3a38` (parent `origin/main` at `e4c779a`).
 - Native execution scrubs credentials and uses scratch directories.
 - Optional Docker execution adds network isolation and resource limits.
 - Beat synchronization waits for narration, caps retiming, and reports lateness.
+- Gemini TTS records each beat as its own request. Only the words to be spoken are
+  sent as text; delivery goes in the Interactions API's `speech_metadata` style
+  (the model reads any text it is given aloud). Each take is checked against its
+  word count and recorded again when it holds extra or missing speech, and each
+  beat's measured speech span sets its window, so visuals land on their words.
+- The hook is checked (word limit, one closing question, no dashes, at least three
+  sentences) and rewritten whole when it fails. The script review scores
+  `logical_flow` and lists every sentence that does not follow from the one
+  before; a break in the narration fails the review, a break in the hook triggers
+  a hook rewrite.
 - `convert` accepts professor briefs/directives, concept plans, and duration targets.
 - Scope, notation and narration compliance are persisted and checked.
 - `plan` creates an editable, source-derived outline locally without API calls.

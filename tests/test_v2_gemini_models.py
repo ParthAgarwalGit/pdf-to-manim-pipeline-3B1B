@@ -2,9 +2,7 @@
 
 import asyncio
 import json
-import wave
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,11 +14,9 @@ from src.evaluation.runner import MODEL_ALIASES
 from src.pipeline_v2 import directives, generation, model_config, planning, revision
 from src.pipeline_v2.models import NarratedScene, NarrationBeat, RunResult, RunStatus
 from src.pipeline_v2.observability import RunArtifacts
-from src.pipeline_v2.prompt_text import tts_direction
-from src.pipeline_v2.providers import PRICES, estimate_tokens, price
+from src.pipeline_v2.providers import PRICES, price
 from src.pipeline_v2.state import RunStore
 from src.pipeline_v2.tts import (
-    RELAXED_SPEECH_RATE,
     SCENE_END_PAUSE_SECONDS,
     SPEECH_RATE,
     NarrationAudioService,
@@ -100,58 +96,6 @@ def test_prices_cover_v2_models():
         # the table itself as well as the computed price.
         assert ("google", model) in PRICES
         assert price("google", model, 1_000_000, 1_000_000) > 0
-
-
-def test_gemini_tts_writes_audio_and_settles_cost(monkeypatch, tmp_path):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
-    calls = []
-    silence = b"\x00" * 96000  # 2 s of 24 kHz, 16-bit, mono PCM
-
-    class FakeModels:
-        def generate_content(self, **kwargs):
-            calls.append(kwargs)
-            part = SimpleNamespace(inline_data=SimpleNamespace(data=silence))
-            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
-
-    class FakeClient:
-        def __init__(self, api_key=None):
-            assert api_key == "test-gemini-key"
-            self.models = FakeModels()
-
-    monkeypatch.setattr("google.genai.Client", FakeClient)
-    # Constructed with the relaxed OpenAI stretch: Gemini must ignore it.
-    store, artifacts, service = _service(tmp_path, "gemini", "Sulafat", RELAXED_SPEECH_RATE)
-    scene_dir = tmp_path / "scene"
-
-    result = asyncio.run(service.generate(_scene(), scene_dir))
-
-    assert len(calls) == 1
-    request = calls[0]
-    assert request["model"] == model_config.TTS_MODEL
-    voice = request["config"].speech_config.voice_config.prebuilt_voice_config.voice_name
-    assert voice == "Sulafat"
-    assert request["contents"].startswith(tts_direction("undergraduate"))
-    assert "A queue holds the frontier." in request["contents"]
-
-    with wave.open(str(scene_dir / "audio" / "scene_001_raw.wav"), "rb") as handle:
-        assert (handle.getframerate(), handle.getnchannels(), handle.getsampwidth()) == (24000, 1, 2)
-    assert (scene_dir / "audio" / "scene_001.mp3").is_file()
-    assert result.audio_path and Path(result.audio_path).is_file()
-    assert result.audio_duration_seconds == pytest.approx(2.0 + SCENE_END_PAUSE_SECONDS, abs=0.15)
-    assert result.audio_tail_seconds == SCENE_END_PAUSE_SECONDS
-    assert _events(artifacts, "tts_paced")[0]["speech_rate"] == 1.0
-
-    rows = store.cost_rows()
-    assert len(rows) == 1
-    row = rows[0]
-    assert (row["provider"], row["model"], row["status"]) == ("google", model_config.TTS_MODEL, "SUCCEEDED")
-    assert row["exact"] == 1
-    assert row["output_units"] == 2 * model_config.GEMINI_TTS_TOKENS_PER_SECOND
-    input_units = estimate_tokens(request["contents"])
-    assert row["actual_usd"] == pytest.approx(
-        price("google", model_config.TTS_MODEL, input_units, row["output_units"])
-    )
-    store.close()
 
 
 def test_gemini_tts_keyless_fallback_names_gemini_key(tmp_path):

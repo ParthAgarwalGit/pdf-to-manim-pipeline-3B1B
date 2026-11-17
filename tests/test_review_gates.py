@@ -67,6 +67,7 @@ def test_planned_rubric_parses_and_weights():
     agent = StoryboardGraderAgent.__new__(StoryboardGraderAgent)
     report = agent._parse_planned_response({
         "learning_path": {"score": 8, "feedback": "a"},
+        "logical_flow": {"score": 7},
         "narration_economy": {"score": 6},
         "visual_design": {"score": "bad"},
         "hook_and_payoff": {"score": 14},
@@ -75,8 +76,8 @@ def test_planned_rubric_parses_and_weights():
         "improvement_suggestions": ["x", "", 3],
     })
     expected = {
-        "learning_path": 8.0, "narration_economy": 6.0, "visual_design": 5.0,
-        "hook_and_payoff": 10.0, "accuracy": 5.0,
+        "learning_path": 8.0, "logical_flow": 7.0, "narration_economy": 6.0,
+        "visual_design": 5.0, "hook_and_payoff": 10.0, "accuracy": 5.0,
     }
     scores = {c.name: c.score for c in report.criteria}
     for name, score in expected.items():

@@ -15,7 +15,7 @@ from .prompt_text import CODEGEN_STYLE_RULES
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-creative-code-3-sync-argon-style"
+CODE_PROMPT_VERSION = "v2-creative-code-4-argon-style-alive"
 
 
 class CodeGenerationService:

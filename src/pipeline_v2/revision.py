@@ -30,9 +30,8 @@ from src.utils.fingerprints import apply_lexicon, lexicon_for
 
 from .model_config import CODE_MODEL, GEMINI_TTS_TOKENS_PER_SECOND, TTS_MODEL
 from .models import LessonPlan, NarratedScene, NarrationBeat, NarrationPlan, SceneResult
-from .prompt_text import tts_direction
-from .providers import estimate_tokens, price
-from .tts import RELAXED_SPEECH_RATE, SPEECH_RATE, tts_key_name
+from .providers import price
+from .tts import RELAXED_SPEECH_RATE, SPEECH_RATE, gemini_input_units, tts_key_name
 
 
 REVISION_DIR = "revisions"
@@ -274,6 +273,7 @@ def untimed(scene: NarratedScene) -> NarratedScene:
         "audio_path": None,
         "audio_duration_seconds": None,
         "audio_tail_seconds": 0.0,
+        "beat_speech_spans": [],
     })
 
 
@@ -577,7 +577,7 @@ def _estimate(
                 seconds = len(spoken.split()) * 60 / after.target_words_per_minute + 5
                 estimate.tts_usd += price(
                     "google", TTS_MODEL,
-                    estimate_tokens(f"{tts_direction(state.config.get('audience'))}\n\n{spoken}"),
+                    gemini_input_units(spoken.split("\n\n"), state.config.get("audience")),
                     seconds * GEMINI_TTS_TOKENS_PER_SECOND,
                 )
             else:

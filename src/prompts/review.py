@@ -8,11 +8,12 @@ from typing import Any, Dict, List
 # ``source_coverage`` is reported alongside them and never gates a run
 # (coverage posture "Hybrid C": coverage is an audit, not a layout driver).
 PLANNED_CRITERIA_WEIGHTS: Dict[str, float] = {
-    "learning_path": 0.30,
+    "learning_path": 0.25,
+    "logical_flow": 0.20,
     "accuracy": 0.20,
-    "narration_economy": 0.20,
-    "visual_design": 0.20,
-    "hook_and_payoff": 0.10,
+    "narration_economy": 0.15,
+    "visual_design": 0.15,
+    "hook_and_payoff": 0.05,
 }
 REPORTED_ONLY_CRITERION = "source_coverage"
 
@@ -53,25 +54,31 @@ WHAT THE PLAN DID WITH EACH SOURCE SEGMENT:
 SOURCE SUMMARY:
 {source_summary or "Not provided."}
 
+The viewer hears the lesson plan's "hook" first, when it is not empty, and then each scene's narration in order.
+
 Score each criterion from 0 to 10. 7 means good enough to render; 9 means excellent; 5 or below means it must be rewritten.
 
 1. learning_path. The video answers ONE question. Each act answers a question the previous one raised. Ideas are seen happening to the running example before they are named or written as formulas. One new idea at a time. Take points off for: a tour of the document in its original order, definitions before any motivation, an act that walks through proof steps, a general statement with no concrete case, a concept used before it is introduced.
 
-2. accuracy. Every statement in the narration is true as stated, for the running example and in general, and agrees with the source summary. Check each claim that connects two pictures or two quantities ("this is exactly that", "the same direction", "equals"). A single false or overstated claim caps this score at 4; quote it in the feedback and in an improvement suggestion.
+2. logical_flow. Read the hook and then every scene's narration as one talk, heard once by a viewer who has never seen the document. Every sentence must follow from what came before it: each person, object, quantity, number or symbol is introduced before it is used; each claim comes after the observation or setup that makes it believable; consecutive sentences are joined by a reason the listener could state (because, so, but). A claim about the running example must be true for its actual values; check the arithmetic. List every sentence that breaks the chain in "flow_breaks": a non sequitur, a reference to something never introduced, a conclusion before its setup, or a false claim about the example. A hook sentence that breaks goes in flow_breaks with "where": "hook", but it does not change this score: the hook was checked before the narration was written. One break in the first scene's narration caps this score at 5.
 
-3. narration_economy. Every sentence tells the viewer something new or tells them where to look. Take points off for: saying the same thing twice in different words (an ending that restates its answer two or three times counts), announcing what is about to be explained, recapping what was just shown, beats longer than 55 words, stock phrases ("let's dive in", "it turns out", "here's the key", "in this video"), sentences that read like a textbook, narration that reads out what the picture already shows.
+3. accuracy. Every statement in the narration is true as stated, for the running example and in general, and agrees with the source summary. Check each claim that connects two pictures or two quantities ("this is exactly that", "the same direction", "equals"). A single false or overstated claim caps this score at 4; quote it in the feedback and in an improvement suggestion.
 
-4. visual_design. Every animated scene has a non-text main visual that changes while the narrator speaks, and reuses the plan's motifs. Take points off for: a scene whose plan_source is "fallback", a scene with no transformations, a scene whose planned objects are mostly Text, visual hints that ask for a sentence or title on screen, visual hints that cannot be drawn with simple shapes, a new unrelated picture in every scene.
+4. narration_economy. Every sentence tells the viewer something new or tells them where to look. Take points off for: saying the same thing twice in different words (an ending that restates its answer two or three times counts), announcing what is about to be explained, recapping what was just shown, beats longer than 55 words, stock phrases ("let's dive in", "it turns out", "here's the key", "in this video"), sentences that read like a textbook, narration that reads out what the picture already shows.
 
-5. hook_and_payoff. The first twenty seconds put a specific question in the viewer's head using a concrete picture, with no greeting and no list of topics. The last scene answers that question and stops. Take points off for a generic opening, an ending that trails off into a side topic, or a sign-off.
+5. visual_design. Every animated scene has a non-text main visual that changes while the narrator speaks, and reuses the plan's motifs. Take points off for: a scene whose plan_source is "fallback", a scene with no transformations, a scene whose planned objects are mostly Text, visual hints that ask for a sentence or title on screen, visual hints that cannot be drawn with simple shapes, a new unrelated picture in every scene.
+
+6. hook_and_payoff. The first twenty seconds put a specific question in the viewer's head using a concrete picture, with no greeting and no list of topics. The last scene answers that question and stops. Take points off for a generic opening, an ending that trails off into a side topic, or a sign-off.
 
 Also report source_coverage from 0 to 10: how much of the source's main line of argument the video conveys, given its length. This number is reported only. A short video that deliberately leaves out side results should not lose points on the other criteria for it.
 
-Each improvement suggestion must be specific and addressed to the writer: name the scene or act and say what to change.
+Each improvement suggestion must be specific and addressed to the writer: name the scene or act and say what to change. "flow_breaks" is [] when every sentence follows from the one before.
 
 Return ONLY valid JSON in this shape:
 {{
   "learning_path": {{"score": 0, "feedback": "one or two sentences"}},
+  "logical_flow": {{"score": 0, "feedback": "one or two sentences"}},
+  "flow_breaks": [{{"where": "hook, or the scene_id", "sentence": "the sentence exactly as written", "problem": "what the listener is missing or why it is not true"}}],
   "accuracy": {{"score": 0, "feedback": "one or two sentences; quote any false claim"}},
   "narration_economy": {{"score": 0, "feedback": "one or two sentences"}},
   "visual_design": {{"score": 0, "feedback": "one or two sentences"}},

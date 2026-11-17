@@ -195,7 +195,7 @@ def test_lesson_prompt_uses_spine_instructions():
 
     prompt = router.prompts("lesson")[0]
     assert prompt.startswith(f"PROMPT_VERSION={PROMPT_VERSION}\n")
-    assert PROMPT_VERSION == "v2.5.0-spine"
+    assert PROMPT_VERSION == "v2.6.0-flow"
     assert "ONE CENTRAL QUESTION" in prompt
     assert '"page_count": 4' in prompt
     assert "Prefer 4-6 substantial scenes" in prompt  # scene guidance kept
@@ -254,7 +254,7 @@ def test_narration_prompt_has_spoken_rules_and_spine():
 
     prompt = router.prompts("narration")[0]
     assert prompt.startswith(f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\nWrite the requested")
-    assert NARRATION_PROMPT_VERSION == "v2.6.0-spoken"
+    assert NARRATION_PROMPT_VERSION == "v2.7.0-flow"
     assert "SPOKEN NARRATION" in prompt
     assert "calm teaching pace" in prompt  # pace guidance kept
     assert "A REVIEWER REJECTED" not in prompt
@@ -312,6 +312,7 @@ def test_script_review_scores_and_parses():
     calls = []
     raw = {
         "learning_path": {"score": 8, "feedback": "Clear path."},
+        "logical_flow": {"score": 7, "feedback": "Follows."},
         "accuracy": {"score": "12", "feedback": "Fine."},          # clamped to 10
         "narration_economy": {"feedback": "No score given."},      # default 5
         "visual_design": {"score": "bad"},                         # default 5
@@ -321,7 +322,7 @@ def test_script_review_scores_and_parses():
         "improvement_suggestions": ["Name the triangle.", "", 4, "Cut scene 2's recap."],
     }
     expected = {
-        "learning_path": 8.0, "accuracy": 10.0, "narration_economy": 5.0,
+        "learning_path": 8.0, "logical_flow": 7.0, "accuracy": 10.0, "narration_economy": 5.0,
         "visual_design": 5.0, "hook_and_payoff": 0.0,
     }
 

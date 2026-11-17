@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import os
 import subprocess
+import time
 import uuid
 import wave
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
+
+import numpy as np
 
 from src.agents.tts_agent import TTSAgent, TTSError, TTSInput, TTSOutput
 from src.utils.ffmpeg_finder import get_ffmpeg, get_ffprobe
@@ -18,7 +24,7 @@ from .model_config import GEMINI_TTS_TOKENS_PER_SECOND, TTS_MODEL
 from .models import NarratedScene
 from .observability import RunArtifacts
 from .planning import apply_audio_timing
-from .prompt_text import DEFAULT_VOICE, tts_direction
+from .prompt_text import DEFAULT_VOICE, tts_style
 from .providers import estimate_tokens, price
 from .state import RunStore
 
@@ -30,10 +36,29 @@ OPENAI_VOICES = frozenset({"alloy", "echo", "fable", "onyx", "nova", "shimmer"})
 SPEECH_RATE = 0.94
 RELAXED_SPEECH_RATE = 0.84
 SCENE_END_PAUSE_SECONDS = 2.0
-TTS_TIMING_VERSION = "tts-v2-5-gemini"
+TTS_TIMING_VERSION = "tts-v2-6-beats"
 # Gemini TTS returns raw 24 kHz, 16-bit, mono PCM: 48000 bytes per second.
 GEMINI_SAMPLE_RATE = 24000
 GEMINI_PCM_BYTES_PER_SECOND = GEMINI_SAMPLE_RATE * 2
+# The Interactions API is the one Gemini TTS surface that takes delivery
+# style as speech_metadata instead of as text the model would read aloud.
+GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+# Gemini narrates near 3 words per second. A take far slower than this has
+# spoken words that are not in the script; one far faster was cut short.
+GEMINI_WORDS_PER_SECOND = 2.9
+MIN_WORDS_PER_SECOND = 1.9
+MAX_WORDS_PER_SECOND = 5.5
+EXTRA_SECONDS_ALLOWED = 1.5
+MAX_BEAT_TAKES = 3
+# A styled request that hits a rate limit or server error is tried again
+# before the beat falls back to plain, unstyled speech.
+STYLE_ATTEMPTS = 3
+STYLE_RETRY_SECONDS = 2.0
+# Silence placed before the first beat and between beats (at least the
+# beat's own pause_after_seconds), after each take's silence is trimmed.
+LEAD_IN_SECONDS = 0.15
+BEAT_GAP_SECONDS = 0.45
+TRIM_MARGIN_SECONDS = 0.08
 TTS_KEY_NAMES = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
@@ -124,9 +149,10 @@ class NarrationAudioService:
             })
 
         if self.provider == "gemini":
-            original_path, source_duration = await self._record_gemini(
-                scene, audio_dir, narration_text, speech_rate,
+            original_path, source_duration, spans = await self._record_gemini(
+                scene, audio_dir, lexicon,
             )
+            scene = scene.model_copy(update={"beat_speech_spans": spans})
         else:
             original_path, source_duration = await self._record_openai(
                 scene, audio_dir, narration_text, speech_rate,
@@ -170,21 +196,28 @@ class NarrationAudioService:
         self,
         scene: NarratedScene,
         audio_dir: Path,
-        narration_text: str,
-        speech_rate: float,
-    ) -> tuple[Path, float]:
-        """Record one scene with Gemini TTS; returns the un-paced MP3 and its seconds."""
+        lexicon: Optional[Mapping[str, str]] = None,
+    ) -> tuple[Path, float, list[list[float]]]:
+        """Record a scene beat by beat with Gemini TTS.
 
-        prompt_text = self._gemini_contents(narration_text)
-        input_units = estimate_tokens(prompt_text)
+        Each beat is its own request, so its speech is measured rather than
+        estimated: the scene's beat windows are cut from these spans, which
+        keeps every visual change on the words it illustrates. Returns the
+        un-paced MP3, its seconds and each beat's [start, end] in it.
+        """
+
+        texts = [_beat_for_tts(beat.text, lexicon) for beat in scene.beats]
+        style = tts_style(self.audience)
+        spoken = "\n\n".join(texts)
+        input_units = gemini_input_units(texts, self.audience)
         estimated_seconds = (
-            len(narration_text.split()) * 60 / scene.target_words_per_minute + 5
+            len(spoken.split()) * 60 / scene.target_words_per_minute + 5
         )
         amount = price(
             "google", TTS_MODEL, input_units,
             estimated_seconds * GEMINI_TTS_TOKENS_PER_SECOND,
         )
-        characters = len(narration_text)
+        characters = len(spoken)
         call_id = f"tts-{uuid.uuid4().hex[:12]}"
         self.store.reserve_call(
             call_id, task_id=f"tts-{scene.scene_id}", scene_id=scene.scene_id,
@@ -197,17 +230,26 @@ class NarrationAudioService:
         )
         request = {
             "provider": "google", "model": TTS_MODEL, "voice": self.voice,
-            "narration": narration_text, "characters": characters,
-            "speech_rate": speech_rate,
+            "narration": spoken, "characters": characters, "style": style,
+            "beats": len(texts), "speech_rate": 1.0,
         }
         self.artifacts.record_provider_call(
             stage="tts", call_id=call_id, scene_id=scene.scene_id, request=request,
         )
         raw_wav = audio_dir / f"{scene.scene_id}_raw.wav"
         original_path = audio_dir / f"{scene.scene_id}.mp3"
+        recorded: list[BeatTake] = []
         try:
-            async with self.api_limit:
-                seconds = await asyncio.to_thread(self._gemini_tts, narration_text, raw_wav)
+            async def record(text: str) -> BeatTake:
+                async with self.api_limit:
+                    return await asyncio.to_thread(self._gemini_beat, text, style)
+
+            recorded = list(await asyncio.gather(*(record(text) for text in texts)))
+            pcm, rate, spans = assemble_beats(
+                [take.pcm for take in recorded], recorded[0].rate,
+                [beat.pause_after_seconds for beat in scene.beats],
+            )
+            await asyncio.to_thread(_write_wav, raw_wav, pcm, rate)
             await asyncio.to_thread(_wav_to_mp3, raw_wav, original_path)
         except Exception:
             self.store.settle_call(
@@ -215,12 +257,39 @@ class NarrationAudioService:
                 output_units=0, exact=False, status="FAILED_UNCERTAIN",
             )
             raise
-        output_units = int(round(seconds * GEMINI_TTS_TOKENS_PER_SECOND))
+        seconds = len(pcm) / (2 * rate)
+        # Every take is billed, including the ones a retake replaced.
+        output_units = int(round(
+            sum(take.generated_seconds for take in recorded) * GEMINI_TTS_TOKENS_PER_SECOND
+        ))
+        input_units = sum(
+            gemini_input_units([text], self.audience) * take.takes
+            for text, take in zip(texts, recorded)
+        )
         exact_cost = price("google", TTS_MODEL, input_units, output_units)
         self.store.settle_call(
             call_id, actual_usd=exact_cost, input_units=input_units,
             output_units=output_units, exact=True,
         )
+        for beat, take in zip(scene.beats, recorded):
+            if take.takes > 1:
+                self.artifacts.event(
+                    "tts_beat_retake", stage="tts", scene_id=scene.scene_id,
+                    task_id=f"tts-{scene.scene_id}", beat_id=beat.beat_id,
+                    takes=take.takes, plausible=take.plausible,
+                    speech_seconds=round(take.speech_seconds, 3),
+                    words=len(beat.text.split()),
+                    message=(
+                        "A take's length did not fit its words (extra or missing "
+                        "speech), so the beat was recorded again."
+                    ),
+                )
+            if take.style_fallback:
+                self.artifacts.event(
+                    "tts_style_fallback", stage="tts", scene_id=scene.scene_id,
+                    task_id=f"tts-{scene.scene_id}", beat_id=beat.beat_id,
+                    message=f"Recorded without style metadata: {take.style_fallback}",
+                )
         self.artifacts.event(
             "api_call_finished", stage="tts", scene_id=scene.scene_id,
             task_id=f"tts-{scene.scene_id}", provider="google", model=TTS_MODEL,
@@ -232,41 +301,58 @@ class NarrationAudioService:
             response={
                 "audio_file_path": str(original_path.resolve()),
                 "duration_seconds": seconds,
+                "beat_speech_spans": spans,
                 "cost_usd": exact_cost,
             },
         )
-        return original_path, seconds
+        return original_path, seconds, spans
 
-    def _gemini_contents(self, narration_text: str) -> str:
-        return f"{tts_direction(self.audience)}\n\n{narration_text}"
+    def _gemini_beat(self, text: str, style: str) -> "BeatTake":
+        """Record one beat, retaking it when its length does not fit its words."""
 
-    def _gemini_tts(self, narration_text: str, out_wav: Path) -> float:
-        """One Gemini TTS request; writes 24 kHz mono WAV and returns its seconds."""
+        words = len(text.split())
+        best: Optional[BeatTake] = None
+        generated = 0.0
+        takes = 0
+        for takes in range(1, MAX_BEAT_TAKES + 1):
+            pcm, rate, fallback = self._gemini_clip(text, style)
+            generated += len(pcm) / (2 * rate)
+            trimmed = trim_silence(pcm, rate)
+            seconds = len(trimmed) / (2 * rate)
+            candidate = BeatTake(
+                pcm=trimmed, rate=rate, speech_seconds=seconds, takes=takes,
+                plausible=plausible_take(words, seconds), generated_seconds=0.0,
+                style_fallback=fallback,
+            )
+            if best is None or _take_error(words, candidate) < _take_error(words, best):
+                best = candidate
+            if candidate.plausible:
+                break
+        assert best is not None
+        best.takes = takes
+        best.generated_seconds = generated
+        return best
 
-        from google import genai
-        from google.genai import types
+    def _gemini_clip(self, text: str, style: str) -> tuple[bytes, int, str]:
+        """One Gemini TTS request for ``text`` alone; returns PCM, its rate and any fallback reason.
 
-        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        response = client.models.generate_content(
-            model=TTS_MODEL,
-            contents=self._gemini_contents(narration_text),
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.voice))),
-            ),
-        )
-        pcm = response.candidates[0].content.parts[0].inline_data.data
-        if not pcm:
-            raise RuntimeError("Gemini TTS returned no audio")
-        out_wav.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out_wav), "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(GEMINI_SAMPLE_RATE)
-            handle.writeframes(pcm)
-        return len(pcm) / GEMINI_PCM_BYTES_PER_SECOND
+        Only the words to be spoken are sent as text. Delivery goes in the
+        speech_metadata style annotation; if that request fails, the beat is
+        recorded from the plain text with no direction at all.
+        """
+
+        reason = ""
+        for attempt in range(STYLE_ATTEMPTS):
+            try:
+                pcm, rate = _interactions_tts(text, self.voice, style)
+                return pcm, rate, ""
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+                if not _transient(exc) or attempt == STYLE_ATTEMPTS - 1:
+                    break
+                time.sleep(STYLE_RETRY_SECONDS * (attempt + 1))
+        pcm, rate = _generate_content_tts(text, self.voice)
+        return pcm, rate, reason
 
     async def _record_openai(
         self,
@@ -373,6 +459,11 @@ class NarrationAudioService:
             message="Re-paced the existing recording locally without a paid TTS call.",
             final_duration_seconds=round(duration, 3), speech_rate=speech_rate,
         )
+        spans = [
+            [round(start / speech_rate, 3), round(end / speech_rate, 3)]
+            for start, end in scene.beat_speech_spans
+        ]
+        scene = scene.model_copy(update={"beat_speech_spans": spans})
         return apply_audio_timing(scene, duration).model_copy(update={
             "audio_path": str(paced_path.resolve()),
             "audio_tail_seconds": SCENE_END_PAUSE_SECONDS,
@@ -380,14 +471,187 @@ class NarrationAudioService:
 
 
 def retime(scene: NarratedScene, previous: NarratedScene) -> NarratedScene:
-    """Redistribute beat timings over an unchanged recording (pause edits)."""
+    """Redistribute beat timings over an unchanged recording (pause edits).
+
+    The recording is unchanged, so its measured beat spans still hold when
+    the beats' words are the same.
+    """
 
     if not previous.audio_duration_seconds:
         raise RuntimeError(f"{scene.scene_id} has no measured audio to re-time")
+    same_words = [beat.text for beat in scene.beats] == [beat.text for beat in previous.beats]
+    scene = scene.model_copy(update={
+        "beat_speech_spans": previous.beat_speech_spans if same_words else [],
+    })
     return apply_audio_timing(scene, previous.audio_duration_seconds).model_copy(update={
         "audio_path": previous.audio_path,
         "audio_tail_seconds": previous.audio_tail_seconds,
     })
+
+
+@dataclass
+class BeatTake:
+    """The kept take of one beat: trimmed PCM and how it was obtained."""
+
+    pcm: bytes
+    rate: int
+    speech_seconds: float
+    takes: int
+    plausible: bool
+    generated_seconds: float
+    style_fallback: str = ""
+
+
+def gemini_input_units(texts: Sequence[str], audience: Optional[str] = None) -> int:
+    """Input tokens of one Gemini TTS request per beat: its text plus the style."""
+
+    style = tts_style(audience)
+    return sum(estimate_tokens(f"{style}\n\n{text}") for text in texts)
+
+
+def plausible_take(words: int, seconds: float) -> bool:
+    """Whether a take's speech length fits its word count.
+
+    Too long means the model spoke words that are not in the script (the
+    failure that once read a delivery direction aloud); too short means it
+    stopped early.
+    """
+
+    words = max(1, words)
+    return words / MAX_WORDS_PER_SECOND <= seconds <= (
+        words / MIN_WORDS_PER_SECOND + EXTRA_SECONDS_ALLOWED
+    )
+
+
+def _take_error(words: int, take: BeatTake) -> float:
+    return abs(take.speech_seconds - max(1, words) / GEMINI_WORDS_PER_SECOND)
+
+
+def trim_silence(pcm: bytes, rate: int, margin: float = TRIM_MARGIN_SECONDS) -> bytes:
+    """Cut leading and trailing silence from 16-bit mono PCM, keeping a short margin."""
+
+    samples = np.frombuffer(pcm, dtype=np.int16)
+    window = max(1, rate // 100)  # 10 ms
+    count = samples.size // window
+    if count == 0:
+        return pcm
+    levels = np.abs(samples[: count * window].astype(np.int32)).reshape(count, window).max(axis=1)
+    threshold = max(300, int(levels.max() * 0.04))
+    loud = np.flatnonzero(levels > threshold)
+    if loud.size == 0:
+        return pcm
+    keep = int(margin * rate)
+    start = max(0, int(loud[0]) * window - keep)
+    end = min(samples.size, (int(loud[-1]) + 1) * window + keep)
+    return samples[start:end].tobytes()
+
+
+def assemble_beats(
+    clips: Sequence[bytes],
+    rate: int,
+    pauses: Sequence[float],
+) -> tuple[bytes, int, list[list[float]]]:
+    """Join beat clips with a lead-in and inter-beat gaps; return PCM, rate and each beat's span."""
+
+    def silence(seconds: float) -> bytes:
+        return b"\x00\x00" * int(round(seconds * rate))
+
+    parts = [silence(LEAD_IN_SECONDS)]
+    cursor = len(parts[0])
+    spans: list[list[float]] = []
+    for index, clip in enumerate(clips):
+        start = cursor
+        parts.append(clip)
+        cursor += len(clip)
+        spans.append([round(start / (2 * rate), 3), round(cursor / (2 * rate), 3)])
+        if index < len(clips) - 1:
+            gap = silence(max(BEAT_GAP_SECONDS, pauses[index]))
+            parts.append(gap)
+            cursor += len(gap)
+    return b"".join(parts), rate, spans
+
+
+def _decode_audio(raw: bytes) -> tuple[bytes, int]:
+    """16-bit mono PCM and its sample rate from a WAV file or bare 24 kHz PCM."""
+
+    if raw[:4] != b"RIFF":
+        return raw, GEMINI_SAMPLE_RATE
+    with wave.open(io.BytesIO(raw), "rb") as handle:
+        if handle.getsampwidth() != 2 or handle.getnchannels() != 1:
+            raise RuntimeError(
+                f"Gemini TTS returned {handle.getnchannels()}-channel, "
+                f"{8 * handle.getsampwidth()}-bit audio; expected 16-bit mono"
+            )
+        return handle.readframes(handle.getnframes()), handle.getframerate()
+
+
+def _transient(exc: Exception) -> bool:
+    """A rate limit, server error or dropped connection: worth one more styled try."""
+
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return isinstance(exc, httpx.TransportError)
+
+
+def _interactions_tts(text: str, voice: str, style: str) -> tuple[bytes, int]:
+    """Speak ``text`` verbatim, with delivery as a speech_metadata style annotation."""
+
+    import httpx
+
+    response = httpx.post(
+        GEMINI_INTERACTIONS_URL,
+        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+        json={
+            "model": TTS_MODEL,
+            "input": [{
+                "type": "text", "text": text,
+                "annotations": [{"type": "speech_metadata", "style": style}],
+            }],
+            "generation_config": {"speech_config": [{"voice": voice, "language": "en-US"}]},
+            "response_format": {"type": "audio"},
+        },
+        timeout=180,
+    )
+    response.raise_for_status()
+    for step in response.json().get("steps") or []:
+        for part in step.get("content") or []:
+            if part.get("type") == "audio" and part.get("data"):
+                return _decode_audio(base64.b64decode(part["data"]))
+    raise RuntimeError("Gemini TTS returned no audio")
+
+
+def _generate_content_tts(text: str, voice: str) -> tuple[bytes, int]:
+    """Speak ``text`` verbatim through generate_content (no delivery style)."""
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    response = client.models.generate_content(
+        model=TTS_MODEL,
+        contents=text,
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice))),
+        ),
+    )
+    pcm = response.candidates[0].content.parts[0].inline_data.data
+    if not pcm:
+        raise RuntimeError("Gemini TTS returned no audio")
+    return _decode_audio(pcm)
+
+
+def _write_wav(path: Path, pcm: bytes, rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(pcm)
 
 
 def _silence(path: Path, duration: float) -> None:
@@ -420,13 +684,15 @@ def _narration_for_tts(
     storyboard keep the original spelling.
     """
 
-    paragraphs = []
-    for beat in scene.beats:
-        text = beat.text.strip()
-        if text and text[-1] not in ".!?":
-            text += "."
-        paragraphs.append(text)
-    text = "\n\n".join(paragraphs)
+    return "\n\n".join(_beat_for_tts(beat.text, lexicon) for beat in scene.beats)
+
+
+def _beat_for_tts(text: str, lexicon: Optional[Mapping[str, str]] = None) -> str:
+    """One beat as spoken: closing punctuation added, respelled for the voice only."""
+
+    text = text.strip()
+    if text and text[-1] not in ".!?":
+        text += "."
     return apply_lexicon(text, lexicon_for(text, dict(lexicon))) if lexicon else text
 
 

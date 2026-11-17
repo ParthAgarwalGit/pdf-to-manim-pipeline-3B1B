@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from .prompt_text import DEFAULT_VOICE
 
@@ -173,6 +174,10 @@ class NarratedScene(BaseModel):
     audio_duration_seconds: Optional[float] = Field(default=None, gt=0.0)
     audio_tail_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
     audio_is_placeholder: bool = False
+    # Measured [start, end] seconds of each beat's speech inside audio_path,
+    # written by per-beat TTS. Beat windows are cut from these when present.
+    # Kept out of the planner's response schema: the model never sets them.
+    beat_speech_spans: SkipJsonSchema[list[list[float]]] = Field(default_factory=list)
 
 
 class NarrationPlan(BaseModel):

@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from pydantic import BaseModel
+
 from src.prompts.narrative import spoken_plain
 from src.schemas.directives import ProfessorDirectives
 
@@ -45,7 +47,14 @@ from .models import (
     VisualContractBatch,
 )
 from .model_config import OCR_MODEL, TEXT_MODEL
-from .prompt_text import lesson_instructions, narration_instructions
+from .prompt_text import (
+    HOOK_MAX_WORDS_NARRATOR,
+    HOOK_MAX_WORDS_PRESENTER,
+    hook_check_instructions,
+    hook_rewrite_instructions,
+    lesson_instructions,
+    narration_instructions,
+)
 from .providers import MissingProviderKey, ProviderRouter, clean_json_text
 
 try:
@@ -54,8 +63,9 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.5.0-spine"
-NARRATION_PROMPT_VERSION = "v2.6.0-spoken"
+PROMPT_VERSION = "v2.6.0-flow"
+NARRATION_PROMPT_VERSION = "v2.7.0-flow"
+HOOK_PROMPT_VERSION = "hook-2-check"
 NARRATION_BATCH_SIZE = 5
 MAX_SPINE_MOTIFS = 4
 PLANNING_PROVIDER = "google"
@@ -331,6 +341,69 @@ class PlanningService:
             )
         return expanded
 
+    async def check_hook(self, lesson: LessonPlan) -> list[str]:
+        """Sentences of the hook a first-time listener could not follow, as problems.
+
+        Empty when the hook is empty, every sentence follows, or the check
+        cannot run (the deterministic checks in hook_problems still apply).
+        """
+
+        if not (lesson.hook or "").strip():
+            return []
+        payload = {
+            "hook": lesson.hook,
+            "central_question": lesson.central_question,
+            "running_example": lesson.running_example.model_dump(mode="json"),
+        }
+        prompt = (
+            f"PROMPT_VERSION={HOOK_PROMPT_VERSION}\n"
+            + hook_check_instructions() + "\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        result = await self.router.structured(
+            stage="lesson", task_id="hook-check", provider=PLANNING_PROVIDER,
+            model=PLANNING_MODEL, system="You are a careful listener checking a script.",
+            prompt=prompt, schema=HookCheck, fallback=lambda: HookCheck(breaks=[]),
+            max_output_tokens=1500,
+        )
+        return [
+            f'The sentence "{" ".join(item.sentence.split())}" does not follow: '
+            f'{" ".join(item.problem.split())}'
+            for item in result.breaks
+            if item.sentence.strip()
+        ]
+
+    async def rewrite_hook(self, lesson: LessonPlan, problems: list[str]) -> str:
+        """A new hook for ``lesson`` that fixes ``problems``; the old hook if the call fails."""
+
+        first = lesson.scenes[0] if lesson.scenes else None
+        payload = {
+            "central_question": lesson.central_question,
+            "current_hook": lesson.hook,
+            "running_example": lesson.running_example.model_dump(mode="json"),
+            "first_scene": (
+                {
+                    "title": first.title,
+                    "viewer_question": first.viewer_question,
+                    "visual_objective": first.visual_objective,
+                }
+                if first else None
+            ),
+        }
+        prompt = (
+            f"PROMPT_VERSION={HOOK_PROMPT_VERSION}\n"
+            + hook_rewrite_instructions(self.presenter_opens, problems) + "\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        result = await self.router.structured(
+            stage="lesson", task_id="hook-rewrite", provider=PLANNING_PROVIDER,
+            model=PLANNING_MODEL, system="You write the opening lines of explainer videos.",
+            prompt=prompt, schema=HookRewrite,
+            fallback=lambda: HookRewrite(hook=lesson.hook),
+            max_output_tokens=1500,
+        )
+        return " ".join(result.hook.split())
+
     async def narration(
         self,
         lesson: LessonPlan,
@@ -353,6 +426,11 @@ class PlanningService:
             "Use a calm teaching pace of 125-140 words per minute. Split each scene into 2-4 "
             "semantic beats. "
         )
+        if self.target_minutes is None:
+            pace_guidance += (
+                f"Each scene's narration is {DEFAULT_SCENE_WORDS[0]} to {DEFAULT_SCENE_WORDS[1]} "
+                "words: say what the picture needs and stop. "
+            )
         outline = [
             {
                 "scene_id": item.scene_id,
@@ -642,7 +720,28 @@ class PlanningService:
 
 
 def apply_audio_timing(scene: NarratedScene, duration: float) -> NarratedScene:
-    weights = [max(1, len(beat.text.split())) for beat in scene.beats]
+    """Give each beat its window in a recording of ``duration`` seconds.
+
+    With measured speech spans (per-beat TTS), a beat's window opens when its
+    first word is spoken and closes when the next beat's does, so the visuals
+    timed to it land on its words. Without them, windows are shared out by
+    word count.
+    """
+
+    spans = scene.beat_speech_spans
+    if spans and len(spans) == len(scene.beats):
+        starts = [0.0] + [min(duration, max(0.0, float(span[0]))) for span in spans[1:]]
+        ends = starts[1:] + [duration]
+        return scene.model_copy(update={
+            "beats": [
+                beat.model_copy(update={
+                    "start_seconds": round(start, 3), "end_seconds": round(max(start, end), 3),
+                })
+                for beat, start, end in zip(scene.beats, starts, ends)
+            ],
+            "audio_duration_seconds": duration,
+        })
+    weights =[max(1, len(beat.text.split())) for beat in scene.beats]
     total = sum(weights)
     pauses = [beat.pause_after_seconds for beat in scene.beats]
     pause_total = min(sum(pauses), duration * 0.3)
@@ -759,6 +858,57 @@ def _spoken_scene(scene: NarratedScene) -> NarratedScene:
     return scene.model_copy(update={
         "beats": beats, "narration": " ".join(beat.text for beat in beats),
     })
+
+
+class HookRewrite(BaseModel):
+    hook: str
+
+
+class HookBreak(BaseModel):
+    sentence: str
+    problem: str = ""
+
+
+class HookCheck(BaseModel):
+    breaks: list[HookBreak] = []
+
+
+# Narration length per scene when the professor sets no target length.
+DEFAULT_SCENE_WORDS = (80, 130)
+_HOOK_PUNCTUATION = ("\u2014", "\u2013", ";", "(", ")")
+
+
+def hook_problems(hook: str, presenter_opens: bool) -> list[str]:
+    """What is checkably wrong with a hook, as sentences a rewrite can act on.
+
+    The hook must be a short chain (situation, snag, question) ending on one
+    question. Whether each sentence follows from the last is judged by the
+    script review; this catches the shapes that cannot flow when spoken.
+    """
+
+    text = " ".join((hook or "").split())
+    if not text:
+        return []
+    problems = []
+    limit = HOOK_MAX_WORDS_PRESENTER if presenter_opens else HOOK_MAX_WORDS_NARRATOR
+    words = len(text.split())
+    if words > limit:
+        problems.append(f"It is {words} words long; the limit is {limit}.")
+    if text.count("?") != 1 or not text.endswith("?"):
+        problems.append(
+            "It must end on exactly one question, the central question, and ask nothing before it."
+        )
+    if any(mark in text for mark in _HOOK_PUNCTUATION) or " - " in text:
+        problems.append(
+            "It uses a dash, semicolon or parentheses, which a listener cannot hear; "
+            "say it as separate sentences."
+        )
+    sentences = [part for part in re.split(r"(?<=[.?!])\s+", text) if part.strip()]
+    if len(sentences) < 3:
+        problems.append(
+            "It is not a chain of situation, snag and question: it needs at least three sentences."
+        )
+    return problems
 
 
 def _normalise_spine(lesson: LessonPlan, source: SourceDocument) -> LessonPlan:
