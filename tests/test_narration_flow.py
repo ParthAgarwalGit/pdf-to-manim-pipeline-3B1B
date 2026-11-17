@@ -156,7 +156,8 @@ class TestBridgeEcho:
         from src.agents.bridge_planner import BridgePlannerAgent
 
         beats = [_beat(1, DEFINE, ["svd_definition"]), _beat(2, FRESH)]
-        llm = lambda prompt: {"bridges": [{"slot": 0, "text": DEFINE}]}
+        def llm(prompt):
+            return {"bridges": [{"slot": 0, "text": DEFINE}]}
         texts = BridgePlannerAgent(llm=llm)._write(beats, [(0, "opening")])
         assert texts[0] != DEFINE and "svd definition" in texts[0]
 
@@ -165,7 +166,8 @@ class TestBridgeEcho:
 
         beats = [_beat(1, DEFINE), _beat(2, FRESH)]
         hook = "Every photo on your phone is a big grid of numbers. How would you squeeze it down?"
-        llm = lambda prompt: {"bridges": [{"slot": 0, "text": hook}]}
+        def llm(prompt):
+            return {"bridges": [{"slot": 0, "text": hook}]}
         assert BridgePlannerAgent(llm=llm)._write(beats, [(0, "opening")])[0] == hook
 
 
@@ -218,7 +220,8 @@ class TestBriefRehoming:
     def test_content_rule_filed_as_presenter_note_reaches_the_script(self):
         from src.agents.professor_input_interpreter import ProfessorInputInterpreter
 
-        llm = lambda prompt: {"presenter": {"notes": "Skip the proofs and any theorem numbering."}, "notes": []}
+        def llm(prompt):
+            return {"presenter": {"notes": "Skip the proofs and any theorem numbering."}, "notes": []}
         directives = ProfessorInputInterpreter(llm=llm).interpret_brief("Skip the proofs and any theorem numbering.")
         assert directives.presenter.notes == ""
         assert "Skip the proofs and any theorem numbering." in directives.script_instructions()
@@ -226,7 +229,8 @@ class TestBriefRehoming:
     def test_real_presenter_note_stays(self):
         from src.agents.professor_input_interpreter import ProfessorInputInterpreter
 
-        llm = lambda prompt: {"presenter": {"notes": "Keep the presenter small in the corner."}}
+        def llm(prompt):
+            return {"presenter": {"notes": "Keep the presenter small in the corner."}}
         directives = ProfessorInputInterpreter(llm=llm).interpret_brief("Keep the presenter small in the corner.")
         assert directives.presenter.notes == "Keep the presenter small in the corner."
 

@@ -15,7 +15,6 @@ from src.pipeline_v2.generation import generation_request
 from src.pipeline_v2.model_config import TEXT_MODEL
 from src.pipeline_v2.models import (
     LessonPlan,
-    LessonScene,
     NarratedScene,
     NarrationBeat,
     NarrationPlan,
