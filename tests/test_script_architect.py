@@ -452,7 +452,8 @@ class TestGenerateVideoScript:
 
         script = agent._generate_video_script(
             minimal_trig_ocr_output(),
-            Configuration(verbosity="medium", depth="intermediate", audience="undergraduate"),
+            Configuration(verbosity="medium", depth="intermediate", audience="undergraduate",
+                          lesson_plan=False),
             review_feedback=[],
             segments=segments,
         )
@@ -956,25 +957,33 @@ class TestNonTextVisualInvariant:
         assert len(calls) == 2
         assert any("Text-only visual intent" in r.getMessage() for r in caplog.records)
 
-    def test_invalid_text_only_retry_keeps_validated_first_plan(self, monkeypatch):
-        """A retry that fails purpose validation must not discard the first
-        plan (which passed) in favour of the generic narration fallback."""
+    def test_incomplete_text_only_retry_is_repaired_and_used(self, monkeypatch):
+        """A retry that lacks bookkeeping (no purpose, no beat reference) is
+        completed by the repair pass and replaces the text-only first plan;
+        the generic narration fallback is never used."""
         from src.schemas.storyboard import MathematicalObject
+        from src.utils.visual_plan_repair import is_stub_intent
         text_only = self._intent([self._text_obj()])
-        invalid_retry = self._intent([MathematicalObject(
+        incomplete_retry = self._intent([MathematicalObject(
             object_id="no_purpose", object_type="geometric_shape",
             content="circle", primitive="Circle", args={"radius": 1.0},
         )])
         agent, calls = self._agent_with_scripted_intents(
-            monkeypatch, [text_only, invalid_retry],
+            monkeypatch, [text_only, incomplete_retry],
         )
         storyboard = agent.execute(self._minimal_execute_input())
+        scene = storyboard.scenes[0]
         assert len(calls) == 2
-        assert storyboard.scenes[0].visual_intent is text_only
+        assert scene.visual_intent is incomplete_retry
+        assert scene.visual_plan_source == "repaired"
+        assert not is_stub_intent(scene.visual_intent)
+        repaired = scene.visual_intent.mathematical_objects[0]
+        assert repaired.purpose.strip() and repaired.supports_beat_ids == ["beat_001"]
 
-    def test_overloaded_scene_split_respects_scene_ceiling(self, monkeypatch):
-        """Budget-error splitting must not push the scene count past
-        _effective_max_scenes; at the ceiling it falls back instead."""
+    def test_overloaded_scene_is_repaired_without_split_or_retry(self, monkeypatch):
+        """A plan over the concurrent-object budget is cut down by the repair
+        pass on the first attempt: no retry, no split past the scene ceiling,
+        and no generic fallback."""
         from src.schemas.storyboard import MathematicalObject, TimeInterval
         from src.schemas.video_script import Beat, VideoScript
 
@@ -1002,8 +1011,14 @@ class TestNonTextVisualInvariant:
             lambda *a, **kw: (calls.append(1), overloaded)[1],
         )
         storyboard = agent.execute(self._minimal_execute_input())
+        scene = storyboard.scenes[0]
         assert len(storyboard.scenes) == 1
-        assert len(calls) == ScriptArchitectAgent.MAX_PURPOSE_RETRIES + 1
+        assert len(calls) == 1
+        assert scene.visual_plan_source == "repaired"
+        assert agent._max_concurrent_objects(scene.visual_intent.mathematical_objects) <= (
+            ScriptArchitectAgent.MAX_CONCURRENT_OBJECTS
+        )
+        assert all(o.primitive == "Circle" for o in scene.visual_intent.mathematical_objects)
 
     def test_no_retry_on_keyless_fallback_path(self, monkeypatch):
         """The deterministic fallback would reproduce itself — never retried."""
@@ -1058,3 +1073,22 @@ class TestNonTextVisualInvariant:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+class TestFallbackVisualIntentEquation:
+    """The narration-derived fallback plan stamped sin(θ) = opposite/hypotenuse
+    on any scene whose narration contained "sin", "pi" or "equation" as a
+    substring, so "singular" put a trig identity into 8 of 14 SVD scenes."""
+
+    def _has_trig(self, narration):
+        agent = ScriptArchitectAgent.__new__(ScriptArchitectAgent)
+        agent.strict, agent.client = False, None
+        intent = agent._generate_fallback_visual_intent(narration)
+        return any("opposite" in (o.content or "") for o in intent.mathematical_objects)
+
+    def test_unrelated_words_do_not_add_the_trig_identity(self):
+        assert not self._has_trig("Each singular value measures how far the sheet stretches.")
+        assert not self._has_trig("Spin the vector, pick the principal direction; this equation says so.")
+
+    def test_trig_narration_still_gets_it(self):
+        assert self._has_trig("The sine of an angle is the opposite side over the hypotenuse.")
+

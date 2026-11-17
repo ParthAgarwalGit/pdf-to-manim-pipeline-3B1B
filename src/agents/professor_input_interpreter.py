@@ -146,6 +146,20 @@ def _reconcile_terms(directives: ProfessorDirectives, brief: str) -> None:
             logger.info("Brief terminology was reversed; using '%s' rather than '%s'.", avoid, preferred)
             avoid, preferred = preferred, avoid
         terminology[avoid] = preferred
+
+    # Vocabulary is not notation. A "notation" rule between two phrases
+    # ("singular values", not "sigma values") reached codegen and replaced
+    # σ with words inside formulas. Keep it as a terminology preference only.
+    notation = []
+    for rule in directives.notation:
+        use, instead = (rule.use or "").strip(), (rule.instead_of or "").strip()
+        if " " in use and (not instead or " " in instead):
+            if instead and instead.lower() not in {k.lower() for k in terminology}:
+                terminology[instead] = use
+            logger.info("Brief notation '%s' / '%s' is vocabulary; kept as terminology only.", use, instead)
+            continue
+        notation.append(rule)
+    directives.notation = notation
     directives.global_.terminology = terminology
 
     terms = {t.lower() for pair in terminology.items() for t in pair}
@@ -173,6 +187,26 @@ _AUDIENCE_CUE = re.compile(
 )
 
 
+_PRESENTER_WORDS = re.compile(
+    r"\b(presenter|camera|avatar|on[- ]screen|face|bridges?|split|appear\w*|talking head|lecturer)\b", re.I
+)
+
+
+def _rehome_presenter_notes(directives: ProfessorDirectives) -> None:
+    """Content rules misfiled as presenter notes go back to the script notes.
+
+    Only the script writer reads ``notes``; a sentence like "Skip the proofs"
+    filed under presenter.notes would silently never reach the script.
+    """
+    presenter = getattr(directives, "presenter", None)
+    text = (getattr(presenter, "notes", "") or "").strip()
+    if not text or _PRESENTER_WORDS.search(text):
+        return
+    if text not in directives.notes:
+        directives.notes.append(text)
+    presenter.notes = ""
+
+
 class ProfessorInputInterpreter:
     def __init__(self, llm: Optional[LLM] = None, use_default_llm: bool = True):
         self.llm = llm if llm is not None else (default_llm() if use_default_llm else None)
@@ -192,6 +226,7 @@ class ProfessorInputInterpreter:
                 logger.warning("Brief interpretation by LLM failed (%s); using rules.", exc)
         if directives is None:
             directives = self._brief_rules(brief)
+        _rehome_presenter_notes(directives)
         _reconcile_terms(directives, brief)
         directives.source_brief = brief
         if directives.is_empty():
@@ -215,7 +250,9 @@ class ProfessorInputInterpreter:
             "Rules: terminology maps the word the professor does NOT want to the word they DO "
             'want ("Say eigenvector rather than characteristic vector" -> '
             '{"characteristic vector": "eigenvector"}). avoid_analogies lists rejected analogies '
-            'or metaphors (e.g. "clock", "pizza"), never vocabulary or notation.\n'
+            'or metaphors (e.g. "clock", "pizza"), never vocabulary or notation. presenter.notes is '
+            "only about how the on-camera presenter looks or appears; content rules (skip the "
+            "proofs, no theorem numbers) go in notes.\n"
             "Use null for anything the brief does not say. Never invent directives. Copy any "
             "sentence you cannot map into notes word for word.\n\nBRIEF:\n" + brief
         )

@@ -651,7 +651,10 @@ class DeliveryGate:
                 composed_path=composed.get(scene.scene_id),
                 narration=getattr(scene, "narration", "") or "",
                 beats=sorted(beats, key=lambda b: b[1]),
-                kind="presenter" if getattr(scene, "is_presenter", False) else "manim",
+                # A split frame is a presenter composite too: no beat alignment,
+                # and a regenerate repair would drop the presenter.
+                kind="presenter" if getattr(scene, "is_presenter", False)
+                or getattr(scene, "frame_type", None) == "split" else "manim",
             ))
         return media
 
@@ -694,7 +697,9 @@ class DeliveryGate:
         return False
 
     def _retime(self, media, checks, output_dir, video_output, composition_output) -> bool:
-        if self.renderer is None or self.composer is None:
+        # A presenter or split composite is not one Manim render: re-rendering
+        # its scene file would replace the composite with the bare animation.
+        if self.renderer is None or self.composer is None or media.kind == "presenter":
             return False
         av = next((c for c in checks if c.check == "av_duration"), None)
         gap = (av.measured or {}).get("gap_s") if av else None
@@ -725,7 +730,7 @@ class DeliveryGate:
 
     def _regenerate(self, media, checks, output_dir, video_output, composition_output) -> bool:
         """Re-codegen the scene with the visual findings as feedback, then recompose."""
-        if self.regenerate is None or self.regenerations >= self.max_regenerations:
+        if self.regenerate is None or self.regenerations >= self.max_regenerations or media.kind == "presenter":
             return False
         feedback: List[str] = []
         for check in checks:

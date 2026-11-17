@@ -64,7 +64,7 @@ class _BBox:
         self.hw: float = float(mob.width / 2) if mob.width > 0 else 0.1
         self.hh: float = float(mob.height / 2) if mob.height > 0 else 0.1
 
-    def overlaps(self, other: "_BBox", margin: float = 0.05) -> bool:
+    def overlaps(self, other: "_BBox", margin: float = 0.15) -> bool:
         """True if the two boxes overlap (with a small margin)."""
         return (
             abs(self.cx - other.cx) < (self.hw + other.hw + margin)

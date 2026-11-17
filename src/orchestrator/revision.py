@@ -61,6 +61,7 @@ def lesson_script_from_storyboard(
     storyboard: StoryboardJSON,
     title: str = "",
     analogies: Iterable[Analogy] = (),
+    plan=None,
 ) -> Optional[VideoScript]:
     """The lesson script is exactly the beats the storyboard's scenes carry.
 
@@ -76,6 +77,7 @@ def lesson_script_from_storyboard(
         title=title or "",
         beats=[beat.model_copy(deep=True) for beat in beats],
         analogies=[a.model_copy(deep=True) for a in analogies if a.analogy_id in used],
+        plan=plan,
     )
 
 
@@ -100,14 +102,16 @@ def load_base_run(run_dir: Path) -> BaseRun:
     # what was actually rendered: a professor may edit lesson_script.json in
     # place before revising, so that file can already hold the new version.
     title, analogies = "", []
+    plan = None
     script_path = run_dir / LESSON_SCRIPT_FILENAME
     if script_path.is_file():
         try:
             saved = load_lesson_script(script_path)
             title, analogies = saved.title, saved.analogies
+            plan = saved.plan
         except Exception as exc:
             logger.warning("Could not read %s (%s); using the storyboard's beats.", script_path, exc)
-    script = lesson_script_from_storyboard(storyboard, title=title, analogies=analogies)
+    script = lesson_script_from_storyboard(storyboard, title=title, analogies=analogies, plan=plan)
     if script is None:
         raise ValueError(
             f"{run_dir}'s storyboard carries no beats; it predates the unified "

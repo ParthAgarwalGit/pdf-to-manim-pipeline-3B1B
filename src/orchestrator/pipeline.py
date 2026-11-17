@@ -60,6 +60,7 @@ from src.agents.audio_video_composer import (
 from src.agents.video_quality_reviewer import VideoQualityReviewerAgent, VideoQualityReviewerInput
 from src.agents.persistence import PersistenceAgent, PersistenceInput
 from src.schemas.file_reference import FileReference
+from src.schemas.lesson_plan import LessonPlan
 from src.schemas.output_manifest import OutputFile, OutputManifest
 from src.schemas.scene_processing import FailedScene, SceneProcessingReport
 from src.schemas.storyboard import Configuration
@@ -101,6 +102,9 @@ class PipelineConfig:
     storyboard_quality_threshold: float = 6.0
     granularity: str = "balanced"
     target_minutes: Optional[float] = None  # requested finished length; None = ungoverned
+    # Plan the lesson (one question, acts in viewing order, a running example)
+    # before scripting. False = the older segment-by-segment script.
+    lesson_plan: bool = True
     enable_manim_dry_run_validation: bool = False
     enable_final_video_review: bool = True
     strict: bool = False
@@ -116,6 +120,11 @@ class PipelineConfig:
     # LLM call, so a pathological run must not multiply the bill unbounded.
     # 0 disables salvage entirely.
     max_salvage_scenes: int = 10
+    # Render-time layout audit: measure overlapping / off-frame text in every
+    # render and regenerate the worst scenes once with the findings (one
+    # codegen call each, capped per run).
+    enable_layout_audit: bool = True
+    max_layout_repairs: int = 4
     # Pre-delivery quality gate: measure every composed scene, apply bounded
     # deterministic repairs, write delivery_report.json (ready/needs review).
     enable_delivery_gate: bool = True
@@ -145,6 +154,11 @@ class PipelineConfig:
     did_request_timeout_seconds: float = 60.0
     # Spend cap: estimated narration seconds sent to D-ID per run.
     max_avatar_seconds: float = 600.0
+    # Hybrid presenter engine: "d-id" lip-syncs a portrait to the TTS
+    # narration; "gemini" (Gemini Omni) is a fictional lecturer described in
+    # words who speaks the lines in its own voice (<= 15 s per clip).
+    presenter_engine: str = "d-id"
+    presenter_persona: str = ""  # gemini: words describing the fictional lecturer
     # Isolation for executing generated Manim code (src/utils/render_sandbox.py).
     # "native": secrets scrubbed from the env, cwd in a per-scene scratch dir.
     # "docker": opt-in no-network, read-only, resource-limited container with
@@ -161,6 +175,7 @@ class PipelineConfig:
             granularity=self.granularity,
             target_minutes=self.target_minutes,
             presenter_bridges=self.presenter_bridges,
+            lesson_plan=self.lesson_plan,
         )
 
 
@@ -251,7 +266,9 @@ class Orchestrator:
             image=self.config.render_sandbox_image,
         )
         self.manim_code_validator_agent = ManimCodeValidatorAgent(sandbox=self.render_sandbox)
-        self.video_renderer_agent = VideoRendererAgent(sandbox=self.render_sandbox)
+        self.video_renderer_agent = VideoRendererAgent(
+            sandbox=self.render_sandbox, layout_audit=self.config.enable_layout_audit,
+        )
         self.tts_agent = TTSAgent(strict=strict, provider=self._make_tts_provider())
         self.audio_video_composer_agent = AudioVideoComposerAgent()
         self.video_quality_reviewer_agent = VideoQualityReviewerAgent()
@@ -259,6 +276,10 @@ class Orchestrator:
         # did-avatar backend only; built on first use so manim runs never
         # look up a D-ID key.
         self.did_avatar_agent = None
+        # hybrid backend only: the lip-synced D-ID presenter, built on first use.
+        self.hybrid_provider = None
+        self._split_sources: Dict[str, str] = {}
+        self._narration_before_presenter: Dict[str, tuple] = {}
         self._quality_reports: Dict[str, Any] = {}
 
         # Setup logging
@@ -286,6 +307,30 @@ class Orchestrator:
     def _make_avatar_provider(self):
         from src.agents.presenter_agent import HeyGenAvatarProvider, NoAvatarProvider
 
+        if self._hybrid_backend() and self._gemini_presenter():
+            # A fictional lecturer described in words (no real person's photo)
+            # who speaks the narration in its own voice.
+            from src.agents.gemini_presenter import GeminiOmniPresenter
+
+            if self.hybrid_provider is None:
+                self.hybrid_provider = GeminiOmniPresenter(
+                    persona=self.config.presenter_persona or None,
+                    cache_dir=self._presenter_cache_dir(),
+                )
+            return self.hybrid_provider, "gemini-omni"
+        if self._hybrid_backend():
+            # A stock, fictional or licensed D-ID portrait lip-synced to the
+            # pipeline's own narration: not the professor's likeness, so no
+            # consent record is involved (the clip still carries a disclosure).
+            from src.agents.did_avatar_renderer import DIDLipSyncProvider, display_url
+
+            if self.hybrid_provider is None:
+                self.hybrid_provider = DIDLipSyncProvider(
+                    self.config.avatar_image_url,
+                    poll_interval_seconds=self.config.did_poll_interval_seconds,
+                    max_poll_attempts=self.config.did_max_poll_attempts,
+                )
+            return self.hybrid_provider, display_url(self.config.avatar_image_url)
         if str(self.config.avatar_provider).lower() != "heygen":
             return NoAvatarProvider(), ""
         import os
@@ -327,13 +372,17 @@ class Orchestrator:
         from src.utils.cost_tracker import CostTracker
 
         presenter_scenes = [
-            s for s in getattr(storyboard, "scenes", []) or [] if getattr(s, "is_presenter", False)
+            s for s in getattr(storyboard, "scenes", []) or []
+            if getattr(s, "is_presenter", False) or getattr(s, "frame_type", None) == "split"
         ]
-        report: Dict[str, Any] = {"rendered": [], "proposals": [], "skipped": []}
+        report: Dict[str, Any] = {"rendered": [], "proposals": [], "skipped": [], "split": [], "reused": []}
         if video_output is None or not presenter_scenes:
             return video_output
         provider, _avatar_id = self._make_avatar_provider()
-        agent = PresenterAgent(provider, self.config.render_quality, self.config.presenter_layout)
+        agent = PresenterAgent(
+            provider, self.config.render_quality, self.config.presenter_layout,
+            background=self.HYBRID_BACKGROUND if self._hybrid_backend() else None,
+        )
         audio = {
             r.scene_id: r for r in tts_output or []
             if isinstance(r, TTSOutput) and r.audio_file_path
@@ -343,31 +392,71 @@ class Orchestrator:
         order = [s.scene_id for s in storyboard.scenes]
         media_dir = Path(self._run_output_dir) / "media" / "presenter"
         for scene in presenter_scenes:
+            if getattr(scene, "frame_type", None) == "split" and not scene.is_presenter:
+                used += self._render_split_scene(
+                    scene, agent, audio, results, used, media_dir, report, tts_output=tts_output,
+                )
+                continue
             if not scene.presenter_approved:
                 report["proposals"].append(scene.scene_id)
                 continue
-            if scene.scene_id in results and results[scene.scene_id].success:
-                continue  # reused from the parent run
+            # A speaking presenter's clip is re-assembled from its clip cache
+            # (no new generation for an unchanged line), so assembly fixes
+            # reach revisions; other presenters reuse the parent's clip.
+            if (scene.scene_id in results and results[scene.scene_id].success
+                    and not getattr(provider, "speaks", False)):
+                report["reused"].append(scene.scene_id)  # reused from the parent run
+                continue
             narration = audio.get(scene.scene_id)
             if narration is None:
                 report["skipped"].append({"scene_id": scene.scene_id, "reason": "no narration audio"})
                 continue
             seconds = float(narration.duration_seconds or 0.0)
-            if used + seconds > self.config.max_presenter_seconds:
-                report["skipped"].append({"scene_id": scene.scene_id, "reason": "max_presenter_seconds"})
-                continue
+            # A content scene shown as a presenter (hybrid) carries lesson
+            # narration, and so does an approved bridge in a hybrid video:
+            # when the avatar can't render it, it falls back to a narrated
+            # title card instead of dropping out of the video.
+            content = self._hybrid_backend() or any(b.role != "bridge" for b in scene.source_beats)
             index = order.index(scene.scene_id)
             previous = next(
                 (results[sid].video_path for sid in reversed(order[:index])
                  if sid in results and results[sid].success and results[sid].video_path),
                 None,
             )
-            try:
-                path = agent.render(scene.scene_id, scene.narration, narration.audio_file_path,
-                                    seconds, str(media_dir), previous_video=previous)
-            except Exception as exc:
-                logger.warning("Presenter clip for %s failed: %s", scene.scene_id, exc)
-                report["skipped"].append({"scene_id": scene.scene_id, "reason": str(exc)[:200]})
+            failure = None
+            if used + seconds > self.config.max_presenter_seconds:
+                failure = "max_presenter_seconds"
+            else:
+                try:
+                    raw_clip = None
+                    if getattr(provider, "speaks", False):
+                        # The presenter says the line itself; its speech
+                        # becomes this scene's narration.
+                        raw_clip, seconds = self._presenter_speech(
+                            provider, scene, seconds, media_dir, tts_output, audio,
+                        )
+                        narration = audio[scene.scene_id]
+                    path = agent.render(scene.scene_id, scene.narration, narration.audio_file_path,
+                                        seconds, str(media_dir), previous_video=previous,
+                                        raw_clip=raw_clip)
+                except Exception as exc:
+                    logger.warning("Presenter clip for %s failed: %s", scene.scene_id, exc)
+                    failure = str(exc)[:200]
+            if failure is not None:
+                if content:
+                    try:
+                        card = self._title_card_agent(agent).render(
+                            scene.scene_id, scene.narration, narration.audio_file_path,
+                            seconds, str(media_dir), previous_video=previous,
+                        )
+                        results[scene.scene_id] = SceneRenderResult(scene.scene_id, True, card, None, seconds)
+                        report["skipped"].append(
+                            {"scene_id": scene.scene_id, "reason": failure, "fallback": "title_card"}
+                        )
+                        continue
+                    except Exception as exc:  # pragma: no cover — ffmpeg itself failing
+                        failure = f"{failure}; title card failed: {str(exc)[:120]}"
+                report["skipped"].append({"scene_id": scene.scene_id, "reason": failure})
                 continue
             used += seconds
             results[scene.scene_id] = SceneRenderResult(scene.scene_id, True, path, None, seconds)
@@ -382,11 +471,17 @@ class Orchestrator:
 
         ordered = [results[sid] for sid in order if sid in results]
         synthetic = provider.name != "none" or self.tts_agent.provider is not None
-        if report["rendered"] and synthetic:
+        # The credits card names the synthetic presenter whenever one is on
+        # screen, including clips a revision reused from its parent run.
+        if (report["rendered"] or report["split"] or report["reused"]) and synthetic:
             profile = self._profile()
             name = getattr(profile, "name", "the professor")
             lines = []
-            if provider.name != "none":
+            if provider.name == "d-id":
+                lines.append("Presenter: AI-generated stock avatar (D-ID), lip-synced to a synthetic voice.")
+            elif provider.name == "gemini-omni":
+                lines.append("Presenter: AI-generated fictional lecturer (Gemini Omni) with a synthetic voice.")
+            elif provider.name != "none":
                 lines.append(f"Presenter: AI-generated avatar of {name}, used with consent.")
             if self.tts_agent.provider is not None:
                 lines.append(f"Narration: AI voice of {name}, used with consent.")
@@ -401,12 +496,209 @@ class Orchestrator:
         self._quality_reports["presenter"] = {**report, "seconds": round(used, 2)}
         return video_output
 
+    @staticmethod
+    def _title_card_agent(agent):
+        """The same layout and background with no avatar: narration over a card."""
+        from src.agents.presenter_agent import NoAvatarProvider, PresenterAgent
+
+        fallback = PresenterAgent(NoAvatarProvider(), layout=agent.layout, background=agent.background)
+        fallback.width, fallback.height, fallback.fps = agent.width, agent.height, agent.fps
+        return fallback
+
+    def _presenter_speech(self, provider, scene, target_seconds, media_dir, tts_output, audio):
+        """A speaking presenter (Gemini Omni) says the scene's narration.
+
+        Its own speech replaces the TTS track for this scene everywhere
+        downstream (composition, delivery checks, scene records), so voice
+        and lips match by construction. Returns (talking clip, seconds).
+        """
+        from src.agents.gemini_presenter import extract_audio
+
+        sid = scene.scene_id
+        Path(media_dir).mkdir(parents=True, exist_ok=True)
+        raw, seconds = provider.speak(
+            scene.narration, str(Path(media_dir) / f"{sid}_speech.mp4"), target_seconds=target_seconds,
+        )
+        track = extract_audio(raw, Path(self._run_output_dir) / "audio" / sid / f"{sid}_presenter.m4a")
+        spoken = TTSOutput(audio_file_path=str(track), duration_seconds=seconds, scene_id=sid, cost_usd=0.0)
+        for i, entry in enumerate(tts_output or []):
+            if getattr(entry, "scene_id", None) == sid:
+                # Kept so a split the verifier turns back into full-screen
+                # animation gets its narrator back (no voice without a face).
+                self._narration_before_presenter[sid] = (tts_output, entry)
+                tts_output[i] = spoken
+        audio[sid] = spoken
+        return raw, seconds
+
+    def _render_split_scene(self, scene, agent, audio, results, used, media_dir, report, tts_output=None) -> float:
+        """Composite a split scene (presenter left, its Manim render right).
+
+        Returns the presenter seconds spent. On any failure or over budget the
+        scene keeps its plain Manim render and becomes a manim frame.
+        """
+        from src.agents.video_renderer import SceneRenderResult
+
+        sid = scene.scene_id
+        rendered = results.get(sid)
+        narration = audio.get(sid)
+        reason = None
+        if rendered is None or not rendered.success or not rendered.video_path:
+            reason = "no Manim render to split"
+        elif narration is None:
+            reason = "no narration audio"
+        elif used + float(narration.duration_seconds or 0.0) > self.config.max_presenter_seconds:
+            reason = "max_presenter_seconds"
+        if reason is None:
+            seconds = float(narration.duration_seconds or 0.0)
+            try:
+                raw_clip = None
+                provider = agent.provider
+                if getattr(provider, "speaks", False):
+                    raw_clip, seconds = self._presenter_speech(
+                        provider, scene, seconds, media_dir, tts_output, audio,
+                    )
+                    narration = audio[sid]
+                path = agent.render_split(
+                    sid, scene.narration, narration.audio_file_path, seconds, str(media_dir),
+                    visual_video=rendered.video_path, raw_clip=raw_clip,
+                )
+            except Exception as exc:
+                reason = f"split failed: {str(exc)[:160]}"
+            else:
+                self._split_sources[sid] = rendered.video_path
+                results[sid] = SceneRenderResult(sid, True, path, None, seconds)
+                report["split"].append(sid)
+                return seconds
+        logger.warning("Split scene %s shown as full-screen Manim: %s", sid, reason)
+        report["skipped"].append({"scene_id": sid, "reason": reason, "fallback": "manim"})
+        scene.frame_type = "manim"
+        scene.frame_reason = (scene.frame_reason + f" Fell back to manim: {reason}.").strip()
+        return 0.0
+
+    # ── hybrid frame decisions ──────────────────────────────────────────
+
+    def _direct_frames(self, storyboard) -> None:
+        """Hybrid: decide manim / presenter / split for every scene."""
+        from src.agents.frame_director import FrameDirectorAgent, apply_frame_plan
+
+        plan = FrameDirectorAgent(
+            max_presenter_seconds=self.config.max_presenter_seconds,
+            # Gemini Omni clips are at most 15 s; a split may join two clips
+            # (one cut in the presenter half), never more.
+            max_split_seconds=28.0 if self._gemini_presenter() else None,
+        ).plan(storyboard)
+        apply_frame_plan(storyboard, plan)
+        self._quality_reports["frame_plan"] = plan.to_dict()
+        counts = plan.to_dict()["counts"]
+        logger.info(
+            "Frame plan: %d manim, %d presenter, %d split (presenter time ~%.0fs of ~%.0fs)",
+            counts["manim"], counts["presenter"], counts["split"], plan.explainer_seconds, plan.total_seconds,
+        )
+
+    def _split_codegen_feedback(self, storyboard) -> Optional[Dict[str, List[str]]]:
+        """Split scenes are shown at half size: tell codegen to keep them legible."""
+        if not self._hybrid_backend():
+            return None
+        from src.agents.frame_director import SPLIT_CODEGEN_HINT
+
+        feedback = {
+            s.scene_id: [SPLIT_CODEGEN_HINT]
+            for s in getattr(storyboard, "scenes", []) or []
+            if getattr(s, "frame_type", None) == "split"
+        }
+        return feedback or None
+
+    def _verify_frames(self, storyboard, video_output) -> None:
+        """Hybrid: a vision agent checks each scene's frame type; a split
+        scene whose full-screen animation is easier to follow is switched."""
+        if not self._hybrid_backend() or video_output is None:
+            return
+        from src.agents.frame_verifier import FrameVerifierAgent, verdicts_report
+
+        results = {r.scene_id: r for r in getattr(video_output, "scene_results", []) or []}
+        scenes = {s.scene_id: s for s in getattr(storyboard, "scenes", []) or []}
+        candidates = [
+            {
+                "scene_id": sid,
+                "frame": scene.frame_type or "manim",
+                "narration": scene.narration,
+                "video": results[sid].video_path,
+                "manim_video": self._split_sources.get(sid),
+            }
+            for sid, scene in scenes.items()
+            if sid in results and results[sid].success and results[sid].video_path
+        ]
+        verdicts = FrameVerifierAgent().review(candidates)
+        for verdict in verdicts:
+            if verdict.action == "switch_to_manim" and verdict.scene_id in self._split_sources:
+                results[verdict.scene_id].video_path = self._split_sources[verdict.scene_id]
+                self._restore_narration(verdict.scene_id)
+                scene = scenes[verdict.scene_id]
+                scene.frame_type = "manim"
+                scene.frame_reason = (
+                    scene.frame_reason + f" Verifier switched to full-screen animation: {verdict.reason}"
+                ).strip()
+        report = verdicts_report(verdicts)
+        if not verdicts:
+            report["note"] = "not run (no vision model configured)"
+        self._quality_reports["frame_review"] = report
+        if verdicts:
+            logger.info(
+                "Frame verifier: %d agreed, %d switched to manim, %d recommendation(s)",
+                report["agreed"], len(report["switched"]), len(report["recommended"]),
+            )
+
+    def _restore_narration(self, scene_id: str) -> None:
+        """Put the narrator's track back on a scene the presenter no longer appears in.
+
+        The Manim render was timed to that track, so the scene stays in sync.
+        """
+        saved = self._narration_before_presenter.pop(scene_id, None)
+        if saved is None:
+            return
+        tts_output, original = saved
+        for i, entry in enumerate(tts_output):
+            if getattr(entry, "scene_id", None) == scene_id:
+                tts_output[i] = original
+
+    def _hybrid_fades(self, storyboard, video_output) -> Dict[str, tuple]:
+        """Dip-to-background at every change of frame type, in video order."""
+        if not self._hybrid_backend() or video_output is None:
+            return {}
+        frames = {s.scene_id: (s.frame_type or "manim") for s in getattr(storyboard, "scenes", []) or []}
+        sequence = [
+            (r.scene_id, frames.get(r.scene_id, "presenter"))  # the credits card reads as presenter
+            for r in getattr(video_output, "scene_results", []) or [] if r.success
+        ]
+        t = self.TRANSITION_SECONDS
+        fades = {}
+        for i, (sid, frame) in enumerate(sequence):
+            fade_in = t if i > 0 and sequence[i - 1][1] != frame else 0.0
+            fade_out = t if i + 1 < len(sequence) and sequence[i + 1][1] != frame else 0.0
+            if fade_in or fade_out:
+                fades[sid] = (fade_in, fade_out)
+        return fades
+
     # ── render backend (manim | did-avatar) ─────────────────────────────
 
-    RENDER_BACKENDS = ("manim", "did-avatar")
+    RENDER_BACKENDS = ("manim", "did-avatar", "hybrid")
+    HYBRID_BACKGROUND = (28, 28, 28)  # Manim's #1C1C1C, so frame changes blend
+    TRANSITION_SECONDS = 0.35
 
     def _avatar_backend(self) -> bool:
         return str(self.config.render_backend or "manim").lower() == "did-avatar"
+
+    def _hybrid_backend(self) -> bool:
+        return str(self.config.render_backend or "manim").lower() == "hybrid"
+
+    def _presenter_cache_dir(self) -> Path:
+        """One clip cache per run, shared by the run and all its revisions."""
+        run = Path(self._run_output_dir) if self._run_output_dir else Path(self.config.base_output_dir)
+        root = run.parent if run.name.startswith("rev_") else run
+        return root / ".presenter_cache" / "gemini-omni"
+
+    def _gemini_presenter(self) -> bool:
+        return self._hybrid_backend() and str(self.config.presenter_engine or "d-id").lower() == "gemini"
 
     def _did_avatar_settings(self) -> Dict[str, Any]:
         """What an avatar clip depends on besides its text (fingerprints)."""
@@ -424,24 +716,50 @@ class Orchestrator:
                 "RenderBackend", "INVALID_CONFIGURATION",
                 f"Unknown render backend '{backend}'; use one of {', '.join(self.RENDER_BACKENDS)}.",
             )
-        if backend != "did-avatar":
+        if backend == "manim":
             return
         from src.agents.did_avatar_renderer import resolve_did_api_key, validate_avatar_image_url
 
-        try:
-            self.config.avatar_image_url = validate_avatar_image_url(self.config.avatar_image_url)
-        except ValueError as exc:
-            raise PipelineAbortError("DIDAvatarRenderer", "INVALID_AVATAR_IMAGE_URL", str(exc))
-        if self.config.tts_first:
+        gemini = self._gemini_presenter()
+        if not gemini:
+            try:
+                self.config.avatar_image_url = validate_avatar_image_url(self.config.avatar_image_url)
+            except ValueError as exc:
+                raise PipelineAbortError("DIDAvatarRenderer", "INVALID_AVATAR_IMAGE_URL", str(exc))
+        if backend == "hybrid":
+            # TTS narrates every scene (Manim is timed to it); the presenter
+            # either lip-syncs to that audio (D-ID) or speaks its own lines
+            # (Gemini Omni), which then replace the TTS track for its scenes.
+            if not self.config.enable_tts:
+                raise PipelineAbortError(
+                    "RenderBackend", "INVALID_CONFIGURATION",
+                    "The hybrid backend narrates every scene with TTS; it cannot run with TTS disabled.",
+                )
+            self.config.tts_first = True
+            self.config.avatar_provider = "gemini-omni" if gemini else "d-id"
+            if self.config.presenter_bridges == "off":
+                self.config.presenter_bridges = "propose"
+        elif self.config.tts_first:
             logger.info("--tts-first has no effect with the did-avatar backend (D-ID times its own speech).")
         if self.config.dry_run or not self.config.enable_render:
             return
+        if gemini:
+            import os
+
+            if self.hybrid_provider is None and not os.getenv("GEMINI_API_KEY"):
+                message = "GEMINI_API_KEY is not set; the Gemini presenter needs it."
+                if self.config.strict:
+                    raise PipelineAbortError("GeminiPresenter", "MISSING_API_KEY", message)
+                logger.warning(message + " Presenter scenes fall back to title cards.")
+            return
         if self.did_avatar_agent is not None:
             has_key = bool(getattr(self.did_avatar_agent, "api_key", None))
+        elif self.hybrid_provider is not None:
+            has_key = True
         else:
             has_key = bool(resolve_did_api_key())
         if not has_key:
-            message = "DID_API_KEY (or D_ID_API_KEY) is not set; the did-avatar backend needs it."
+            message = f"DID_API_KEY (or D_ID_API_KEY) is not set; the {backend} backend needs it."
             if self.config.strict:
                 raise PipelineAbortError("DIDAvatarRenderer", "MISSING_API_KEY", message)
             logger.warning(message + " Avatar scenes will fail and the run will have no video.")
@@ -772,6 +1090,8 @@ class Orchestrator:
         self._quality_reports = {}
         self._lesson_script = None
         self._length_repair = None
+        self._split_sources = {}
+        self._narration_before_presenter = {}
         self._scene_reuse = {}
         self._begin_directives(directives)
         self._begin_concept_plan(concept_plan)
@@ -842,6 +1162,10 @@ class Orchestrator:
             sanitized_storyboard = self._run_json_sanitizer(storyboard, self.structured_logger)
             self._check_length_directive(sanitized_storyboard)
             self._approve_bridges(sanitized_storyboard)
+            if self._hybrid_backend():
+                # Manim for visualization, the presenter for explanation:
+                # decided per scene before any codegen or D-ID spend.
+                self._direct_frames(sanitized_storyboard)
 
             # ── dry_run gate ─────────────────────────────────────
             if self.config.dry_run:
@@ -906,7 +1230,8 @@ class Orchestrator:
             scene_output = self._run_scene_controller(
                 sanitized_storyboard,
                 validated_ref,
-                self.structured_logger
+                self.structured_logger,
+                initial_feedback=self._split_codegen_feedback(sanitized_storyboard),
             )
 
             scene_output = self._run_raw_manim_verifier(
@@ -969,9 +1294,11 @@ class Orchestrator:
                 video_output = self._salvage_failed_renders(
                     video_output, sanitized_storyboard,
                 )
+                video_output = self._repair_layout(video_output, sanitized_storyboard)
 
             # Presenter bridges (approved ones) join the rendered scenes.
             video_output = self._run_presenter_stage(sanitized_storyboard, video_output, tts_output)
+            self._verify_frames(sanitized_storyboard, video_output)
 
             # Step 10: Audio-Video Composition (requires both render and TTS)
             composition_output = None
@@ -980,7 +1307,8 @@ class Orchestrator:
                     video_output,
                     tts_output,
                     manifest,
-                    self.structured_logger
+                    self.structured_logger,
+                    fades=self._hybrid_fades(sanitized_storyboard, video_output),
                 )
             else:
                 logger.info("Audio-video composition skipped (missing render or TTS)")
@@ -1255,8 +1583,16 @@ class Orchestrator:
                     ):
                         reuse_video[scene.scene_id] = record
                     continue
+                # A speaking presenter's own voice is never carried onto a scene
+                # that no longer shows the presenter: that scene is re-narrated.
+                presenter_voice_off_screen = (
+                    str(record.audio_path or "").endswith("_presenter.m4a")
+                    and not getattr(scene, "is_presenter", False)
+                    and getattr(scene, "frame_type", None) != "split"
+                )
                 if (
                     base.artifact(record.audio_path)
+                    and not presenter_voice_off_screen
                     and record.narration_fp == scene_narration_fingerprint(
                         scene, self.config.tts_voice, getattr(script, "pronunciations", None),
                     )
@@ -1377,17 +1713,20 @@ class Orchestrator:
                         storyboard, self._carry_over_renders(base, reuse_video), fresh_renders,
                     )
                     video_output = self._salvage_failed_renders(video_output, storyboard)
+                    video_output = self._repair_layout(video_output, storyboard)
 
                 if self.config.enable_tts and not self.config.tts_first and narrate:
                     subset = storyboard.model_copy(update={"scenes": narrate})
                     tts_output += self._run_tts_generation_logged(subset, manifest, self.structured_logger)
 
                 video_output = self._run_presenter_stage(storyboard, video_output, tts_output)
+                self._verify_frames(storyboard, video_output)
 
                 composition_output = None
                 if self.config.enable_render and self.config.enable_tts:
                     composition_output = self._run_audio_video_composition(
                         video_output, tts_output, manifest, self.structured_logger,
+                        fades=self._hybrid_fades(storyboard, video_output),
                     )
                 gate_result = self._run_delivery_gate(
                     storyboard, video_output, tts_output, composition_output,
@@ -1764,6 +2103,19 @@ class Orchestrator:
                 self._quality_reports["length_budget"] = self._length_repair
             else:
                 self._quality_reports.pop("length_budget", None)
+            flow = getattr(self.script_architect_agent, "last_flow", None)
+            if isinstance(flow, dict):
+                self._quality_reports["narration_flow"] = flow
+            else:
+                self._quality_reports.pop("narration_flow", None)
+            lesson_plan = getattr(self.script_architect_agent, "last_lesson_plan", None)
+            if isinstance(lesson_plan, LessonPlan):
+                self._quality_reports["lesson_plan"] = {
+                    **lesson_plan.model_dump(mode="json"),
+                    "coverage_report": lesson_plan.coverage_report(),
+                }
+            else:
+                self._quality_reports.pop("lesson_plan", None)
 
             if not self.config.enable_quality_loops:
                 self._quality_reports["storyboard_review"] = {
@@ -1778,6 +2130,7 @@ class Orchestrator:
                 source_segments=source_segments,
                 pass_threshold=self.config.storyboard_quality_threshold,
                 ignore_visuals=self._avatar_backend(),
+                lesson_plan=getattr(self.script_architect_agent, "last_lesson_plan", None),
             )
             grader_input.constraints = StepConstraints(budget_tokens=4000, timeout_seconds=60)
             grade_result = self._execute_agent(
@@ -2162,6 +2515,66 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("Regeneration of %s errored: %s", scene.scene_id, exc)
             return None
+
+    def _repair_layout(self, video_output, storyboard):
+        """Regenerate scenes whose render had overlapping or off-frame text.
+
+        The render-time layout audit (src/utils/layout_audit.py) lists what
+        actually collided on screen; the worst scenes (up to
+        ``max_layout_repairs``) get one codegen pass with those findings as
+        feedback. The new render is kept only if it has fewer issues;
+        otherwise the old code file is restored so code and render agree.
+        """
+        from src.utils.layout_audit import audit_feedback
+
+        results = list(getattr(video_output, "scene_results", []) or [])
+        flagged = [r for r in results if r.success and getattr(r, "layout_issues", None)]
+        report: Dict[str, Any] = {
+            "audited": sum(1 for r in results if r.success),
+            "flagged": {r.scene_id: list(r.layout_issues) for r in flagged},
+            "repaired": {}, "kept": {}, "not_attempted": [],
+        }
+        if not results:
+            return video_output
+        scenes = {s.scene_id: s for s in getattr(storyboard, "scenes", []) or []}
+        budget = max(0, int(self.config.max_layout_repairs))
+        ordered = sorted(flagged, key=lambda r: -len(r.layout_issues))
+        changed = False
+        for result in ordered[budget:]:
+            report["not_attempted"].append(result.scene_id)
+        for result in ordered[:budget]:
+            scene = scenes.get(result.scene_id)
+            if scene is None or getattr(scene, "is_presenter", False):
+                continue
+            code_file = Path(self._run_output_dir) / f"scene_{result.scene_id}.py"
+            old_code = code_file.read_bytes() if code_file.is_file() else None
+            fresh = self._regenerate_scene(scene, storyboard, audit_feedback(result.layout_issues))
+            if fresh is not None and fresh.success and len(fresh.layout_issues) < len(result.layout_issues):
+                results[results.index(result)] = fresh
+                report["repaired"][result.scene_id] = list(fresh.layout_issues)
+                changed = True
+                logger.info(
+                    "Layout repair %s: %d -> %d issue(s)",
+                    result.scene_id, len(result.layout_issues), len(fresh.layout_issues),
+                )
+            else:
+                if old_code is not None:
+                    code_file.write_bytes(old_code)
+                report["kept"][result.scene_id] = "regeneration did not reduce the layout issues"
+        video_output.scene_results = results
+        if changed:
+            rendered = [r.video_path for r in results if r.success and r.video_path]
+            final_path = getattr(video_output, "final_video_path", None)
+            if final_path and len(rendered) > 1:
+                try:
+                    self.video_renderer_agent._concatenate_videos(rendered, final_path)
+                except Exception as exc:
+                    logger.warning("Silent concat after layout repair failed: %s", exc)
+        report["remaining"] = {
+            r.scene_id: list(r.layout_issues) for r in results if getattr(r, "layout_issues", None)
+        }
+        self._quality_reports["layout_audit"] = report
+        return video_output
 
     def _salvage_failed_renders(self, video_output, storyboard):
         """One codegen-regeneration attempt per failed render.
@@ -2622,6 +3035,7 @@ class Orchestrator:
         manifest: OutputManifest,
         structured_logger: StructuredJSONLogger,
         embedded_audio: bool = False,
+        fades: Optional[Dict[str, tuple]] = None,
     ):
         """Run Audio-Video Composer Agent with per-scene error recovery.
 
@@ -2671,6 +3085,10 @@ class Orchestrator:
                             audio_path=audio_map.get(scene_result.scene_id),
                             embedded_audio=embedded_audio,
                         ))
+
+        for pair in scene_media:
+            fade_in, fade_out = (fades or {}).get(pair.scene_id, (0.0, 0.0))
+            pair.fade_in, pair.fade_out = fade_in, fade_out
 
         if not scene_media:
             logger.warning("No scene video+audio pairs available for composition. Skipping.")
@@ -2941,6 +3359,35 @@ class Orchestrator:
             shared_context=getattr(scene_output, "shared_context", None),
         )
 
+    def _gate_regenerate(self, scene, storyboard, video_output, feedback: List[str]):
+        """A delivery-gate regeneration that never trades a fix for a new overlap.
+
+        The render-time layout audit runs on the fresh render too; when it
+        has more layout issues than the render it would replace, the old
+        code and render stay (returns None, so the gate keeps its media).
+        """
+        current = next(
+            (r for r in getattr(video_output, "scene_results", []) or [] if r.scene_id == scene.scene_id), None,
+        )
+        code_file = Path(self._run_output_dir) / f"scene_{scene.scene_id}.py"
+        old_code = code_file.read_bytes() if code_file.is_file() else None
+        fresh = self._regenerate_scene(scene, storyboard, feedback)
+        if fresh is None or not getattr(fresh, "success", False):
+            return fresh
+        before = len(getattr(current, "layout_issues", None) or [])
+        after = list(getattr(fresh, "layout_issues", None) or [])
+        if len(after) > before:
+            if old_code is not None:
+                code_file.write_bytes(old_code)
+            logger.warning(
+                "Delivery-gate regeneration of %s rejected: %d layout issue(s) vs %d (%s).",
+                scene.scene_id, len(after), before, after[0],
+            )
+            report = self._quality_reports.setdefault("layout_audit", {})
+            report.setdefault("gate_rejected", {})[scene.scene_id] = after
+            return None
+        return fresh
+
     def _run_delivery_gate(self, storyboard, video_output, tts_output, composition_output):
         """Measure every composed scene and apply bounded deterministic repairs.
 
@@ -2959,7 +3406,7 @@ class Orchestrator:
 
         def regenerate(scene_id: str, feedback: List[str]):
             scene = scenes_by_id.get(scene_id)
-            return self._regenerate_scene(scene, storyboard, feedback) if scene else None
+            return self._gate_regenerate(scene, storyboard, video_output, feedback) if scene else None
 
         gate = DeliveryGate(
             renderer=self.video_renderer_agent,
@@ -3081,7 +3528,8 @@ class Orchestrator:
         from src.schemas.output_manifest import RunConfig
 
         avatar = self._avatar_backend()
-        if avatar:
+        uses_did = avatar or self._hybrid_backend()
+        if uses_did:
             from src.agents.did_avatar_renderer import display_url
 
         # Record effective runtime configuration
@@ -3095,8 +3543,8 @@ class Orchestrator:
             tts_provider=self.config.tts_provider,
             avatar_provider=self.config.avatar_provider,
             presenter_layout=self.config.presenter_layout,
-            render_backend="did-avatar" if avatar else "manim",
-            avatar_image_url=display_url(self.config.avatar_image_url) if avatar else None,
+            render_backend=str(self.config.render_backend or "manim").lower(),
+            avatar_image_url=display_url(self.config.avatar_image_url) if uses_did else None,
             avatar_voice_id=self.config.did_voice_id if avatar else None,
         )
 
@@ -3273,6 +3721,11 @@ class Orchestrator:
             "directives": "directive_checks.json",
             "did_avatar": "did_avatar.json",
             "length_budget": "length_budget.json",
+            "narration_flow": "narration_flow.json",
+            "lesson_plan": "lesson_plan.json",
+            "frame_plan": "frame_plan.json",
+            "layout_audit": "layout_audit.json",
+            "frame_review": "frame_review.json",
         }
         for report_key, filename in report_filenames.items():
             if report_key not in self._quality_reports:
@@ -3296,6 +3749,7 @@ class Orchestrator:
                 storyboard,
                 title=getattr(source, "title", "") or "",
                 analogies=getattr(source, "analogies", None) or [],
+                plan=getattr(source, "plan", None),
             )
             if script is None:
                 return

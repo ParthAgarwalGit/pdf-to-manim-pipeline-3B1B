@@ -25,6 +25,8 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.schemas.lesson_plan import LessonPlan
+
 logger = logging.getLogger(__name__)
 
 BeatRole = Literal["core", "analogy", "example", "derivation", "intuition", "recap", "bridge"]
@@ -78,6 +80,10 @@ class Beat(BaseModel):
     source_segment_id: str = Field(
         default="",
         description="SourceSegment id this beat explains, if generated from segmented OCR."
+    )
+    act_id: str = Field(
+        default="",
+        description="Lesson-plan act this beat belongs to ('' for scripts written without a plan)."
     )
     role: BeatRole = Field(
         default="core",
@@ -134,6 +140,10 @@ class VideoScript(BaseModel):
         default_factory=dict,
         description="Pronunciation lexicon for TTS: word -> how to say it "
                     "(e.g. {'Euler': 'Oiler'}). The text on screen is unchanged."
+    )
+    plan: Optional[LessonPlan] = Field(
+        default=None,
+        description="The lesson plan this script was written from; None for unplanned scripts."
     )
 
     @model_validator(mode="after")

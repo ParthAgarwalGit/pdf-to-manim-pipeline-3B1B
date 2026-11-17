@@ -31,7 +31,7 @@ def test_task_model_assignments():
     assert UNIFIED_SCRIPT_MODEL == "claude-sonnet-5"     # Unified script
     assert SEGMENT_SCRIPT_MODEL == "gpt-5.4-mini"        # Per-segment beats
     assert VISUAL_INTENT_MODEL == "gpt-5.4-mini"         # Visual intent
-    assert GRADER_MODEL == "gpt-5.4-nano"                # Storyboard grading
+    assert GRADER_MODEL == "gpt-5.4-mini"                # Storyboard grading
     assert FIDELITY_MODEL == "gpt-5.4-nano"              # Fidelity review
 
 
