@@ -1672,6 +1672,11 @@ Return JSON in this EXACT shape:
             analogies=list(known_analogies.values()),
         )
 
+    @staticmethod
+    def _length_requested(config) -> bool:
+        """Whether the run was given a length (``--target-minutes`` or a brief)."""
+        return bool(getattr(config, "target_minutes", None))
+
     def _plan_word_budget(self, config, segments) -> int:
         """Narration words the lesson plan may spend: the requested length, else a default from the source size."""
         target = self._content_word_target(config)
@@ -1691,6 +1696,9 @@ Return JSON in this EXACT shape:
             )
             return None
         word_budget = self._plan_word_budget(config, segments)
+        # With no requested length the budget is only a default: a ceiling the
+        # plan may stay under, never a length the script must be padded up to.
+        length_requested = self._length_requested(config)
         prompt = lesson_plan_prompt(
             segments,
             config.audience,
@@ -1700,10 +1708,15 @@ Return JSON in this EXACT shape:
             presenter_opens=getattr(config, "presenter_bridges", "off") == "propose",
             review_feedback=review_feedback,
             max_source_chars=self.MAX_SOURCE_CHARS,
+            length_requested=length_requested,
         )
         try:
             data = self._complete_unified_script_json(prompt, max_tokens=self.PLAN_MAX_TOKENS)
-            plan = LessonPlan.from_llm(data, [s.segment_id for s in segments], word_budget)
+            plan = LessonPlan.from_llm(
+                data, [s.segment_id for s in segments], word_budget if length_requested else None,
+            )
+            if not length_requested:
+                plan.cap_words(word_budget)
         except Exception as exc:
             logger.warning("Lesson planning failed (%s); scripting segment by segment.", exc)
             return None
@@ -1731,6 +1744,7 @@ Return JSON in this EXACT shape:
             review_feedback=review_feedback,
             max_source_chars=self.MAX_SOURCE_CHARS,
             previous_draft=previous_draft,
+            length_requested=self._length_requested(config),
         )
         data = self._complete_unified_script_json(prompt, max_tokens=self.SCRIPT_MAX_TOKENS)
         if not isinstance(data, dict) or not isinstance(data.get("beats"), list):
@@ -1811,7 +1825,12 @@ Return JSON in this EXACT shape:
             analogies=[a for a in known_analogies.values() if a.analogy_id in used],
             plan=plan,
         )
-        feedback = "" if _retry else script_length_feedback(plan, script.beats, plan.total_words())
+        # A short script is sent back only when a length was asked for; with
+        # a default budget, shorter is the better outcome.
+        feedback = (
+            "" if _retry or not self._length_requested(config)
+            else script_length_feedback(plan, script.beats, plan.total_words())
+        )
         if not feedback:
             return script
 

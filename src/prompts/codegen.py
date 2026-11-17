@@ -70,6 +70,14 @@ RULES:
        if group.height > 6.5: group.scale_to_fit_height(6.5)
    then re-position it inside the safe area. Nothing may extend past the frame
    edge at any point of the animation, including mid-shift positions.
+8. Axis titles and read-off values: an axis title sits at the end of its axis
+   or just inside the plot, fully inside the frame, so leave room for it when
+   you place the axes. A value read off an axis (a number at the end of a
+   dashed guide line) is placed clear of that axis's tick numbers: offset it to
+   the far side of the axis or beside the guide line, never on top of a tick.
+9. Draw each planned mark once. A bar, dot or line that already exists is moved
+   or resized with .animate or a ValueTracker; creating a second copy on top of
+   it leaves a doubled, offset shape on screen.
 
 ═══════════════════════  MOTION AND STAGING  ═══════════════════════
 The picture explains; the voice comments on it. Build ONE evolving picture:
@@ -124,7 +132,11 @@ RULES:
 - Use MathTex(r"...") for ALL mathematics. Use Text("...") only for short labels.
 - Prefer Create / GrowArrow / FadeIn(mob, shift=...) for new objects and
   Transform / ReplacementTransform for change.
-- Most animations run 0.8 to 2.5 seconds.
+- Pace: no animation runs shorter than its minimum in the TIMING CONSTRAINTS
+  table above (a Transform or a move takes at least 1.0 s, a Create or Write at
+  least 0.6 s); most run 1 to 2.5 seconds. Two or three unhurried changes per
+  beat teach more than six quick ones: if a beat has no room for an animation
+  at its proper length, leave that animation out.
 
 ═══════════════════════  VISUAL PLAN (HONOR IT)  ═══════════════════════
 Each entry in `objects` is a PRE-PLANNED visual. Treat it as the intended

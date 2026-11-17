@@ -356,3 +356,37 @@ def test_planned_narration_never_contains_motif_ids(monkeypatch):
         "Every point lands on best fit line, and the sweep settles into second direction."
     )
     assert all("_" not in beat.narration for beat in script.beats)
+
+
+def test_default_budget_is_a_ceiling_not_a_target(monkeypatch):
+    """No requested length: the plan keeps its own (smaller) word counts and
+    the planner is told the budget is a ceiling."""
+    agent = _keyed_agent(monkeypatch)
+    prompts = _fake_unified(monkeypatch, agent, [PLAN])
+
+    plan = agent._generate_lesson_plan(_segments(), _config(), [], None)
+
+    assert plan.total_words() == 100  # the planner's 40 + 60, not scaled up to the default
+    assert "nobody asked for a particular length" in prompts[0]
+    assert "hard budget" not in prompts[0]
+
+
+def test_requested_length_is_a_target(monkeypatch):
+    """A requested length is binding: act words are rescaled to the budget."""
+    agent = _keyed_agent(monkeypatch)
+    prompts = _fake_unified(monkeypatch, agent, [PLAN])
+    config = _config(target_minutes=1.0)
+
+    plan = agent._generate_lesson_plan(_segments(), config, [], None)
+
+    assert plan.total_words() == agent._plan_word_budget(config, _segments())
+    assert "hard budget" in prompts[0]
+
+
+def test_cap_words_only_scales_down():
+    plan = LessonPlan.from_llm(PLAN, ["seg_001", "seg_002", "seg_003"])
+    assert plan.total_words() == 100
+    plan.cap_words(400)
+    assert plan.total_words() == 100
+    plan.cap_words(60)
+    assert plan.total_words() == 60

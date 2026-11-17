@@ -149,13 +149,35 @@ def lesson_plan_prompt(
     presenter_opens: bool = False,
     review_feedback: Optional[List[str]] = None,
     max_source_chars: int = 120_000,
+    length_requested: bool = True,
 ) -> str:
     """One call over the whole source: choose the question, the example, the acts.
 
     ``presenter_opens``: a presenter speaks the hook on camera before the
     first animation (hybrid runs with proposed bridges).
+    ``length_requested``: False when nobody asked for a length and
+    ``word_budget`` is only a default; it is then a ceiling, not a target.
     """
     least, most = act_count_range(word_budget)
+    if length_requested:
+        length_line = (
+            f"LENGTH: {word_budget} words of narration in total, about "
+            f"{minutes_for_words(word_budget)} minutes spoken. This is a hard budget: a plan that "
+            "needs more words is the wrong plan."
+        )
+        words_rule = f"The words of all acts add up to {word_budget}."
+        words_check = f"Do the acts' words add up to {word_budget}?"
+    else:
+        length_line = (
+            f"LENGTH: nobody asked for a particular length. Use at most {word_budget} words of "
+            f"narration (about {minutes_for_words(word_budget)} minutes), and fewer whenever the "
+            "argument is complete in fewer: a tight video is better than a long one."
+        )
+        words_rule = (
+            f"The words of all acts add up to at most {word_budget}; give each act only what its "
+            "one idea needs."
+        )
+        words_check = "Is every act as short as its one idea allows?"
     hook_words = max(25, min(60, round(word_budget * 0.12)))
     payoff_words = max(40, min(90, round(word_budget * 0.12)))
     min_act_words = 40 if word_budget >= 300 else 25
@@ -180,7 +202,7 @@ def lesson_plan_prompt(
     return f"""You are the story editor for a short animated explainer, the kind made by the best visual math and science channels. A document is attached. Your job is not to summarize it. Your job is to decide the ONE question this video answers and the shortest visual path from "never seen this" to "I see why". A writer will script from your plan and animators will draw what you describe, so every field must be concrete enough to act on.
 
 AUDIENCE: {_audience(audience)}
-LENGTH: {word_budget} words of narration in total, about {minutes_for_words(word_budget)} minutes spoken. This is a hard budget: a plan that needs more words is the wrong plan.
+{length_line}
 {_brief_block(professor_notes)}{_concept_plan_block(concept_plan_lines)}{_feedback_block(review_feedback, "PLAN'S SCRIPT")}
 SOURCE DOCUMENT, in segments. This is the document's order, which is rarely the right order for a video:
 <<<
@@ -207,7 +229,7 @@ HOW TO PLAN
    - Order by need, not by the document. Put each idea where the viewer first needs it. Cut definitions the argument never uses.
    - "visual" says what the viewer WATCHES CHANGE in this act, in terms of the motifs: what moves, stretches, rotates, splits, lines up or collapses. Never what text appears, and never a person talking: every act is animated.
    - The last act is the payoff (kind "payoff"): it returns to the hook's picture and answers the central question. Its key_idea is the takeaway. It is short, because it says the answer once and stops.
-   - "words" is the act's share of the budget. The hook gets at most {hook_words} words and the payoff at most {payoff_words}; no act gets fewer than {min_act_words}. The words of all acts add up to {word_budget}.
+   - "words" is the act's share of the budget. The hook gets at most {hook_words} words and the payoff at most {payoff_words}; no act gets fewer than {min_act_words}. {words_rule}
    - Accuracy beats neatness. Every key_idea must be true as stated, for the running example and in general. When a tidy connection between two pictures holds only in a special case, plan the weaker statement that is always true.
    - "source_segments" lists the segments the act takes its facts from.
 
@@ -225,7 +247,7 @@ CHECK BEFORE YOU ANSWER
 - Read the key_ideas in order. Do they form one argument in which each step needs the one before it?
 - Does the last act answer the central question?
 - Does every segment id above appear once in "coverage"?
-- Do the acts' words add up to {word_budget}?
+- {words_check}
 
 Respond with one JSON object in exactly this shape (no other text):
 {{
@@ -295,14 +317,38 @@ def script_from_plan_prompt(
     review_feedback: Optional[List[str]] = None,
     max_source_chars: int = 120_000,
     previous_draft: str = "",
+    length_requested: bool = True,
 ) -> str:
     """One call: the whole narration, beat by beat, following the plan's acts.
 
     ``previous_draft`` (``draft_listing`` of a rejected attempt) is shown to
     the writer on a retry so it extends that draft instead of starting over.
+    ``length_requested``: False when nobody asked for a length; the word
+    counts are then ceilings, and the writer is told not to fill them.
     """
     floor_words = round(word_budget * SCRIPT_FLOOR_SHARE)
     total_beats = sum(beats_for_words(act.words) for act in plan.acts)
+    if length_requested:
+        length_rules = (
+            "- Write the acts in order and tag every beat with its \"act_id\". Every act in the plan "
+            "gets beats. The plan says how many beats each act needs to reach its word count (about "
+            f"{total_beats} beats in all); each act lands within 15 percent of its words.\n"
+            f"- The whole script is between {floor_words} and {word_budget} words. The video has a "
+            "set length: do not run over, and do not come in short. Count each act's words before "
+            "you answer.\n"
+            "- An act that comes out short is missing a step the viewer needs. Add that step: one "
+            "more thing that happens to the running example, shown and said. Never pad a sentence "
+            "to make length."
+        )
+    else:
+        length_rules = (
+            "- Write the acts in order and tag every beat with its \"act_id\". Every act in the plan "
+            "gets beats. The plan's word counts are ceilings: an act may use fewer words, never "
+            "more.\n"
+            f"- The whole script is at most {word_budget} words. Nobody asked for a particular "
+            "length, so that is a ceiling and not a target: once an act has shown and said its key "
+            "idea, move on. Never add a sentence, an example or a restatement to make length."
+        )
     draft_block = (
         "\nYOUR PREVIOUS DRAFT (rejected; see the reviewer's points above). Keep what works in "
         "it and rewrite the whole script:\n" + previous_draft.strip() + "\n"
@@ -334,9 +380,7 @@ HOW TO WRITE IT
 
 Beats
 - A beat is one visual moment: one to three sentences, 20 to 45 words, never more than 55. When the picture has to change twice, that is two beats.
-- Write the acts in order and tag every beat with its "act_id". Every act in the plan gets beats. The plan says how many beats each act needs to reach its word count (about {total_beats} beats in all); each act lands within 15 percent of its words.
-- The whole script is between {floor_words} and {word_budget} words. The video has a set length: do not run over, and do not come in short. Count each act's words before you answer.
-- An act that comes out short is missing a step the viewer needs. Add that step: one more thing that happens to the running example, shown and said. Never pad a sentence to make length.
+{length_rules}
 
 Economy (this is what separates a script from a transcript of a lecture)
 - Say each thing once. Every sentence either tells the viewer something new or tells them where to look.

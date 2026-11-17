@@ -91,6 +91,11 @@ class LessonPlan(BaseModel):
     def total_words(self) -> int:
         return sum(a.words for a in self.acts)
 
+    def cap_words(self, budget: int) -> None:
+        """Scale the acts down so their words sum to at most ``budget``; never up."""
+        if budget and self.total_words() > budget:
+            _rescale_words(self.acts, int(budget))
+
     def treatment_of(self, segment_id: str) -> Optional[str]:
         return next((c.treatment for c in self.coverage if c.segment_id == segment_id), None)
 

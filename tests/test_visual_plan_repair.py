@@ -467,7 +467,7 @@ def test_short_planned_script_is_retried_once_and_extended(monkeypatch):
     second = _planned_response("long", ("act_01", 20), ("act_01", 20), ("act_02", 28), ("act_02", 28))
     prompts = _fake_unified(monkeypatch, agent, [first, second])
 
-    script = agent._generate_planned_video_script(_plan(), _segments(), _config(), [], None)
+    script = agent._generate_planned_video_script(_plan(), _segments(), _config(target_minutes=1.0), [], None)
 
     assert [b.narration for b in script.beats] == _narrations(second)
     assert len(prompts) == 2
@@ -494,7 +494,22 @@ def test_shorter_retry_keeps_the_first_draft(monkeypatch):
     second = _planned_response("second", ("act_01", 20), ("act_02", 20))
     prompts = _fake_unified(monkeypatch, agent, [first, second])
 
-    script = agent._generate_planned_video_script(_plan(), _segments(), _config(), [], None)
+    script = agent._generate_planned_video_script(_plan(), _segments(), _config(target_minutes=1.0), [], None)
 
     assert [b.narration for b in script.beats] == _narrations(first)
     assert len(prompts) == 2
+
+
+def test_short_planned_script_is_kept_when_no_length_was_requested(monkeypatch):
+    """With no requested length the word budget is a ceiling: a short script
+    is the better outcome and is never sent back to be made longer."""
+    agent = _keyed_agent(monkeypatch)
+    short = _planned_response("short", ("act_01", 25), ("act_02", 25))
+    prompts = _fake_unified(monkeypatch, agent, [short])
+
+    script = agent._generate_planned_video_script(_plan(), _segments(), _config(), [], None)
+
+    assert [b.narration for b in script.beats] == _narrations(short)
+    assert len(prompts) == 1
+    assert "a ceiling and not a target" in prompts[0]
+    assert "do not come in short" not in prompts[0]
