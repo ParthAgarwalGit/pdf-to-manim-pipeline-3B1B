@@ -11,6 +11,7 @@ import click
 
 from src.pipeline_v2 import PipelineV2, PipelineV2Config, RunStatus
 from src.pipeline_v2.models import MAX_V2_SCENES
+from src.pipeline_v2.prompt_text import DEFAULT_VOICE
 
 
 def _load_env_files() -> None:
@@ -49,7 +50,19 @@ def pdf2manim() -> None:
 @click.option("-o", "--output-dir", type=click.Path(path_type=Path), default=Path("output"))
 @click.option("-q", "--quality", type=click.Choice(["low", "medium", "high"]), default="medium")
 @click.option("--audience", default="undergraduate", show_default=True)
-@click.option("--voice", type=click.Choice(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]), default="alloy")
+@click.option(
+    "--voice",
+    default=DEFAULT_VOICE,
+    show_default=True,
+    help="Prebuilt voice name: a Gemini voice such as Sulafat, Kore or Puck for --tts-provider "
+    "gemini; alloy, nova, ... for openai.",
+)
+@click.option(
+    "--tts-provider",
+    type=click.Choice(["gemini", "openai"]),
+    default="gemini",
+    show_default=True,
+)
 @click.option("--policy", type=click.Choice(["standard", "strict"]), default="standard")
 @click.option("--strict", is_flag=True, help="Alias for --policy strict.")
 @click.option("--repair", type=click.Choice(["off", "eligible"]), default="eligible")
@@ -67,7 +80,7 @@ def pdf2manim() -> None:
     show_default=True,
     help="Audit logs visual findings without rejecting renderable scenes.",
 )
-@click.option("--max-cost", type=click.FloatRange(min=0.01), default=1.0, show_default=True)
+@click.option("--max-cost", type=click.FloatRange(min=0.01), default=3.0, show_default=True)
 @click.option(
     "--min-scenes",
     type=click.IntRange(1, MAX_V2_SCENES),
@@ -109,6 +122,7 @@ def convert(
     quality: str,
     audience: str,
     voice: str,
+    tts_provider: str,
     policy: str,
     strict: bool,
     repair: str,
@@ -151,11 +165,14 @@ def convert(
     if directives:
         for line in directives.readback():
             click.echo(f"  Brief: {line}")
+    if tts_provider == "openai" and voice == DEFAULT_VOICE:
+        voice = "alloy"  # the default is a Gemini voice; use an OpenAI one
     config = PipelineV2Config(
         output_dir=output_dir,
         quality=quality,
         audience=audience,
         voice=voice,
+        tts_provider=tts_provider,
         policy=effective_policy,
         repair=repair,
         max_repairs_per_scene=max_repairs_per_scene,

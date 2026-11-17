@@ -21,6 +21,9 @@ T = TypeVar("T", bound=BaseModel)
 STRUCTURED_OUTPUT_VERSION = "v2-structured-4"
 GOOGLE_STRUCTURED_THINKING_BUDGET = 1024
 
+# USD per 1M units, (input, output). The gemini-4-argon price doubles to
+# $4.00 / $20.00 on 2026-12-01; update it then and re-check that the per-call
+# reservations (worst-case output tokens at this rate) still fit typical budgets.
 PRICES: dict[tuple[str, str], tuple[float, float]] = {
     ("anthropic", "claude-sonnet-5"): (2.00, 10.00),
     ("openai", "gpt-5.4"): (2.50, 15.00),
@@ -28,8 +31,12 @@ PRICES: dict[tuple[str, str], tuple[float, float]] = {
     ("google", "gemini-3.7-flash"): (0.75, 3.75),
     ("openai", "tts-1"): (15.00, 0.00),
     ("openai", "tts-1-hd"): (30.00, 0.00),
+    ("google", "gemini-4-argon"): (2.00, 10.00),        # $4.00 / $20.00 from 2026-12-01
+    ("google", "gemini-3.8-flash"): (0.75, 3.75),
+    ("google", "gemini-3.8-flash-tts"): (0.50, 9.00),   # text in / audio tokens out (25 per s)
+    ("google", "gemini-omni-1.2-flash"): (1.50, 12.00), # text in / video tokens out (720p ~$0.07/s)
 }
-PRICING_SNAPSHOT_DATE = "2026-08-29"
+PRICING_SNAPSHOT_DATE = "2026-11-17"
 
 
 @dataclass

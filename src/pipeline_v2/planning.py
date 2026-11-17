@@ -42,6 +42,7 @@ from .models import (
     VisualContract,
     VisualContractBatch,
 )
+from .model_config import OCR_MODEL, TEXT_MODEL
 from .providers import MissingProviderKey, ProviderRouter, clean_json_text
 
 try:
@@ -50,11 +51,11 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.4.2"
-NARRATION_PROMPT_VERSION = "v2.5.0"
+PROMPT_VERSION = "v2.4.2-argon"
+NARRATION_PROMPT_VERSION = "v2.5.0-argon"
 NARRATION_BATCH_SIZE = 5
 PLANNING_PROVIDER = "google"
-PLANNING_MODEL = "gemini-3.7-flash"
+PLANNING_MODEL = TEXT_MODEL
 
 
 def extract_source(pdf_path: Path) -> SourceDocument:
@@ -211,7 +212,7 @@ class PlanningService:
                 try:
                     response = await self.router.vision(
                         stage="ocr", task_id=f"ocr-{batch_index:03d}", scene_id="source",
-                        model="gemini-3.7-flash",
+                        model=OCR_MODEL,
                         system="You are a precise OCR system for mathematical source documents.",
                         prompt=prompt, image_paths=image_paths, max_output_tokens=5000,
                     )
@@ -489,8 +490,8 @@ class PlanningService:
                 }, ensure_ascii=False)
             )
             result = await self.router.structured(
-                stage="visual_contract", task_id=task_id, provider="openai",
-                model="gpt-5.4-mini", system="You are a Manim visual artifact director.",
+                stage="visual_contract", task_id=task_id, provider="google",
+                model=TEXT_MODEL, system="You are a Manim visual artifact director.",
                 prompt=prompt, schema=VisualContractBatch,
                 fallback=lambda batch=batch: VisualContractBatch(
                     contracts=[self._fallback_contract(scene) for scene in batch]
@@ -531,8 +532,8 @@ class PlanningService:
             }, ensure_ascii=False)
         )
         return await self.router.structured(
-            stage="visual_contract", task_id=task_id, provider="openai",
-            model="gpt-5.4-mini", system="You are a Manim visual artifact director.",
+            stage="visual_contract", task_id=task_id, provider="google",
+            model=TEXT_MODEL, system="You are a Manim visual artifact director.",
             prompt=prompt, schema=VisualContractBatch,
             fallback=lambda: VisualContractBatch(
                 contracts=[self._fallback_contract(scene) for scene in batch]

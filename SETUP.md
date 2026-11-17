@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide will help you set up and run the PDF-to-Manim pipeline. The current implementation uses **mock agents** for development and testing. To enable full end-to-end functionality with real LLM integration, you'll need to configure API keys.
+This guide will help you set up and run the PDF-to-Manim pipeline. The V2 pipeline (`pdf2manim convert`) calls real Gemini models when `GEMINI_API_KEY` is set; without it, every stage uses a deterministic local fallback (silent timing audio, a rule-based lesson and scaffold code) so the full flow still runs offline. `--strict-keys` turns a missing key into an error instead.
 
 ## Current Status
 
@@ -81,45 +81,33 @@ print(f"Generated {manifest.successful_scenes} scenes")
 
 ## Production Setup (Real LLM Integration)
 
-### Required APIs
+### Required API key
 
-#### 1. **Vision+OCR Agent** (Choose one)
+V2 needs one key: `GEMINI_API_KEY`, created in Google AI Studio. Copy `keys.example.env` to
+`keys.env` (or `.env`) in the project root; the CLI loads it automatically:
 
-**Option A: OpenAI GPT-4 Vision**
 ```bash
-# Set environment variable
-export OPENAI_API_KEY="your-api-key-here"
+# keys.env
+GEMINI_API_KEY=...
 ```
 
-**Option B: Anthropic Claude 3 Opus**
-```bash
-export ANTHROPIC_API_KEY="your-api-key-here"
-```
+That key drives every paid stage. The model ids live in `src/pipeline_v2/model_config.py`:
 
-**Option C: Mathpix OCR** (for math notation)
-```bash
-export MATHPIX_APP_ID="your-app-id"
-export MATHPIX_APP_KEY="your-app-key"
-```
+| Stage | Constant | Model |
+|---|---|---|
+| Lesson, narration, narration review, brief interpretation | `TEXT_MODEL` | `gemini-4-argon` |
+| Low-confidence page OCR (vision) | `OCR_MODEL` | `gemini-4-argon` |
+| Manim generation, revision and screenshot-guided repair | `CODE_MODEL` | `gemini-4-argon` |
+| Narration audio (Gemini TTS, default voice `Sulafat`) | `TTS_MODEL` | `gemini-3.8-flash-tts` |
+| On-camera presenter | `PRESENTER_MODEL` | `gemini-omni-1.2-flash` |
 
-#### 2. **Script Architect Agent**
-
-Uses the same LLM API as Vision+OCR (OpenAI or Anthropic).
-
-#### 3. **Animation Generator Agent**
-
-Uses the same LLM API for code generation.
-
-### API Configuration
-
-Create a `.env` file in the project root:
+### Optional keys
 
 ```bash
-# .env file
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-MATHPIX_APP_ID=...
-MATHPIX_APP_KEY=...
+# keys.env
+OPENAI_API_KEY=...       # only for --tts-provider openai, or the legacy V1 pipeline
+DID_API_KEY=...          # legacy D-ID talking-professor backend
+ANTHROPIC_API_KEY=...    # legacy V1 only; V2 does not use Claude
 
 # Optional: AWS S3 for cloud storage triggers
 AWS_ACCESS_KEY_ID=...

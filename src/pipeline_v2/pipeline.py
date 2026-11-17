@@ -370,6 +370,7 @@ class PipelineV2:
             speech_rate=(
                 RELAXED_SPEECH_RATE if self.config.pacing == "relaxed" else SPEECH_RATE
             ),
+            provider=self.config.tts_provider, audience=self.config.audience,
         )
         result = RunResult(run_id=run_id, run_directory=str(run_dir), status=RunStatus.RUNNING)
         revision_state = read_revision_state(run_dir)

@@ -8,6 +8,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .prompt_text import DEFAULT_VOICE
+
 
 MAX_V2_SCENES = 24
 
@@ -305,11 +307,12 @@ class PipelineV2Config(BaseModel):
     output_dir: Path = Path("output")
     quality: Literal["low", "medium", "high"] = "medium"
     audience: str = "undergraduate"
-    voice: str = "alloy"
+    voice: str = DEFAULT_VOICE
+    tts_provider: Literal["gemini", "openai"] = "gemini"
     policy: Literal["standard", "strict"] = "standard"
     repair: Literal["off", "eligible"] = "eligible"
     verifier_mode: Literal["enforce", "audit"] = "enforce"
-    max_cost_usd: float = Field(default=1.0, gt=0.0)
+    max_cost_usd: float = Field(default=3.0, gt=0.0)
     min_scenes: Optional[int] = Field(default=None, ge=1, le=MAX_V2_SCENES)
     max_scenes: int = Field(default=12, ge=1, le=MAX_V2_SCENES)
     pacing: Literal["standard", "relaxed"] = "standard"

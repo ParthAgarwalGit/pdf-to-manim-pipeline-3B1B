@@ -9,11 +9,12 @@ from pathlib import Path
 
 from .instrumentation import deinstrument_scene_code, instrument_scene_code
 from .layout import region_bounds
+from .model_config import CODE_MODEL
 from .models import LessonScene, NarratedScene, SourceFact, VerificationFinding, VisualContract
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-creative-code-3-sync"
+CODE_PROMPT_VERSION = "v2-creative-code-3-sync-argon"
 
 
 class CodeGenerationService:
@@ -44,7 +45,7 @@ class CodeGenerationService:
         try:
             response = await self.router.text(
                 stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
-                provider="google", model="gemini-3.7-flash", system=system,
+                provider="google", model=CODE_MODEL, system=system,
                 prompt=prompt, max_output_tokens=9000,
             )
             raw_code = clean_code(response.text)
@@ -59,7 +60,7 @@ class CodeGenerationService:
                 stage="code_generation", call_id=f"code-local-{scene.scene_id}",
                 scene_id=scene.scene_id,
                 request={
-                    "provider": "google", "model": "gemini-3.7-flash",
+                    "provider": "google", "model": CODE_MODEL,
                     "system": system, "prompt": prompt,
                 },
                 response={
@@ -98,7 +99,7 @@ adds those automatically. Do not claim success; the pipeline will render and mea
         }, ensure_ascii=False)
         response = await self.router.vision(
             stage="vision_repair", task_id=f"repair-{scene.scene_id}", scene_id=scene.scene_id,
-            model="gemini-3.7-flash", system=system, prompt=prompt,
+            model=CODE_MODEL, system=system, prompt=prompt,
             image_paths=[Path(path) for path in frame_paths[:8]], max_output_tokens=9000,
         )
         repaired = clean_code(response.text)
@@ -147,7 +148,7 @@ layout-engine, artifact-registration, or audio-timing code; the runtime adds tho
         try:
             response = await self.router.text(
                 stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
-                provider="google", model="gemini-3.7-flash", system=system,
+                provider="google", model=CODE_MODEL, system=system,
                 prompt=json.dumps(payload, ensure_ascii=False), max_output_tokens=9000,
             )
         except MissingProviderKey:

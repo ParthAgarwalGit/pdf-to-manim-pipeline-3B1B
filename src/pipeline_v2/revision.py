@@ -28,9 +28,11 @@ from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
 from src.utils.fingerprints import apply_lexicon, lexicon_for
 
+from .model_config import CODE_MODEL, GEMINI_TTS_TOKENS_PER_SECOND, TTS_MODEL
 from .models import LessonPlan, NarratedScene, NarrationBeat, NarrationPlan, SceneResult
-from .providers import price
-from .tts import RELAXED_SPEECH_RATE, SPEECH_RATE
+from .prompt_text import tts_direction
+from .providers import estimate_tokens, price
+from .tts import RELAXED_SPEECH_RATE, SPEECH_RATE, tts_key_name
 
 
 REVISION_DIR = "revisions"
@@ -44,7 +46,7 @@ PACING_WORDS_PER_MINUTE = {"standard": 135, "relaxed": 115}
 
 _AUDIO_ORDER = ("reuse", "retime", "repace", "regenerate")
 _CODE_ORDER = ("reuse", "reinstrument", "regenerate")
-_CODE_MODEL = ("google", "gemini-3.7-flash")
+_CODE_MODEL = ("google", CODE_MODEL)
 # Used only when the run has no cost history for the stage.
 _DEFAULT_CODE_USD = price(*_CODE_MODEL, 2500, 9000)
 _DEFAULT_REPAIR_USD = price(*_CODE_MODEL, 4000, 9000)
@@ -512,7 +514,8 @@ def build_revision(
     )
     previous = {scene.scene_id: scene for scene in state.narration.scenes}
     tts_enabled = bool(state.config.get("enable_tts", True))
-    has_openai = bool(os.getenv("OPENAI_API_KEY")) and tts_enabled
+    tts_key = tts_key_name(str(state.config.get("tts_provider", "gemini")))
+    has_tts_key = bool(os.getenv(tts_key)) and tts_enabled
     recorded = tts_enabled and has_recorded_narration(state.run_dir)
     for scene_id, item in revised.actions.items():
         # Re-pacing needs the original un-paced recording; without it the
@@ -524,11 +527,11 @@ def build_revision(
                 f"{scene_id}: the original recording is missing, so re-pacing re-records it."
             )
     rerecorded = [item.scene_id for item in revised.actions.values() if item.audio == "regenerate"]
-    if recorded and rerecorded and not has_openai:
+    if recorded and rerecorded and not has_tts_key:
         # Falling back to silent timing audio here would mute scenes of a
         # video whose other scenes are narrated.
         raise RevisionError(
-            "This run has recorded narration; OPENAI_API_KEY is required to re-record "
+            f"This run has recorded narration; {tts_key} is required to re-record "
             + ", ".join(rerecorded) + "."
         )
     order = [scene.scene_id for scene in revised.narration.scenes]
@@ -544,7 +547,7 @@ def build_revision(
         changes=revised.changes,
         warnings=revised.warnings,
     )
-    plan.estimate = _estimate(state, revised, plan, has_openai)
+    plan.estimate = _estimate(state, revised, plan, has_tts_key)
     return plan, revised
 
 
@@ -552,12 +555,13 @@ def _estimate(
     state: RunState,
     revised: RevisedStoryboard,
     plan: RevisionPlan,
-    has_openai: bool,
+    has_tts_key: bool,
 ) -> RevisionEstimate:
     previous = {scene.scene_id: scene for scene in state.narration.scenes}
     current = {scene.scene_id: scene for scene in revised.narration.scenes}
     history = _stage_cost_history(state.run_dir / "run.db")
     has_google = bool(os.getenv("GEMINI_API_KEY"))
+    gemini_tts = str(state.config.get("tts_provider", "gemini")) == "gemini"
     tts_model = "tts-1-hd" if state.config.get("quality") == "high" else "tts-1"
     default_rate = PACING_SPEECH_RATE[str(state.config.get("pacing", "standard"))]
     estimate = RevisionEstimate(
@@ -565,9 +569,19 @@ def _estimate(
     )
     for item in plan.actions:
         before, after = previous[item.scene_id], current[item.scene_id]
-        if item.audio == "regenerate" and has_openai:
+        if item.audio == "regenerate" and has_tts_key:
             estimate.tts_calls += 1
-            estimate.tts_usd += price("openai", tts_model, len(tts_text(after, revised.lexicon)), 0)
+            spoken = tts_text(after, revised.lexicon)
+            if gemini_tts:
+                # The same reservation the Gemini TTS call makes.
+                seconds = len(spoken.split()) * 60 / after.target_words_per_minute + 5
+                estimate.tts_usd += price(
+                    "google", TTS_MODEL,
+                    estimate_tokens(f"{tts_direction(state.config.get('audience'))}\n\n{spoken}"),
+                    seconds * GEMINI_TTS_TOKENS_PER_SECOND,
+                )
+            else:
+                estimate.tts_usd += price("openai", tts_model, len(spoken), 0)
         if item.code == "regenerate" and has_google:
             estimate.code_calls += 1
             estimate.code_usd += history.get("code_generation", _DEFAULT_CODE_USD)
@@ -582,7 +596,7 @@ def _estimate(
         new_rate = revised.speech_rates.get(item.scene_id, default_rate)
         if before.audio_duration_seconds and abs(old_rate - new_rate) > 1e-6:
             estimate.length_delta_seconds += before.audio_duration_seconds * (old_rate / new_rate - 1.0)
-        if not has_openai:
+        if not has_tts_key:
             # Paid recordings carry no explicit pauses; only the local silent
             # timing track is lengthened by them.
             estimate.length_delta_seconds += sum(

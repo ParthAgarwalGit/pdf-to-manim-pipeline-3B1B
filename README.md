@@ -85,9 +85,14 @@ pip install -e ".[dev]"
 Copy `keys.example.env` to `keys.env` or `.env`:
 
 ```text
-OPENAI_API_KEY=...     # TTS
-GEMINI_API_KEY=...     # lesson, narration, OCR, Manim code, and vision repair
+GEMINI_API_KEY=...     # OCR, lesson, narration, Manim code, vision repair, and narration TTS
+# Optional: OPENAI_API_KEY (only for --tts-provider openai or legacy V1), DID_API_KEY, ANTHROPIC_API_KEY
 ```
+
+V2 needs only `GEMINI_API_KEY`. Text stages run on Gemini 4 Argon; narration uses Gemini TTS
+with the prebuilt voice `Sulafat` by default (`--voice` picks another Gemini voice such as Kore or
+Puck; `--tts-provider openai` switches to OpenAI `tts-1` with voice `alloy`). Model ids live in
+`src/pipeline_v2/model_config.py`.
 
 Missing keys use deterministic local fallbacks unless `--strict-keys` is supplied. Tests always strip credentials and never make paid calls.
 V2 does not use Claude; `ANTHROPIC_API_KEY` is only relevant to legacy V1 paths.
@@ -96,10 +101,10 @@ The optional D-ID talking-professor backend reads `DID_API_KEY` (`D_ID_API_KEY` 
 
 ## Usage
 
-Normal high-quality conversion with the default one-dollar API ceiling:
+Normal high-quality conversion with the default three-dollar API ceiling:
 
 ```powershell
-pdf2manim convert document.pdf --quality high --max-cost 1.00 --policy standard
+pdf2manim convert document.pdf --quality high --max-cost 3.00 --policy standard
 ```
 
 Useful controls:
@@ -138,14 +143,14 @@ The default 12-scene ceiling keeps short lessons concise. `--max-scenes` is only
 V2 replans once and then fails clearly instead of silently accepting a short lesson. Setting either
 an explicit floor or a ceiling above 12 activates full-coverage planning: every substantive page
 and distinct definition, derivation, algorithm, example family, and conclusion must be represented.
-`--pacing relaxed` targets 115 spoken words per minute, slows the generated audio further, and asks
+`--pacing relaxed` targets 115 spoken words per minute, slows OpenAI audio further (Gemini audio is not stretched), and asks
 for less visual work per beat so animation calls are not squeezed into short windows. Longer plans
 also receive larger lesson and narration output budgets. The maximum supported scene value
 is 24; splitting by topic is still preferable when one source contains several independent courses.
 
 The default worker limits are four global API calls, four TTS jobs, three code jobs, two previews, one vision repair, one final Manim render, and one FFmpeg composition. The creative scaffold is local, so scene code generation starts as soon as its measured audio is ready.
 
-V2 plans short lessons as roughly four to six substantial scenes. Narration beats carry a speaking role, pause cue, transition note, and one visual action. TTS receives punctuated beat paragraphs, is slowed slightly without changing pitch, and receives a two-second trailing buffer before the next scene. The measured paced audio remains authoritative for animation timing, giving the final animation room to finish after narration stops.
+V2 plans short lessons as roughly four to six substantial scenes. Narration beats carry a speaking role, pause cue, transition note, and one visual action. TTS receives punctuated beat paragraphs and a two-second trailing buffer before the next scene. Gemini TTS is directed to speak at teaching pace and is not time-stretched; OpenAI TTS (`--tts-provider openai`) is slowed slightly without changing pitch. The measured paced audio remains authoritative for animation timing, giving the final animation room to finish after narration stops.
 
 Code generation receives a compact summary of the previous three scenes: their visual objectives, facts already shown, and constructions that must not be replayed. A local frame-sequence check also logs `REDUNDANT_VISUAL_REPLAY` when adjacent scenes look nearly identical; this is advisory and makes no paid call.
 
@@ -185,7 +190,7 @@ Credentials, authorization headers, environment secrets, generated media, databa
 
 ## Cost and Failure Policy
 
-The default hard budget is `$1.00`. Every paid call atomically reserves its worst-case configured token cost before execution. Actual usage replaces the reservation afterward. An ambiguous provider timeout remains conservatively charged and is not retried blindly.
+The default hard budget is `$3.00` (Gemini 4 Argon costs more per token than the earlier Flash model). Every paid call atomically reserves its worst-case configured token cost before execution. Actual usage replaces the reservation afterward. An ambiguous provider timeout remains conservatively charged and is not retried blindly.
 
 Schema failures receive at most one semantic retry. Confirmed rate-limit or connection failures receive at most two bounded retries; ambiguous timeouts are never retried automatically. Vision repair allows up to three sequential attempts per scene and has no separate run-wide scene cap; the atomic dollar budget remains the global limit. A scene stops early when it passes, returns unchanged code or visuals, fails to improve deterministic diagnostics, or exhausts the budget. Cache keys include provider, model, prompt version, schema, settings, and inputs, so resume does not repeat completed paid calls.
 
