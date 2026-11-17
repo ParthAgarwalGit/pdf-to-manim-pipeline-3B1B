@@ -206,8 +206,9 @@ def _script_review_html(run_dir: Path) -> str:
         return ""
     if not attempts:
         return ""
-    # The pipeline keeps a rewrite only when it scored strictly higher.
-    final = max(attempts, key=lambda item: item.overall_score)
+    # The pipeline keeps a fixed or rewritten script only when it passes or,
+    # failing, scores strictly higher; max() keeps the first on a tie.
+    final = max(attempts, key=lambda item: (item.passed, item.overall_score))
     weakest = final.weakest_criterion()
     weakest_text = (
         f"; weakest: {html.escape(weakest[0])} {float(weakest[1]['score']):.1f}/10"

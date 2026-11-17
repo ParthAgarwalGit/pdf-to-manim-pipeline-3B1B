@@ -41,6 +41,11 @@ class ScriptReview(BaseModel):
 
         return [item for item in self.flow_breaks if _is_hook(item)]
 
+    def scene_breaks(self) -> list[dict[str, str]]:
+        """Flow breaks in the narration, which a rewrite of their beats can fix."""
+
+        return [item for item in self.flow_breaks if not _is_hook(item)]
+
     def weakest_criterion(self) -> Optional[tuple[str, dict[str, Any]]]:
         """The lowest-scoring criterion that counts towards the overall score."""
 
@@ -159,6 +164,69 @@ def _flow_breaks(raw: Any) -> list[dict[str, str]]:
 
 def _is_hook(item: dict[str, str]) -> bool:
     return item.get("where", "").strip().lower() == "hook"
+
+
+BeatKey = tuple[str, str]  # (scene_id, beat_id)
+
+
+def locate_flow_breaks(
+    narration: NarrationPlan, breaks: list[dict[str, str]],
+) -> tuple[dict[BeatKey, list[dict[str, str]]], list[dict[str, str]]]:
+    """Group flow breaks by the beat whose text holds the quoted sentence.
+
+    The scene a break names is searched first, then every other scene, as a
+    reviewer may name the scene loosely. Matching ignores case, spacing and
+    the quote marks and end punctuation around the quoted sentence. Returns
+    the breaks by beat, in narration order, and the breaks no beat holds.
+    """
+
+    found: dict[BeatKey, list[dict[str, str]]] = {}
+    unplaced: list[dict[str, str]] = []
+    for item in breaks:
+        quoted = _comparable(item["sentence"])
+        scenes = sorted(narration.scenes, key=lambda scene: scene.scene_id != item["where"])
+        key = next(
+            (
+                (scene.scene_id, beat.beat_id)
+                for scene in scenes for beat in scene.beats
+                if quoted and quoted in _comparable(beat.text)
+            ),
+            None,
+        )
+        if key is None:
+            unplaced.append(item)
+        else:
+            found.setdefault(key, []).append(item)
+    order = [(scene.scene_id, beat.beat_id) for scene in narration.scenes for beat in scene.beats]
+    return {key: found[key] for key in order if key in found}, unplaced
+
+
+def splice_beats(narration: NarrationPlan, texts: dict[BeatKey, str]) -> NarrationPlan:
+    """A copy of ``narration`` with the text of the beats in ``texts`` replaced.
+
+    Every other field of a replaced beat is kept, so its id and cited facts
+    cannot change. A scene with a replaced beat has its narration rebuilt from
+    its beats, as the planner builds it; every other scene is left as it is.
+    """
+
+    scenes = []
+    for scene in narration.scenes:
+        if not any((scene.scene_id, beat.beat_id) in texts for beat in scene.beats):
+            scenes.append(scene)
+            continue
+        beats = [
+            beat.model_copy(update={"text": texts[(scene.scene_id, beat.beat_id)]})
+            if (scene.scene_id, beat.beat_id) in texts else beat
+            for beat in scene.beats
+        ]
+        scenes.append(scene.model_copy(update={
+            "beats": beats, "narration": " ".join(beat.text for beat in beats),
+        }))
+    return narration.model_copy(update={"scenes": scenes})
+
+
+def _comparable(text: str) -> str:
+    return " ".join(text.lower().split()).strip(" \"'\u201c\u201d\u2018\u2019.!?,;:")
 
 
 def _plan_summary(lesson: LessonPlan, narration: NarrationPlan) -> dict[str, Any]:

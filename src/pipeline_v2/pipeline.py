@@ -44,6 +44,7 @@ from .models import (
 )
 from .observability import RunArtifacts
 from .planning import (
+    BEAT_FIX_PROMPT_VERSION,
     HOOK_PROMPT_VERSION,
     NARRATION_PROMPT_VERSION,
     PLANNING_MODEL,
@@ -77,11 +78,17 @@ from .presenter import (
     save_bridges,
     write_bridges,
 )
-from .prompt_text import DEFAULT_VOICE
+from .prompt_text import BEAT_FIX_MAX_EXTRA_WORDS, DEFAULT_VOICE
 from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VERSION
 from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
-from .script_review import SCRIPT_REVIEW_PROMPT_VERSION, ScriptReview, review_script
+from .script_review import (
+    SCRIPT_REVIEW_PROMPT_VERSION,
+    ScriptReview,
+    locate_flow_breaks,
+    review_script,
+    splice_beats,
+)
 from .model_config import PRESENTER_MODEL, TEXT_MODEL
 from .revision import (
     FROZEN_PLANNING_FILE,
@@ -115,6 +122,9 @@ from src.utils.fingerprints import lexicon_for
 T = TypeVar("T")
 # A hook rewrite, then at most one more that fixes only the first one's shape.
 HOOK_REWRITE_ATTEMPTS = 2
+# Words a beat fix may add beyond the BEAT_FIX_MAX_EXTRA_WORDS it is asked for:
+# the model counts loosely, but a fix much longer than asked is rejected.
+BEAT_FIX_WORD_TOLERANCE = 5
 
 # A fade through black at every cut between a presenter clip and a Manim scene:
 # the outgoing clip fades out and the incoming one fades in, each this long.
@@ -1293,27 +1303,34 @@ class PipelineV2:
         source: SourceDocument,
         controls: dict[str, Any],
     ) -> tuple[NarrationPlan, Optional[list]]:
-        """Review the planned script before TTS; in revise mode rewrite a failing one once.
+        """Review the planned script before TTS; in revise mode fix a failing one once.
 
-        Returns the narration to use and, when a rewritten script replaced the
-        original, the rewrite's narration-directive checks (otherwise ``None``).
-        The hook was settled before the narration was written, so a hook
-        sentence the review flags is reported, never rewritten here: a new hook
-        now could no longer match the narration that follows it.
+        A script that fails on sentences that do not follow has only the beats
+        holding them rewritten (_fix_flow_breaks); one that fails with no such
+        sentence is rewritten whole. The new script is reviewed once and kept
+        only if it passes or scores higher than the original.
+
+        Returns the narration to use and, when a fixed or rewritten script
+        replaced the original, its narration-directive checks (otherwise
+        ``None``). The hook was settled before the narration was written, so a
+        hook sentence the review flags is reported, never rewritten here: a new
+        hook now could no longer match the narration that follows it.
         """
 
-        async def review(candidate: NarrationPlan, attempt: int) -> Optional[ScriptReview]:
+        async def review(
+            candidate: NarrationPlan, attempt: int, dependencies: list[str],
+        ) -> Optional[ScriptReview]:
             data = await self._task(
                 f"script-review-{attempt}", "script_review", None,
                 {"narration": candidate.model_dump(mode="json"),
                  "lesson": lesson.model_dump(mode="json"), "attempt": attempt,
                  "model": TEXT_MODEL, "prompt_version": SCRIPT_REVIEW_PROMPT_VERSION},
                 lambda: review_script(router, lesson, candidate, source, attempt=attempt),
-                dependencies=["narration" if attempt == 1 else "narration-revised"],
+                dependencies=dependencies,
             )
             return ScriptReview.model_validate(data) if data else None
 
-        first = await review(narration, 1)
+        first = await review(narration, 1, ["narration"])
         if first is None:
             return narration, None
         if first.hook_breaks():
@@ -1324,14 +1341,33 @@ class PipelineV2:
             )
         attempts = [first]
         kept: tuple[NarrationPlan, Optional[list]] = (narration, None)
+        fix: Optional[str] = None  # how a replacement script was made: "beats" or "rewrite"
         if self.config.script_review == "revise" and not first.passed:
-            if not first.improvement_suggestions:
+            if first.scene_breaks():
+                fix = "beats"
+                patched, fix_tasks = await self._fix_flow_breaks(
+                    planner, lesson, narration, source, first.scene_breaks(),
+                )
+                if patched is not None:
+                    patched, patched_checks = enforce_narration_directives(
+                        patched, self.directives, planner.omitted_concepts,
+                    )
+                    recheck = await review(patched, 2, fix_tasks)
+                    if recheck is not None:
+                        attempts.append(recheck)
+                        # first.passed is False, so this keeps a fix that passes or scores higher.
+                        if (recheck.passed, recheck.overall_score) > (
+                            first.passed, first.overall_score,
+                        ):
+                            kept = (patched, patched_checks)
+            elif not first.improvement_suggestions:
                 self.artifacts.event(
                     "script_review_rewrite_skipped", stage="script_review",
                     message="The review failed without improvement suggestions; kept the script.",
                     score=first.overall_score,
                 )
             else:
+                fix = "rewrite"
                 planner_state = (
                     planner.length_budget, planner.length_report, planner.compliance_checks,
                 )
@@ -1362,7 +1398,7 @@ class PipelineV2:
                         revised, revised_checks = enforce_narration_directives(
                             revised, self.directives, planner.omitted_concepts,
                         )
-                        second = await review(revised, 2)
+                        second = await review(revised, 2, ["narration-revised"])
                 except BudgetExceeded:
                     raise
                 except Exception as exc:
@@ -1390,13 +1426,125 @@ class PipelineV2:
                 f"Script review scored {final.overall_score:.2f}/10 "
                 f"({'passed' if final.passed else 'below the pass mark'}) after "
                 f"{len(attempts)} review(s); "
-                + ("the rewritten script was kept." if kept[1] is not None
+                + (("the fixed script was kept." if fix == "beats"
+                    else "the rewritten script was kept.") if kept[1] is not None
                    else "the original script was kept.")
             ),
             score=final.overall_score, passed=final.passed, attempts=len(attempts),
-            rewritten=kept[1] is not None,
+            rewritten=kept[1] is not None, fix=fix,
         )
         return kept
+
+    async def _fix_flow_breaks(
+        self,
+        planner: PlanningService,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        source: SourceDocument,
+        breaks: list[dict[str, str]],
+    ) -> tuple[Optional[NarrationPlan], list[str]]:
+        """Rewrite only the beats holding the review's flow breaks, into a copy of the narration.
+
+        Each beat is asked for once, with every break it holds, and keeps its
+        id and cited facts. A fix that is empty, unchanged or longer than the
+        allowance is dropped and its beat keeps its text. A beat that opens with
+        the hook is never rewritten: the hook was settled before the narration.
+        Returns the fixed narration (``None`` when no beat changed) and the fix
+        task ids, which the re-review depends on.
+        """
+
+        placed, unplaced = locate_flow_breaks(narration, breaks)
+        if unplaced:
+            self.artifacts.event(
+                "flow_breaks_unplaced", stage="script_review",
+                message=f"{len(unplaced)} flagged sentence(s) are in no beat; left as they are.",
+                breaks=unplaced,
+            )
+        first_scene = narration.scenes[0]
+        hook_beat = (
+            (first_scene.scene_id, first_scene.beats[0].beat_id)
+            if _speaks_hook(lesson, narration) else None
+        )
+        facts = {fact.fact_id: fact.text for fact in source.facts}
+        positions = {scene.scene_id: index for index, scene in enumerate(narration.scenes)}
+        texts: dict[tuple[str, str], str] = {}
+        task_ids: list[str] = []
+        fixes: list[dict[str, Any]] = []
+        for (scene_id, beat_id), items in placed.items():
+            if (scene_id, beat_id) == hook_beat:
+                self.artifacts.event(
+                    "beat_fix_skipped", stage="script_review", scene_id=scene_id,
+                    message=f"{beat_id} opens with the settled hook; it is not rewritten.",
+                    breaks=items,
+                )
+                continue
+            index = positions[scene_id]
+            scene = narration.scenes[index]
+            beat = next(item for item in scene.beats if item.beat_id == beat_id)
+            previous = narration.scenes[index - 1].beats[-1].text if index else None
+            problems = [
+                f'The sentence "{item["sentence"]}" does not follow: {item["problem"]}'
+                for item in items
+            ]
+            inputs = {
+                "scene": scene.model_dump(mode="json"), "beat_id": beat_id,
+                "previous_beat": previous, "problems": problems,
+                "facts": {
+                    fact_id: facts[fact_id] for fact_id in beat.source_fact_ids
+                    if fact_id in facts
+                },
+                "prompt_version": BEAT_FIX_PROMPT_VERSION,
+                "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL,
+            }
+            task_id = f"beat-fix-{beat_id}-{_digest(inputs)}"
+
+            async def operation(
+                scene: NarratedScene = scene, beat_id: str = beat_id,
+                previous: Optional[str] = previous, problems: list[str] = problems,
+            ) -> dict[str, str]:
+                return {"text": await planner.fix_beat(scene, beat_id, previous, problems, source)}
+
+            try:
+                data = await self._task(
+                    task_id, "narration", scene_id, inputs, operation,
+                    dependencies=["script-review-1"],
+                )
+            except BudgetExceeded:
+                raise
+            except Exception as exc:
+                self.artifacts.event(
+                    "beat_fix_rejected", stage="script_review", scene_id=scene_id,
+                    message=f"The fix of {beat_id} failed; it keeps its text: {exc}",
+                )
+                continue
+            text = " ".join(str(data.get("text") or "").split())
+            reason = _beat_fix_problem(beat.text, text)
+            if reason:
+                self.artifacts.event(
+                    "beat_fix_rejected", stage="script_review", scene_id=scene_id,
+                    message=f"The fix of {beat_id} was dropped: {reason}.",
+                    before=beat.text, after=text,
+                )
+                continue
+            texts[(scene_id, beat_id)] = text
+            task_ids.append(task_id)
+            fixes.append({
+                "scene_id": scene_id, "beat_id": beat_id, "problems": problems,
+                "before": beat.text, "after": text,
+            })
+        if not texts:
+            self.artifacts.event(
+                "script_review_fix_skipped", stage="script_review",
+                message="No flagged beat could be fixed; kept the reviewed script.",
+            )
+            return None, []
+        self.artifacts.event(
+            "flow_breaks_fixed", stage="script_review",
+            message=f"Rewrote {len(texts)} beat(s) holding sentences that did not follow.",
+            fixes=fixes,
+        )
+        return splice_beats(narration, texts), task_ids
 
     async def _settle_hook(self, planner: PlanningService, lesson: LessonPlan) -> LessonPlan:
         """Check the planned hook before any narration is written; rewrite it once if needed.
@@ -2076,6 +2224,20 @@ def _speaks_hook(lesson: LessonPlan, narration: NarrationPlan) -> bool:
     hook = " ".join((lesson.hook or "").split())
     first = narration.scenes[0].beats[0].text.lstrip() if narration.scenes else ""
     return bool(hook) and first.startswith(hook)
+
+
+def _beat_fix_problem(before: str, after: str) -> Optional[str]:
+    """Why a beat fix cannot replace ``before``; ``None`` when it can."""
+
+    if not after:
+        return "it is empty"
+    if after == " ".join(before.split()):
+        return "it left the beat unchanged"
+    added = len(after.split()) - len(before.split())
+    limit = BEAT_FIX_MAX_EXTRA_WORDS + BEAT_FIX_WORD_TOLERANCE
+    if added > limit:
+        return f"it adds {added} words, more than {limit}"
+    return None
 
 
 def _digest(payload: Any) -> str:

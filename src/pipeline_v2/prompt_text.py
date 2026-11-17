@@ -212,6 +212,40 @@ FORMAT
 Return exactly the required_scene_ids once each and in the supplied order. Populate role, pause_after_seconds (normally 0.25-0.55, or 0.6-0.9 for reflection and scene endings), visual_action, continuity_note, transition_in and transition_out. Every beat cites only supplied source_fact_ids. Preserve mathematical notation in the facts you cite, but speak it in words. Set target_words_per_minute to {target_wpm}. Timing fields must be zero; the pipeline computes them after the audio is recorded."""
 
 
+# ── targeted flow fix ───────────────────────────────────────────────────
+
+
+# How many words a fixed beat may add: room to say what one term means.
+BEAT_FIX_MAX_EXTRA_WORDS = 15
+
+
+def beat_fix_instructions(problems: list[str]) -> str:
+    """Asks for one beat rewritten so its flagged sentences follow; JSON payload follows.
+
+    ``problems`` are plain sentences built from the script reviewer's flow
+    breaks in that beat. The payload carries the beat (beat_to_fix), every
+    beat of its scene (scene_beats), the previous scene's last beat and the
+    facts the beat cites.
+    """
+    listed = "\n".join(f"- {problem}" for problem in problems)
+    return f"""Fix one beat (beat_to_fix) of a spoken lesson script. The listener hears each sentence once and cannot scroll back. A reviewer found sentences in this beat that the listener cannot follow:
+
+WHAT IS WRONG
+{listed}
+
+HOW TO FIX IT
+- Change only what these problems need. Every other sentence of the beat stays as written, and every other beat stays as it is.
+- When a term, symbol or acronym is used before anyone has said what it is, keep it and introduce it in plain words where it first comes up: what it is or what it measures, in terms of what the viewer sees. Do not just delete the idea.
+- When a sentence does not follow from the one before it, add the missing link ("because", "so", "but") or the missing step.
+- Bring in no other new term, symbol, acronym, number or fact. Use only the facts this beat cites (source_facts).
+- The beat comes after the beats before it in scene_beats (or, as its scene's first beat, after previous_scene_last_beat) and leads into the beats after it: do not repeat what they say, and keep what the later beats rely on.
+- The fixed beat is at most {BEAT_FIX_MAX_EXTRA_WORDS} words longer than beat_to_fix.
+
+{SPOKEN_STYLE}
+
+Return only JSON: {{"text": "the whole fixed beat"}}"""
+
+
 # ── voice ───────────────────────────────────────────────────────────────
 
 

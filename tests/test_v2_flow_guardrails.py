@@ -6,18 +6,28 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from src.pipeline_v2 import PipelineV2
-from src.pipeline_v2.models import LessonPlan, SourceDocument, SourceFact
+from src.pipeline_v2.models import LessonPlan, NarrationPlan, SourceDocument, SourceFact
 from src.pipeline_v2.observability import RunArtifacts
-from src.pipeline_v2.planning import HOOK_PROMPT_VERSION, PlanningService, hook_problems
+from src.pipeline_v2.planning import (
+    BEAT_FIX_PROMPT_VERSION,
+    HOOK_PROMPT_VERSION,
+    PlanningService,
+    hook_problems,
+)
 from src.pipeline_v2.prompt_text import (
+    BEAT_FIX_MAX_EXTRA_WORDS,
     CODEGEN_STYLE_RULES,
     HOOK_CHAIN,
+    beat_fix_instructions,
     hook_check_instructions,
     lesson_instructions,
     narration_instructions,
 )
-from src.pipeline_v2.script_review import parse_review
+from src.pipeline_v2.report import _script_review_html
+from src.pipeline_v2.script_review import locate_flow_breaks, parse_review, splice_beats
 from src.pipeline_v2.state import RunStore
 from src.prompts.review import PLANNED_CRITERIA_WEIGHTS, storyboard_review_prompt
 
@@ -411,4 +421,267 @@ def test_a_shape_only_rewrite_must_not_fail_more_checks(tmp_path):
 
     assert settled.hook == too_short
     assert len(_events(pipeline, "hook_rewrite_rejected")) == 1
+    pipeline.store.close()
+
+
+# ── targeted fixes of the sentences the review flags ─────────────────────────
+
+
+OPENING = "Put a square on each side of a three, four, five triangle."
+BROKEN = "So the slope is beta one."
+FIXED_BEAT = (
+    "The steepness of the slid edge, which we call beta one, is the slope. "
+    "The empty area stays the same."
+)
+
+
+def _narration() -> NarrationPlan:
+    scenes = {
+        "scene_001": [
+            ("scene_001_b01", OPENING, "Grow three squares."),
+            ("scene_001_b02", "The small squares hold nine and sixteen tiles.", "Fill tiles."),
+        ],
+        "scene_002": [
+            ("scene_002_b01", "Slide the four triangles into the corners.", "Slide triangles."),
+            ("scene_002_b02", f"{BROKEN} The empty area stays the same.", "Shade the gap."),
+        ],
+    }
+    return NarrationPlan.model_validate({"scenes": [
+        {
+            "scene_id": scene_id,
+            "narration": " ".join(text for _, text, _ in beats),
+            "beats": [
+                {"beat_id": beat_id, "text": text, "visual_action": action,
+                 "source_fact_ids": [f"p00{scene_id[-1]}-f000"]}
+                for beat_id, text, action in beats
+            ],
+        }
+        for scene_id, beats in scenes.items()
+    ]})
+
+
+def _scene_break(sentence: str = BROKEN, where: str = "scene_002") -> dict:
+    return {"where": where, "sentence": sentence, "problem": "Beta one was never introduced."}
+
+
+def test_locate_flow_breaks_groups_breaks_by_beat_in_narration_order():
+    narration = _narration()
+    placed, unplaced = locate_flow_breaks(narration, [
+        _scene_break("  so the SLOPE   is beta one "),  # case, spacing, no full stop
+        _scene_break("The empty area stays the same."),  # the same beat again
+        _scene_break("The small squares hold nine and sixteen tiles.", where="scene_009"),
+        _scene_break("A sentence the script never says."),
+    ])
+
+    assert list(placed) == [("scene_001", "scene_001_b02"), ("scene_002", "scene_002_b02")]
+    assert len(placed[("scene_002", "scene_002_b02")]) == 2  # one fix request carries both
+    assert [item["sentence"] for item in unplaced] == ["A sentence the script never says."]
+
+
+def test_splice_beats_replaces_one_beat_and_leaves_the_rest_untouched():
+    narration = _narration()
+    before = narration.model_dump(mode="json")
+
+    patched = splice_beats(narration, {("scene_002", "scene_002_b02"): FIXED_BEAT})
+
+    assert narration.model_dump(mode="json") == before  # the original is not changed
+    assert patched.scenes[0] is narration.scenes[0]
+    assert patched.scenes[1].beats[0] is narration.scenes[1].beats[0]
+    fixed, old = patched.scenes[1].beats[1], narration.scenes[1].beats[1]
+    assert fixed.text == FIXED_BEAT
+    assert fixed.model_dump(exclude={"text"}) == old.model_dump(exclude={"text"})
+    assert patched.scenes[1].narration == (
+        f"Slide the four triangles into the corners. {FIXED_BEAT}"
+    )
+
+
+def test_fix_beat_prompt_carries_the_scene_and_falls_back_to_the_old_text():
+    router = _Router()
+    narration = _narration()
+    problem = f'The sentence "{BROKEN}" does not follow: Beta one was never introduced.'
+
+    text = asyncio.run(PlanningService(router).fix_beat(
+        narration.scenes[1], "scene_002_b02", narration.scenes[0].beats[-1].text,
+        [problem], _source(),
+    ))
+
+    assert text == narration.scenes[1].beats[1].text  # keyless: the fallback keeps the beat
+    (call,) = router.calls
+    assert (call["stage"], call["task_id"], call["scene_id"]) == (
+        "narration", "beat-fix-scene_002_b02", "scene_002",
+    )
+    prompt = call["prompt"]
+    assert prompt.startswith(f"PROMPT_VERSION={BEAT_FIX_PROMPT_VERSION}\n")
+    assert beat_fix_instructions([problem]) in prompt and f"- {problem}" in prompt
+    assert f"at most {BEAT_FIX_MAX_EXTRA_WORDS} words longer" in prompt
+    payload = json.loads(prompt[prompt.index("\n\n{") + 2:])
+    assert payload["beat_to_fix"] == {"beat_id": "scene_002_b02", "text": f"{BROKEN} The empty area stays the same."}
+    assert [beat["beat_id"] for beat in payload["scene_beats"]] == ["scene_002_b01", "scene_002_b02"]
+    assert payload["previous_scene_last_beat"] == "The small squares hold nine and sixteen tiles."
+    assert payload["source_facts"] == {"p002-f000": "Fact on page 2."}
+
+
+class _FixPlanner:
+    """Answers beat fixes from ``fixes``; records whole rewrites."""
+
+    presenter_opens = True
+    omitted_concepts: list = []
+
+    def __init__(self, fixes=None, rewrite=None):
+        self.fixes = dict(fixes or {})
+        self.rewrite = rewrite
+        self.fix_calls: list[tuple] = []
+        self.rewrites: list[list[str]] = []
+        self.length_budget = self.length_report = None
+        self.compliance_checks: list = []
+
+    async def fix_beat(self, scene, beat_id, previous_beat, problems, source):
+        self.fix_calls.append((scene.scene_id, beat_id, previous_beat, list(problems)))
+        return self.fixes.get(beat_id, next(b.text for b in scene.beats if b.beat_id == beat_id))
+
+    async def narration(self, lesson, source, review_feedback=None):
+        self.rewrites.append(list(review_feedback or []))
+        return self.rewrite
+
+
+def _review_pipeline(tmp_path) -> PipelineV2:
+    pipeline = _pipeline(tmp_path)
+    pipeline.config = SimpleNamespace(script_review="revise", pacing="normal")
+    pipeline.directives = None
+    return pipeline
+
+
+def _scripted_reviews(monkeypatch, reviews: list[dict]) -> list[NarrationPlan]:
+    """Answer each script review with the next scripted reviewer JSON; record what was read."""
+
+    seen: list[NarrationPlan] = []
+
+    async def fake_review(router, plan, candidate, source, attempt=1):
+        seen.append(candidate)
+        return parse_review(reviews[len(seen) - 1], attempt)
+
+    monkeypatch.setattr("src.pipeline_v2.pipeline.review_script", fake_review)
+    return seen
+
+
+def _scored(score: float, **extra) -> dict:
+    data = {name: {"score": score} for name in PLANNED_CRITERIA_WEIGHTS}
+    data.update(extra)
+    return data
+
+
+@pytest.mark.parametrize(
+    ("second", "kept_fix"),
+    [
+        (_scored(8.0), True),  # passes
+        (_scored(8.0, flow_breaks=[_scene_break("The empty area stays the same.")]), True),
+        (_scored(6.0), False),  # fails and scores lower
+    ],
+    ids=["passes", "fails-but-scores-higher", "fails-and-scores-lower"],
+)
+def test_a_flow_break_gets_only_its_beat_rewritten(monkeypatch, tmp_path, second, kept_fix):
+    pipeline = _review_pipeline(tmp_path)
+    narration = _narration()
+    seen = _scripted_reviews(monkeypatch, [_scored(7.0, flow_breaks=[_scene_break()]), second])
+    planner = _FixPlanner(fixes={"scene_002_b02": FIXED_BEAT})
+
+    kept, checks = asyncio.run(pipeline._review_script(
+        None, planner, _lesson(), narration, _source(), {},
+    ))
+
+    assert planner.rewrites == []  # never the whole script
+    ((scene_id, beat_id, previous, problems),) = planner.fix_calls
+    assert (scene_id, beat_id) == ("scene_002", "scene_002_b02")
+    assert previous == "The small squares hold nine and sixteen tiles."
+    assert problems == [f'The sentence "{BROKEN}" does not follow: Beta one was never introduced.']
+    # The re-review read the fixed script, with the scene narration rebuilt.
+    assert len(seen) == 2 and BROKEN not in seen[1].scenes[1].narration
+    assert FIXED_BEAT in seen[1].scenes[1].narration
+    attempts = json.loads((pipeline.artifacts.run_dir / "script_review.json").read_text())
+    assert [item["attempt"] for item in attempts] == [1, 2]
+    (reviewed,) = _events(pipeline, "script_reviewed")
+    assert reviewed["fix"] == "beats" and reviewed["rewritten"] is kept_fix
+    if kept_fix:
+        assert checks is not None
+        assert kept.scenes[1].beats[1].text == FIXED_BEAT
+        assert kept.scenes[0] == narration.scenes[0]
+        assert kept.scenes[1].beats[0] == narration.scenes[1].beats[0]
+    else:
+        assert kept is narration and checks is None
+    pipeline.store.close()
+
+
+@pytest.mark.parametrize(
+    "fix",
+    [
+        f"{BROKEN} The empty area stays the same.",  # unchanged
+        FIXED_BEAT + " word" * (BEAT_FIX_MAX_EXTRA_WORDS + 6),  # far longer than allowed
+    ],
+    ids=["unchanged", "too-long"],
+)
+def test_a_dropped_beat_fix_keeps_the_script_without_a_second_review(monkeypatch, tmp_path, fix):
+    pipeline = _review_pipeline(tmp_path)
+    narration = _narration()
+    seen = _scripted_reviews(monkeypatch, [_scored(7.0, flow_breaks=[_scene_break()])])
+    planner = _FixPlanner(fixes={"scene_002_b02": fix})
+
+    kept, checks = asyncio.run(pipeline._review_script(
+        None, planner, _lesson(), narration, _source(), {},
+    ))
+
+    assert kept is narration and checks is None
+    assert len(seen) == 1 and planner.rewrites == []
+    assert len(_events(pipeline, "beat_fix_rejected")) == 1
+    assert len(_events(pipeline, "script_review_fix_skipped")) == 1
+    pipeline.store.close()
+
+
+def test_the_beat_that_speaks_the_hook_is_never_rewritten(monkeypatch, tmp_path):
+    pipeline = _review_pipeline(tmp_path)
+    narration = _narration()
+    seen = _scripted_reviews(monkeypatch, [
+        _scored(7.0, flow_breaks=[_scene_break(OPENING, where="scene_001")]),
+    ])
+    planner = _FixPlanner(fixes={"scene_001_b01": "A different opening line."})
+
+    kept, checks = asyncio.run(pipeline._review_script(
+        None, planner, _lesson(hook=OPENING), narration, _source(), {},
+    ))
+
+    assert kept is narration and checks is None
+    assert planner.fix_calls == [] and len(seen) == 1
+    assert len(_events(pipeline, "beat_fix_skipped")) == 1
+    pipeline.store.close()
+
+
+def test_report_shows_a_kept_fix_that_passes_with_a_lower_score(tmp_path):
+    first = parse_review(_scored(8.65, flow_breaks=[_scene_break()]), 1)
+    second = parse_review(_scored(8.0), 2)
+    assert not first.passed and second.passed
+    (tmp_path / "script_review.json").write_text(json.dumps(
+        [first.model_dump(mode="json"), second.model_dump(mode="json")],
+    ))
+
+    assert "Score 8.00/10 (passed, 2 review(s))" in _script_review_html(tmp_path)
+
+
+def test_a_failure_without_flow_breaks_falls_back_to_the_whole_rewrite(monkeypatch, tmp_path):
+    pipeline = _review_pipeline(tmp_path)
+    narration = _narration()
+    low_flow = _scored(7.0, improvement_suggestions=["Open on the triangle."])
+    low_flow["logical_flow"] = {"score": 5.0}
+    seen = _scripted_reviews(monkeypatch, [low_flow, _scored(8.0)])
+    rewrite = splice_beats(narration, {("scene_001", "scene_001_b01"): "A rewritten opening."})
+    planner = _FixPlanner(rewrite=rewrite)
+
+    kept, checks = asyncio.run(pipeline._review_script(
+        None, planner, _lesson(), narration, _source(), {},
+    ))
+
+    assert planner.fix_calls == []
+    assert planner.rewrites == [["Open on the triangle."]]
+    assert len(seen) == 2 and checks is not None
+    assert kept.scenes[0].beats[0].text == "A rewritten opening."
+    (reviewed,) = _events(pipeline, "script_reviewed")
+    assert reviewed["fix"] == "rewrite" and reviewed["rewritten"] is True
     pipeline.store.close()

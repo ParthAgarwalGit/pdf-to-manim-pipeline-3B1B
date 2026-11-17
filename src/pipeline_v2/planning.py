@@ -50,6 +50,7 @@ from .model_config import OCR_MODEL, TEXT_MODEL
 from .prompt_text import (
     HOOK_MAX_WORDS_NARRATOR,
     HOOK_MAX_WORDS_PRESENTER,
+    beat_fix_instructions,
     hook_check_instructions,
     hook_rewrite_instructions,
     lesson_instructions,
@@ -66,6 +67,7 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
 PROMPT_VERSION = "v2.6.0-flow"
 NARRATION_PROMPT_VERSION = "v2.7.0-flow"
 HOOK_PROMPT_VERSION = "hook-2-check"
+BEAT_FIX_PROMPT_VERSION = "beat-fix-1"
 NARRATION_BATCH_SIZE = 5
 MAX_SPINE_MOTIFS = 4
 PLANNING_PROVIDER = "google"
@@ -403,6 +405,48 @@ class PlanningService:
             max_output_tokens=1500,
         )
         return " ".join(result.hook.split())
+
+    async def fix_beat(
+        self,
+        scene: NarratedScene,
+        beat_id: str,
+        previous_beat: Optional[str],
+        problems: list[str],
+        source: SourceDocument,
+    ) -> str:
+        """Beat ``beat_id`` of ``scene`` rewritten to fix ``problems``; its old text if the call fails.
+
+        ``previous_beat`` is the previous scene's last beat (``None`` for the
+        first scene). Only the text comes back: the caller keeps the beat's id
+        and cited facts.
+        """
+
+        beat = next(item for item in scene.beats if item.beat_id == beat_id)
+        facts = {fact.fact_id: fact.text for fact in source.facts}
+        payload = {
+            "beat_to_fix": {"beat_id": beat.beat_id, "text": beat.text},
+            "scene_beats": [
+                {"beat_id": item.beat_id, "text": item.text, "visual_action": item.visual_action}
+                for item in scene.beats
+            ],
+            "previous_scene_last_beat": previous_beat,
+            "source_facts": {
+                fact_id: facts[fact_id] for fact_id in beat.source_fact_ids if fact_id in facts
+            },
+        }
+        prompt = (
+            f"PROMPT_VERSION={BEAT_FIX_PROMPT_VERSION}\n"
+            + beat_fix_instructions(problems) + "\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        result = await self.router.structured(
+            stage="narration", task_id=f"beat-fix-{beat_id}", scene_id=scene.scene_id,
+            provider=PLANNING_PROVIDER, model=PLANNING_MODEL,
+            system="You edit spoken educational scripts.",
+            prompt=prompt, schema=BeatFix, fallback=lambda: BeatFix(text=beat.text),
+            max_output_tokens=1500,
+        )
+        return spoken_plain(" ".join(result.text.split()))
 
     async def narration(
         self,
@@ -871,6 +915,10 @@ class HookBreak(BaseModel):
 
 class HookCheck(BaseModel):
     breaks: list[HookBreak] = []
+
+
+class BeatFix(BaseModel):
+    text: str
 
 
 # Narration length per scene when the professor sets no target length.
