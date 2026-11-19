@@ -31,7 +31,9 @@ STOCK_PHRASES = (
 
 # Hook word limits: spoken by an on-camera presenter, or by the narrator over
 # the first picture. planning.hook_problems() enforces them.
-HOOK_MAX_WORDS_PRESENTER = 40
+# 34 words fit one presenter clip (about 13 s): a longer opening is split into
+# separately generated clips with a visible jump between them.
+HOOK_MAX_WORDS_PRESENTER = 34
 HOOK_MAX_WORDS_NARRATOR = 45
 
 HOOK_CHAIN = """Build the hook as a chain of three or four short sentences, each one following from the sentence before it:
@@ -39,7 +41,8 @@ HOOK_CHAIN = """Build the hook as a chain of three or four short sentences, each
      (b) the obvious first attempt, or what anyone would expect to happen;
      (c) the snag: what goes wrong with that attempt, and why, stated so that it is true for the running example's actual values;
      (d) the central question in at most 15 words, left unanswered.
-   Introduce every person, object, quantity and number before you use it. Never state a conclusion the listener has no reason yet to believe. Exactly one question mark, at the end. No dashes, semicolons or parentheses.
+   Introduce every person, object, quantity and number before you use it. Never state a conclusion the listener has no reason yet to believe.
+   The hook poses the problem; it never gives away what the video works out. Leave every count, value and result that a scene derives to that scene (say "the laws we have are not enough", not "sixteen unknowns but only five equations"). Exactly one question mark, at the end. No dashes, semicolons or parentheses.
    Bad, every sentence jumps: "A café has one barista. A single line breaks the queue rules. How long is the wait?" The listener never learns what is measured, what was tried or why anything breaks.
    Good, each sentence needs the one before: "A café gets a customer every two minutes, and each drink takes two minutes. They keep pace, so you'd expect no line. Yet a line forms and keeps growing. Why, when the barista is never too slow?\""""
 
@@ -108,7 +111,8 @@ Read the hook one sentence at a time. A sentence fails when:
 - it mentions a person, object, quantity, number or symbol that no earlier sentence (and no part of the same sentence) has introduced;
 - it does not follow from the sentence before it: the listener could not say why it comes next (because, so, but);
 - it states a conclusion before the setup that makes it believable;
-- a claim in it is false for the running example's actual values. Check the arithmetic.
+- a claim in it is false for the running example's actual values. Check the arithmetic;
+- it gives away a count, value or result that the video should let the viewer work out (the hook poses the problem; the scenes answer it).
 
 List every failing sentence exactly as written, with what the listener is missing or why it is false. Do not rewrite anything.
 

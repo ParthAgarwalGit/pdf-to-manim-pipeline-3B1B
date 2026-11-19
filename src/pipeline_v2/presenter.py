@@ -79,7 +79,7 @@ OMNI_USD_PER_SECOND = OMNI_VIDEO_TOKENS_PER_SECOND * OMNI_USD_PER_MILLION_TOKENS
 OMNI_RETAKE_ALLOWANCE = 1.5  # the engine may regenerate one take
 
 # Model-written bridges (planned lessons) are kept only within these bounds.
-BRIDGES_PROMPT_VERSION = "bridges-1"
+BRIDGES_PROMPT_VERSION = "bridges-2-no-repeat"
 WRITTEN_BRIDGE_MIN_WORDS = 6
 WRITTEN_BRIDGE_MAX_WORDS = 45
 WRITTEN_BRIDGE_MAX_OVERLAP = 0.3

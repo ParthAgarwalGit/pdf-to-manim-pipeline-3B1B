@@ -18,6 +18,7 @@ from src.pipeline_v2.planning import (
     hook_problems,
 )
 from src.pipeline_v2.prompt_text import (
+    HOOK_MAX_WORDS_PRESENTER,
     BEAT_FIX_MAX_EXTRA_WORDS,
     CODEGEN_STYLE_RULES,
     HOOK_CHAIN,
@@ -41,8 +42,7 @@ BROKEN_HOOK = (
 )
 CHAIN_HOOK = (
     "Put a square on each side of a three, four, five triangle. The small squares hold nine "
-    "and sixteen tiles. The big one holds twenty five. Why do the small ones always fill it "
-    "exactly?"
+    "and sixteen tiles. The big one holds twenty five. Why do they always fill it?"
 )
 
 
@@ -131,7 +131,7 @@ def _review(**extra) -> dict:
 
 def test_hook_problems_catch_the_shipped_hook_and_pass_a_chain():
     problems = hook_problems(BROKEN_HOOK, presenter_opens=True)
-    assert any("53 words" in problem and "limit is 40" in problem for problem in problems)
+    assert any("53 words" in problem and f"limit is {HOOK_MAX_WORDS_PRESENTER}" in problem for problem in problems)
     assert any("dash" in problem for problem in problems)
     assert hook_problems(CHAIN_HOOK, presenter_opens=True) == []
     assert hook_problems("", presenter_opens=True) == []
@@ -145,7 +145,7 @@ def test_hook_problems_shape_rules():
     too_short = "Two squares always match the big one. Why?"
     assert any("at least three sentences" in p for p in hook_problems(too_short, True))
     words_42 = "One two three four five six seven eight nine ten. " * 4 + "Why not?"
-    assert any("limit is 40" in p for p in hook_problems(words_42, presenter_opens=True))
+    assert any(f"limit is {HOOK_MAX_WORDS_PRESENTER}" in p for p in hook_problems(words_42, presenter_opens=True))
     assert not any("limit" in p for p in hook_problems(words_42, presenter_opens=False))
 
 
@@ -385,7 +385,7 @@ class _SequencePlanner(_Planner):
 def test_a_rewrite_that_misses_the_shape_gets_one_more_request(tmp_path):
     pipeline = _pipeline(tmp_path)
     long_problems = hook_problems(LONG_LOGICAL_HOOK, True)
-    assert long_problems and all("limit is 40" in p for p in long_problems)
+    assert long_problems and all(f"limit is {HOOK_MAX_WORDS_PRESENTER}" in p for p in long_problems)
     planner = _SequencePlanner([LONG_LOGICAL_HOOK, CHAIN_HOOK], flow_problems=[FLOW_PROBLEM])
 
     settled = asyncio.run(pipeline._settle_hook(planner, _lesson(JUMPING_HOOK)))

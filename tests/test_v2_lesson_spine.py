@@ -195,7 +195,7 @@ def test_lesson_prompt_uses_spine_instructions():
 
     prompt = router.prompts("lesson")[0]
     assert prompt.startswith(f"PROMPT_VERSION={PROMPT_VERSION}\n")
-    assert PROMPT_VERSION == "v2.6.0-flow"
+    assert PROMPT_VERSION == "v2.6.1-flow"
     assert "ONE CENTRAL QUESTION" in prompt
     assert '"page_count": 4' in prompt
     assert "Prefer 4-6 substantial scenes" in prompt  # scene guidance kept

@@ -523,6 +523,8 @@ def bridge_prompt(slot_lines: List[str], plan: Any) -> str:
         "- A bridge raises a question or lands a conclusion. It never explains: no formula, no "
         "definition, no analogy, no step of an argument.\n"
         "- The AFTER text is spoken right after your bridge, so never say what it says.\n"
+        "- Never restate a fact, number or conclusion the video has already said (in the hook or any "
+        "earlier scene). Point forward to what is still open instead.\n"
         "- Sound like a person talking: contractions, short sentences, math said in words. No stock "
         "phrases (\"let's dive in\", \"here's the key\", \"building blocks\", \"now that we have\", "
         "\"before we get into the details\"), no em dashes, no exclamation marks.\n\n"
