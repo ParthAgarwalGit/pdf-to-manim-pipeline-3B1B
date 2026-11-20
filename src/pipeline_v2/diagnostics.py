@@ -21,6 +21,9 @@ from PIL import Image, ImageStat
 
 ERROR_WEIGHT = 100
 WARNING_WEIGHT = 3
+# Never drawn: a ValueTracker keeps its value as a point's x coordinate, so an
+# angle of 30 would otherwise read as an object 30 units off screen.
+INVISIBLE_CLASSES = frozenset({"ValueTracker", "ComplexValueTracker"})
 
 
 def issue_score(findings: list[VerificationFinding]) -> int:
@@ -209,7 +212,7 @@ def _sync_finding(findings, seen, event, sync):
 
 def _bounds_checks(findings, seen, item, timestamp):
     bounds = item.get("bounds")
-    if not bounds:
+    if not bounds or item.get("class_name") in INVISIBLE_CLASSES:
         return
     artifact_id = item.get("artifact_id")
     text_like = _is_text(item)

@@ -275,12 +275,34 @@ CODEGEN_STYLE_RULES = """
 Composition and text:
 - Fill the frame. The main visual is the largest thing on screen: a coordinate system that is the subject of the scene uses x_length 9 to 11 and y_length 5.5 to 6.5 (6 to 7.5 by 4.5 to 5.5 when a formula shares the frame). A small diagram in a sea of black is a defect.
 - Keep one evolving picture. The main visual appears within the first two seconds and stays; later beats change it. Do not clear the screen mid-scene to start a different diagram. Dim what is not being discussed instead of deleting it.
-- The narration is heard, so the screen never repeats it: no sentences, titles, headings or captions. Text() is for labels of at most four words beside what they name; mathematics goes in MathTex, at most one new formula per scene, built term by term and colored to match the objects its terms describe.
+- The narration is heard, so the screen never repeats it: no sentences, titles, headings or captions. Text() is for labels of at most four words beside what they name; mathematics goes in MathTex, built term by term and colored to match the objects its terms describe. At most one new formula per scene, except in a derivation (brief.role "derive") or a worked example (brief.role "apply"), whose rules are below.
+
+Layout (the frame is 14.2 by 8 units; everything stays inside x from -6.6 to 6.6 and y from -3.6 to 3.6):
+- Decide the regions first: the main picture in the centre or on one side, formulas in a column on the other side. A formula placed beside a diagram gets .scale_to_fit_width() of the space actually left between the diagram and the frame edge when it would not fit.
+- A label goes beside what it names, with next_to(target, direction, buff=0.2) on the side that has room, never on top of it. A label for a line or arrow sits beside the line's midpoint, offset perpendicular to the line, never centred on it.
+- A label that belongs inside a shape (a node's name) is built with it as VGroup(shape, label) so they move together, and lines and arrows end at the shape's border (buff=0.1 or more), never at its centre.
+- Before new text appears where text already is, FadeOut or Transform the old text. Two pieces of text never share space, and a line never runs through text.
+- About eight things on screen at once at most; FadeOut what the narration has moved past. Labels use font_size 24 to 32, formulas 30 to 40.
+
+Derivations and worked examples:
+- A derivation (brief.role "derive") is one chain of equations in one place. Each step turns the previous line into the next with TransformMatchingTex or ReplacementTransform, coloring the term that changes and briefly showing why it changes (an arrow from the reason to the term, or the reason as a short label of at most four words beside it). At most three lines are visible; when a fourth is needed, fade the oldest. The result of the chain ends inside a SurroundingRectangle.
+- A worked example (brief.role "apply") states the problem as at most two short lines of MathTex at the top, works it below one step per beat in the same column, and boxes the answer. When the example has a picture (a graph, a network, a diagram), the picture changes with each step.
 - Axis titles sit fully inside the frame. A value read off an axis is placed clear of that axis's tick numbers.
 - Draw each mark once: an existing bar, dot or line is moved or resized with .animate or a ValueTracker, never drawn again on top of itself.
 - Pace: Transform and moves take at least 1.0 s, Create and Write at least 0.6 s. Two or three unhurried changes per beat teach more than six quick ones.
 - Keep the picture alive while the narrator talks: never hold the frame unchanged for more than about five seconds. When a beat runs long, spread its changes across it, or use the extra time for a small motion that points at what is being said (a dot travelling along the curve, a highlight sweeping the term, a ValueTracker easing a value).
 - When "visual_world" is given, draw its running example with exactly those values and give each motif its stated color and meaning, so every scene of the video shares one look."""
+
+
+REPAIR_RECIPES = """
+How to fix each kind of finding (object names in findings are variable names in the code; a name like nodes.2.1 is part 1 of item 2 of nodes):
+- TEXT_FRAME_COLLISION or OFFSCREEN_OBJECT: it crosses the frame edge. Keep it beside what it labels but make it fit: put it on the side with room, scale_to_fit_width() to the space left, or move the whole picture inward. Everything stays inside x from -6.6 to 6.6 and y from -3.6 to 3.6.
+- TEXT_TEXT_OVERLAP: two pieces of text share space. FadeOut or Transform the older one before the newer one appears, or place the newer one with next_to(..., buff=0.25) on a free side.
+- TEXT_GEOMETRY_OVERLAP: a label sits on a line, arrow or shape. Move the label beside it: for a line, beside its midpoint and offset perpendicular to it; for a shape, next_to the shape. A name that belongs inside a node is grouped with the node, and lines end at the node's border.
+- VISUAL_DENSITY_HIGH: too much on screen. FadeOut what the narration has moved past.
+- TEXT_TOO_SMALL: labels use font_size 24 or more, formulas 30 or more.
+- BEAT_LATE or SCENE_OVERRUN: shorten the run_time of that beat's animations.
+Fix every listed finding, starting with the first; change nothing else."""
 
 
 # ── narration review ────────────────────────────────────────────────────

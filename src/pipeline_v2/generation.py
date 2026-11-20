@@ -11,11 +11,19 @@ from .instrumentation import deinstrument_scene_code, instrument_scene_code
 from .layout import region_bounds
 from .model_config import CODE_MODEL
 from .models import LessonScene, NarratedScene, SourceFact, VerificationFinding, VisualContract
-from .prompt_text import CODEGEN_STYLE_RULES
+from .prompt_text import CODEGEN_STYLE_RULES, REPAIR_RECIPES
 from .providers import MissingProviderKey, ProviderRouter
 
 
-CODE_PROMPT_VERSION = "v2-creative-code-4-argon-style-alive"
+CODE_PROMPT_VERSION = "v2-creative-code-5-argon-style-layout"
+# Argon's thinking shares the output budget; a long scene's code needs room.
+CODE_OUTPUT_TOKENS = 16000
+# Findings shown to the repair model, most serious first.
+REPAIR_FINDINGS_SHOWN = 12
+REPAIR_PRIORITY = (
+    "TEXT_FRAME_COLLISION", "OFFSCREEN_OBJECT", "TEXT_TEXT_OVERLAP", "TEXT_GEOMETRY_OVERLAP",
+    "TEXT_TOO_SMALL", "VISUAL_DENSITY_HIGH",
+)
 
 
 class CodeGenerationService:
@@ -49,7 +57,7 @@ class CodeGenerationService:
             response = await self.router.text(
                 stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
                 provider="google", model=CODE_MODEL, system=system,
-                prompt=prompt, max_output_tokens=9000,
+                prompt=prompt, max_output_tokens=CODE_OUTPUT_TOKENS,
             )
             raw_code = clean_code(response.text)
             return instrument_scene_code(
@@ -93,13 +101,14 @@ Return one complete executable Python script only. Define exactly one Scene subc
 correct mathematics, the explanatory idea, and every self.next_section("beat_id") marker.
 Do not add tracking, layout-engine, artifact-registration, or audio-timing code; the runtime
 adds those automatically. Do not claim success; the pipeline will render and measure the result.
-{CODEGEN_STYLE_RULES}"""
+{CODEGEN_STYLE_RULES}
+{REPAIR_RECIPES}"""
         raw_code = deinstrument_scene_code(code)
         repair_payload: dict[str, object] = {
             "brief": _lesson_brief(lesson_scene, scene),
             "visual_history": visual_history or [],
             "narration_beats": _beat_payload(scene),
-            "findings": [item.model_dump(mode="json") for item in findings[:8]],
+            "findings": [item.model_dump(mode="json") for item in repair_findings(findings)],
             "existing_code": raw_code,
         }
         if visual_world:
@@ -108,7 +117,7 @@ adds those automatically. Do not claim success; the pipeline will render and mea
         response = await self.router.vision(
             stage="vision_repair", task_id=f"repair-{scene.scene_id}", scene_id=scene.scene_id,
             model=CODE_MODEL, system=system, prompt=prompt,
-            image_paths=[Path(path) for path in frame_paths[:8]], max_output_tokens=9000,
+            image_paths=[Path(path) for path in frame_paths[:8]], max_output_tokens=CODE_OUTPUT_TOKENS,
         )
         repaired = clean_code(response.text)
         return instrument_scene_code(
@@ -161,7 +170,7 @@ layout-engine, artifact-registration, or audio-timing code; the runtime adds tho
             response = await self.router.text(
                 stage="code_generation", task_id=f"code-{scene.scene_id}", scene_id=scene.scene_id,
                 provider="google", model=CODE_MODEL, system=system,
-                prompt=json.dumps(payload, ensure_ascii=False), max_output_tokens=9000,
+                prompt=json.dumps(payload, ensure_ascii=False), max_output_tokens=CODE_OUTPUT_TOKENS,
             )
         except MissingProviderKey:
             if self.router.strict_keys:
@@ -177,6 +186,31 @@ layout-engine, artifact-registration, or audio-timing code; the runtime adds tho
         return instrument_scene_code(
             clean_code(response.text), class_name=class_name, scene=scene, contract=contract,
         ).code
+
+
+def repair_findings(findings: list[VerificationFinding]) -> list[VerificationFinding]:
+    """The findings worth a repair, most serious first, one per kind and object.
+
+    The verifier reports the same overlap at every checkpoint and dozens of
+    density warnings; sending the first few as they came could hide the one
+    error that matters.
+    """
+
+    def rank(item: VerificationFinding) -> tuple[int, int]:
+        kind = REPAIR_PRIORITY.index(item.code) if item.code in REPAIR_PRIORITY else len(REPAIR_PRIORITY)
+        return (0 if item.severity == "error" else 1, kind)
+
+    chosen: list[VerificationFinding] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for item in sorted(findings, key=rank):
+        key = (item.code, tuple(sorted(item.object_ids or item.artifact_ids)))
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append(item)
+        if len(chosen) == REPAIR_FINDINGS_SHOWN:
+            break
+    return chosen
 
 
 def generation_request(
