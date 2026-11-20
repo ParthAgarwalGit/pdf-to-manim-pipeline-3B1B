@@ -70,6 +70,8 @@ HOOK_PROMPT_VERSION = "hook-3-no-spoilers"
 BEAT_FIX_PROMPT_VERSION = "beat-fix-1"
 NARRATION_BATCH_SIZE = 5
 MAX_SPINE_MOTIFS = 4
+# OCR output budgets: first try, then one retry with room for the model's thinking.
+OCR_OUTPUT_BUDGETS = (5000, 16000)
 PLANNING_PROVIDER = "google"
 PLANNING_MODEL = TEXT_MODEL
 
@@ -228,13 +230,28 @@ class PlanningService:
                     "\"kind\":\"text|equation|image|table\"}]} and do not infer unseen content."
                 )
                 try:
-                    response = await self.router.vision(
-                        stage="ocr", task_id=f"ocr-{batch_index:03d}", scene_id="source",
-                        model=OCR_MODEL,
-                        system="You are a precise OCR system for mathematical source documents.",
-                        prompt=prompt, image_paths=image_paths, max_output_tokens=5000,
-                    )
-                    parsed = OCRBatch.model_validate_json(clean_json_text(response.text))
+                    parsed = None
+                    # The model's thinking shares the output budget, so a dense page
+                    # can come back empty; one retry with more room, then the batch
+                    # keeps its extracted text rather than failing the run.
+                    for attempt, budget in enumerate(OCR_OUTPUT_BUDGETS, start=1):
+                        response = await self.router.vision(
+                            stage="ocr", task_id=f"ocr-{batch_index:03d}", scene_id="source",
+                            model=OCR_MODEL,
+                            system="You are a precise OCR system for mathematical source documents.",
+                            prompt=prompt, image_paths=image_paths, max_output_tokens=budget,
+                        )
+                        try:
+                            parsed = OCRBatch.model_validate_json(clean_json_text(response.text))
+                            break
+                        except ValueError as exc:
+                            self.router.artifacts.event(
+                                "ocr_batch_unreadable", stage="ocr",
+                                task_id=f"ocr-{batch_index:03d}", pages=pages, attempt=attempt,
+                                message=f"OCR answer was not valid JSON: {str(exc)[:160]}",
+                            )
+                    if parsed is None:
+                        continue
                     for index, fact in enumerate(parsed.facts):
                         if fact.page_number not in pages:
                             continue
