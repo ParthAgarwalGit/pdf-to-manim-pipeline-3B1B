@@ -29,7 +29,7 @@ def test_vision_call_survives_missing_token_counts(monkeypatch, tmp_path):
     assert response.output_units == estimate_tokens("")
 
 
-def test_an_unreadable_ocr_batch_is_retried_then_skipped(tmp_path):
+def test_an_unreadable_ocr_batch_is_retried_then_read_page_by_page(tmp_path):
     import asyncio
     import pymupdf
 
@@ -50,10 +50,14 @@ def test_an_unreadable_ocr_batch_is_retried_then_skipped(tmp_path):
 
         async def vision(self, *, task_id, max_output_tokens, **kwargs):
             budgets.append((task_id, max_output_tokens))
-            # Batch 0 is always empty; batch 1 answers on its first try.
-            text = "" if task_id == "ocr-000" else '{"facts":[{"page_number":4,"text":"x","kind":"text"}]}'
-            return ProviderResponse(text=text, provider="google", model="m", input_units=1,
-                                    output_units=1, exact_usage=True, raw={})
+            # Batch 0 (pages 1-3) is always empty as a batch; read alone, page 2
+            # answers and pages 1 and 3 stay empty. Batch 1 answers at once.
+            answers = {
+                "ocr-000-p002": '{"facts":[{"page_number":2,"text":"y","kind":"equation"}]}',
+                "ocr-001": '{"facts":[{"page_number":4,"text":"x","kind":"text"}]}',
+            }
+            return ProviderResponse(text=answers.get(task_id, ""), provider="google", model="m",
+                                    input_units=1, output_units=1, exact_usage=True, raw={})
 
     source = SourceDocument(
         filename="doc.pdf", sha256="a", page_count=4, low_confidence_pages=[1, 2, 3, 4],
@@ -61,6 +65,16 @@ def test_an_unreadable_ocr_batch_is_retried_then_skipped(tmp_path):
     )
     result = asyncio.run(PlanningService(Router()).enrich_low_confidence_pages(source, pdf, tmp_path / "ocr"))
 
-    assert budgets == [("ocr-000", b) for b in OCR_OUTPUT_BUDGETS] + [("ocr-001", OCR_OUTPUT_BUDGETS[0])]
-    assert [name for name, _ in events] == ["ocr_batch_unreadable"] * 2
-    assert [f.text for f in result.facts] == ["t", "x"]
+    largest = OCR_OUTPUT_BUDGETS[-1]
+    assert budgets == (
+        [("ocr-000", b) for b in OCR_OUTPUT_BUDGETS]
+        + [(f"ocr-000-p00{page}", largest) for page in (1, 2, 3)]
+        + [("ocr-001", OCR_OUTPUT_BUDGETS[0])]
+    )
+    assert [(name, kw["pages"]) for name, kw in events] == (
+        [("ocr_batch_unreadable", [1, 2, 3])] * 2
+        + [("ocr_batch_unreadable", [1]), ("ocr_batch_unreadable", [3])]
+    )
+    assert [(f.page_number, f.text, f.kind) for f in result.facts] == [
+        (1, "t", "text"), (2, "y", "equation"), (4, "x", "text"),
+    ]

@@ -227,44 +227,57 @@ class PlanningService:
                     )
                     pixmap.save(str(path))
                     image_paths.append(path)
-                prompt = (
-                    f"PROMPT_VERSION={PROMPT_VERSION}\n"
-                    "Transcribe the educational content in these PDF pages in image order. "
-                    f"Their one-based page numbers are {pages}. Preserve equations exactly. "
-                    "Return JSON only as {\"facts\":[{\"page_number\":1,\"text\":\"...\","
-                    "\"kind\":\"text|equation|image|table\"}]} and do not infer unseen content."
-                )
-                try:
-                    parsed = None
-                    # The model's thinking shares the output budget, so a dense page
-                    # can come back empty; one retry with more room, then the batch
-                    # keeps its extracted text rather than failing the run.
-                    for attempt, budget in enumerate(OCR_OUTPUT_BUDGETS, start=1):
+                async def read(read_pages: list[int], paths: list, task_id: str, budgets) -> Optional[OCRBatch]:
+                    """Transcribe ``read_pages``; None when every attempt came back unreadable."""
+
+                    prompt = (
+                        f"PROMPT_VERSION={PROMPT_VERSION}\n"
+                        "Transcribe the educational content in these PDF pages in image order. "
+                        f"Their one-based page numbers are {read_pages}. Preserve equations exactly. "
+                        "Return JSON only as {\"facts\":[{\"page_number\":1,\"text\":\"...\","
+                        "\"kind\":\"text|equation|image|table\"}]} and do not infer unseen content."
+                    )
+                    for attempt, budget in enumerate(budgets, start=1):
                         response = await self.router.vision(
-                            stage="ocr", task_id=f"ocr-{batch_index:03d}", scene_id="source",
-                            model=OCR_MODEL,
+                            stage="ocr", task_id=task_id, scene_id="source", model=OCR_MODEL,
                             system="You are a precise OCR system for mathematical source documents.",
-                            prompt=prompt, image_paths=image_paths, max_output_tokens=budget,
+                            prompt=prompt, image_paths=paths, max_output_tokens=budget,
                         )
                         try:
-                            parsed = OCRBatch.model_validate_json(clean_json_text(response.text))
-                            break
+                            return OCRBatch.model_validate_json(clean_json_text(response.text))
                         except ValueError as exc:
                             self.router.artifacts.event(
-                                "ocr_batch_unreadable", stage="ocr",
-                                task_id=f"ocr-{batch_index:03d}", pages=pages, attempt=attempt,
+                                "ocr_batch_unreadable", stage="ocr", task_id=task_id,
+                                pages=read_pages, attempt=attempt,
                                 message=f"OCR answer was not valid JSON: {str(exc)[:160]}",
                             )
-                    if parsed is None:
-                        continue
-                    for index, fact in enumerate(parsed.facts):
-                        if fact.page_number not in pages:
-                            continue
-                        additions.append(SourceFact(
-                            fact_id=f"p{fact.page_number:03d}-ocr{index:03d}",
-                            page_number=fact.page_number, text=fact.text,
-                            kind=fact.kind, confidence=0.92,
-                        ))
+                    return None
+
+                try:
+                    # The model's thinking shares the output budget, so a batch of dense
+                    # pages can come back empty: retry it with more room, then read its
+                    # pages one at a time. A page still unreadable keeps the PDF's own
+                    # text rather than failing the run.
+                    batch_id = f"ocr-{batch_index:03d}"
+                    parsed = await read(pages, image_paths, batch_id, OCR_OUTPUT_BUDGETS)
+                    readings = [parsed] if parsed is not None else []
+                    if parsed is None and len(pages) > 1:
+                        for page_number, path in zip(pages, image_paths):
+                            single = await read(
+                                [page_number], [path], f"{batch_id}-p{page_number:03d}",
+                                OCR_OUTPUT_BUDGETS[-1:],
+                            )
+                            if single is not None:
+                                readings.append(single)
+                    for reading in readings:
+                        for index, fact in enumerate(reading.facts):
+                            if fact.page_number not in pages:
+                                continue
+                            additions.append(SourceFact(
+                                fact_id=f"p{fact.page_number:03d}-ocr{index:03d}",
+                                page_number=fact.page_number, text=fact.text,
+                                kind=fact.kind, confidence=0.92,
+                            ))
                 except MissingProviderKey as exc:
                     if self.router.strict_keys:
                         raise
