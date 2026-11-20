@@ -59,7 +59,7 @@ MODE_LABELS = {
     "deep": "In-depth lecture",
 }
 MODE_DESCRIPTIONS = {
-    "brief": "about 5 minutes: the main idea of the document, shown visually",
+    "brief": "a short overview: every main concept of the document, shown visually",
     "deep": "up to about 25 minutes: every important concept, derivation and worked example",
 }
 
@@ -147,7 +147,7 @@ def lesson_instructions(
         motif_count = "Two to four"
         scene_rules = """   - Every later scene answers exactly one question the previous scene left the viewer with ("viewer_question") and adds exactly one new idea ("learning_goal", one plain sentence).
    - Show before you name: an idea first appears as something visibly happening to the running example; its name and formula come afterwards, as a label for what was just seen.
-   - Put each idea where the viewer first needs it. Cut definitions the argument never uses, and do not spend a scene on basics the audience already knows.
+   - Put each idea where the viewer first needs it. Cut definitions the argument never uses.
    - "visual_objective" says what the viewer WATCHES CHANGE in that scene, in terms of the motifs: what moves, stretches, rotates, splits, lines up or collapses. Never what text appears.
    - "new_visual_fact" is the one thing the picture shows that no earlier scene showed; "do_not_repeat" lists earlier constructions this scene must not rebuild.
    - The last scene returns to the first scene's picture and answers central_question; "takeaway" is that answer in one sentence.
@@ -159,9 +159,12 @@ def lesson_instructions(
             '5. COVERAGE ("coverage"). One entry per source page: "covered" (a scene explains it), '
             '"compressed" (a scene states its conclusion without the working), "deferred" (named '
             'in passing as beyond this video) or "omitted", with a one-sentence reason for anything '
-            "not covered. In a short video it is right to leave out side results that do not serve "
-            "the central question, and to say so here. A full-coverage request in the scene "
-            "instructions above overrides this: then every substantive page is covered."
+            "not covered. Every main concept the document teaches (its definitions, conditions, "
+            "algorithms and results) appears in some scene, if only in a sentence: this video is "
+            "an overview of the whole document, not of one part of it. Leave out only side "
+            "remarks, administration and material off the main line, and say why here. A "
+            "full-coverage request in the scene instructions above overrides this: then every "
+            "substantive page is covered."
         )
         checks = ""
     return f"""{intro}

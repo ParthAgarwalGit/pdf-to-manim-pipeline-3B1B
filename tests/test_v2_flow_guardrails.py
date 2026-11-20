@@ -172,11 +172,13 @@ def test_prompts_carry_the_flow_rules():
     assert "logical_flow" in review_text and '"flow_breaks"' in review_text
 
 
-def test_narration_without_a_target_length_gets_a_scene_word_range():
+def test_brief_narration_has_no_per_scene_word_cap():
+    # The brief visualizer lets each scene take what its idea needs; only a
+    # professor's target length (or the deep lecture's range) bounds it.
     router = _Router()
     asyncio.run(PlanningService(router).narration(_lesson(), _source()))
     prompt = next(call["prompt"] for call in router.calls if call["stage"] == "narration")
-    assert "Each scene's narration is 80 to 130 words" in prompt
+    assert "Each scene's narration is" not in prompt
 
 
 def test_rewrite_hook_prompt_lists_the_problems_and_falls_back_to_the_old_hook():

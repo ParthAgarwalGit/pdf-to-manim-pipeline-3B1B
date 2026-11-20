@@ -261,7 +261,7 @@ pdf-to-manim-pipeline/
 
 | Mode | Label | What you get |
 |---|---|---|
-| `brief` (default) | Brief concept visualizer | About 5 minutes on the document's main idea, shown visually: an overview of the module. Budget $3, up to 12 scenes. |
+| `brief` (default) | Brief concept visualizer | A short overview of the module: every main concept of the document, shown visually, without full derivations. Each scene takes what its idea needs. Budget $3, up to 12 scenes. |
 | `deep` | In-depth lecture | Up to about 25 minutes teaching the whole document to a new student: every important concept, the intuition behind each result, its derivation step by step, and worked examples of how to use it. Prerequisites get a sentence, not a scene. Budget $15, up to 24 scenes. |
 
 `--max-cost` and `--max-scenes` override the mode's defaults.

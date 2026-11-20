@@ -65,8 +65,8 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.7.0-modes"
-NARRATION_PROMPT_VERSION = "v2.8.0-voice"
+PROMPT_VERSION = "v2.7.1-brief-coverage"
+NARRATION_PROMPT_VERSION = "v2.8.1-voice"
 HOOK_PROMPT_VERSION = "hook-3-no-spoilers"
 BEAT_FIX_PROMPT_VERSION = "beat-fix-1"
 NARRATION_BATCH_SIZE = 5
@@ -543,16 +543,13 @@ class PlanningService:
             "Use a calm teaching pace of 125-140 words per minute. Split each scene into 2-4 "
             "semantic beats. "
         )
+        # The brief visualizer has no per-scene word cap: each scene takes what its
+        # idea needs. A professor's target length still sets a budget (below).
         if self.target_minutes is None and self.mode == "deep":
             low, high = deep_scene_words(len(lesson.scenes))
             pace_guidance += (
                 f"Each scene's narration is {low} to {high} words; derivation and worked-example "
                 "scenes use the upper end. Split each scene into 3-6 semantic beats. "
-            )
-        elif self.target_minutes is None:
-            pace_guidance += (
-                f"Each scene's narration is {DEFAULT_SCENE_WORDS[0]} to {DEFAULT_SCENE_WORDS[1]} "
-                "words: say what the picture needs and stop. "
             )
         outline = [
             {
@@ -1003,8 +1000,6 @@ class BeatFix(BaseModel):
     text: str
 
 
-# Narration length per scene when the professor sets no target length.
-DEFAULT_SCENE_WORDS = (80, 130)
 # In-depth lecture: the whole narration stays under about 25 minutes, and a
 # scene is at least long enough to teach one step properly.
 DEEP_TOTAL_WORDS = 3800

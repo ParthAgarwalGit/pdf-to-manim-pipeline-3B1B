@@ -16,8 +16,8 @@ Main merged at `c4b3a38` (parent `origin/main` at `e4c779a`).
   (the model reads any text it is given aloud). Each take is checked against its
   word count and recorded again when it holds extra or missing speech, and each
   beat's measured speech span sets its window, so visuals land on their words.
-- Two modes (`convert --mode`): `brief`, the "Brief concept visualizer" (about 5 min,
-  the original behaviour), and `deep`, the "In-depth lecture" (up to about 25 min:
+- Two modes (`convert --mode`): `brief`, the "Brief concept visualizer" (a short
+  overview touching every main concept, with no per-scene word cap), and `deep`, the "In-depth lecture" (up to about 25 min:
   chapters; intuition, derive, apply and connect scenes; derivations step by step;
   worked examples). Deep mode has its own lesson, narration and review prompts, larger
   output budgets and render timeouts, and refuses to fall back to a rule-based plan
