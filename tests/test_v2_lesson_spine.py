@@ -195,7 +195,7 @@ def test_lesson_prompt_uses_spine_instructions():
 
     prompt = router.prompts("lesson")[0]
     assert prompt.startswith(f"PROMPT_VERSION={PROMPT_VERSION}\n")
-    assert PROMPT_VERSION == "v2.6.1-flow"
+    assert PROMPT_VERSION == "v2.7.0-modes"
     assert "ONE CENTRAL QUESTION" in prompt
     assert '"page_count": 4' in prompt
     assert "Prefer 4-6 substantial scenes" in prompt  # scene guidance kept
@@ -254,7 +254,7 @@ def test_narration_prompt_has_spoken_rules_and_spine():
 
     prompt = router.prompts("narration")[0]
     assert prompt.startswith(f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\nWrite the requested")
-    assert NARRATION_PROMPT_VERSION == "v2.7.0-flow"
+    assert NARRATION_PROMPT_VERSION == "v2.8.0-voice"
     assert "SPOKEN NARRATION" in prompt
     assert "calm teaching pace" in prompt  # pace guidance kept
     assert "A REVIEWER REJECTED" not in prompt

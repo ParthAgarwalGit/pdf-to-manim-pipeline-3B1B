@@ -88,6 +88,7 @@ from .script_review import (
     locate_flow_breaks,
     review_script,
     splice_beats,
+    with_voice_check,
 )
 from .model_config import PRESENTER_MODEL, TEXT_MODEL
 from .revision import (
@@ -1328,7 +1329,11 @@ class PipelineV2:
                 lambda: review_script(router, lesson, candidate, source, attempt=attempt),
                 dependencies=dependencies,
             )
-            return ScriptReview.model_validate(data) if data else None
+            if not data:
+                return None
+            # Sentences that sound written rather than spoken fail the script too,
+            # and go to the targeted beat fix like the reviewer's flow breaks.
+            return with_voice_check(ScriptReview.model_validate(data), candidate)
 
         first = await review(narration, 1, ["narration"])
         if first is None:
@@ -1343,7 +1348,14 @@ class PipelineV2:
         kept: tuple[NarrationPlan, Optional[list]] = (narration, None)
         fix: Optional[str] = None  # how a replacement script was made: "beats" or "rewrite"
         if self.config.script_review == "revise" and not first.passed:
-            if first.scene_breaks():
+            # A reviewer that failed the script on its own merits without pointing
+            # at sentences gets the whole rewrite (its suggestions include the
+            # voice check's); otherwise only the flagged beats are fixed.
+            whole_rewrite = (
+                first.reviewer_passed is False and not first.reviewer_breaks()
+                and bool(first.improvement_suggestions)
+            )
+            if first.scene_breaks() and not whole_rewrite:
                 fix = "beats"
                 patched, fix_tasks = await self._fix_flow_breaks(
                     planner, lesson, narration, source, first.scene_breaks(),

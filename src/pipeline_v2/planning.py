@@ -64,8 +64,8 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.6.1-flow"
-NARRATION_PROMPT_VERSION = "v2.7.0-flow"
+PROMPT_VERSION = "v2.7.0-modes"
+NARRATION_PROMPT_VERSION = "v2.8.0-voice"
 HOOK_PROMPT_VERSION = "hook-3-no-spoilers"
 BEAT_FIX_PROMPT_VERSION = "beat-fix-1"
 NARRATION_BATCH_SIZE = 5

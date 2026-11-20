@@ -28,7 +28,13 @@ from src.pipeline_v2.prompt_text import (
     narration_instructions,
 )
 from src.pipeline_v2.report import _script_review_html
-from src.pipeline_v2.script_review import locate_flow_breaks, parse_review, splice_beats
+from src.pipeline_v2.script_review import (
+    locate_flow_breaks,
+    parse_review,
+    splice_beats,
+    voice_problems,
+    with_voice_check,
+)
 from src.pipeline_v2.state import RunStore
 from src.prompts.review import PLANNED_CRITERIA_WEIGHTS, storyboard_review_prompt
 
@@ -684,4 +690,108 @@ def test_a_failure_without_flow_breaks_falls_back_to_the_whole_rewrite(monkeypat
     assert kept.scenes[0].beats[0].text == "A rewritten opening."
     (reviewed,) = _events(pipeline, "script_reviewed")
     assert reviewed["fix"] == "rewrite" and reviewed["rewritten"] is True
+    pipeline.store.close()
+
+
+# ── spoken voice ─────────────────────────────────────────────────────────────
+
+ROBOTIC = [
+    ("scene_a", [
+        "Look at the red double-circled node at the top.",
+        "It sends a green arrow labeled one to P one.",
+        "Watch its first broadcast.",
+        "It turns out the receivers disagree.",
+        "In Byzantine agreement, all honest processors must agree on the same value whatever the "
+        "faulty source happens to send.",
+    ]),
+    ("scene_b", ["What if the receivers compare notes?", "They relay what they heard."]),
+    ("scene_c", [
+        "Can a liar still win?",
+        "Each receiver collects every value its peers report and keeps the most common one so that "
+        "a single liar among the four processors can never outvote the honest majority by itself.",
+    ]),
+]
+PLAIN = [
+    ("scene_a", ["One sender, three receivers.", "The sender lies, so the receivers split."]),
+    ("scene_b", ["So they compare notes.", "Each one relays what it heard and keeps the majority."]),
+]
+
+
+def _spoken(scenes) -> NarrationPlan:
+    return NarrationPlan.model_validate({"scenes": [
+        {"scene_id": scene_id, "narration": " ".join(sentences),
+         "beats": [{"beat_id": f"{scene_id}_b1", "text": " ".join(sentences), "source_fact_ids": ["f"]}]}
+        for scene_id, sentences in scenes
+    ]})
+
+
+def test_voice_check_flags_narration_that_describes_slides():
+    problems = {item["sentence"]: item for item in voice_problems(_spoken(ROBOTIC))}
+    assert "It sends a green arrow labeled one to P one." in problems  # second drawing description
+    assert "Look at the red double-circled node at the top." not in problems  # the first is allowed
+    assert "Watch its first broadcast." in problems  # second pointer
+    assert "'it turns out'" in problems["It turns out the receivers disagree."]["problem"]
+    closing = ROBOTIC[0][1][-1]
+    assert "reciting a definition" in problems[closing]["problem"]
+    assert "Can a liar still win?" in problems  # two scenes in a row open with a question
+    assert "What if the receivers compare notes?" not in problems
+    long_one = ROBOTIC[2][1][1]
+    assert f"At {len(long_one.split())} words" in problems[long_one]["problem"]
+    assert {item["where"] for item in problems.values()} == {"scene_a", "scene_c"}
+
+
+def test_plain_spoken_narration_passes_the_voice_check():
+    assert voice_problems(_spoken(PLAIN)) == []
+
+
+def test_voice_problems_fail_a_passing_review_and_are_tagged():
+    review = parse_review(_scored(8.0))
+    assert review.passed
+    checked = with_voice_check(review, _spoken(ROBOTIC))
+    assert checked.passed is False and checked.reviewer_passed is True
+    assert checked.voice_problems == len(voice_problems(_spoken(ROBOTIC)))
+    assert checked.reviewer_breaks() == []
+    assert all(item["kind"] == "voice" for item in checked.scene_breaks())
+    assert len(checked.improvement_suggestions) == checked.voice_problems
+    assert with_voice_check(review, _spoken(PLAIN)) is review
+
+
+def test_voice_problems_in_a_passing_script_get_only_their_beats_fixed(monkeypatch, tmp_path):
+    pipeline = _review_pipeline(tmp_path)
+    narration = _narration()
+    stage_direction = "Watch the gap. Now notice how the gap stays fixed."
+    narration = splice_beats(narration, {("scene_002", "scene_002_b02"): stage_direction})
+    _scripted_reviews(monkeypatch, [_scored(8.0), _scored(8.0)])
+    planner = _FixPlanner(fixes={"scene_002_b02": "The gap keeps its size."})
+
+    kept, checks = asyncio.run(pipeline._review_script(
+        None, planner, _lesson(), narration, _source(), {},
+    ))
+
+    assert planner.rewrites == []
+    ((scene_id, beat_id, _, problems),) = planner.fix_calls
+    assert (scene_id, beat_id) == ("scene_002", "scene_002_b02")
+    assert "look at / notice / watch" in problems[0]
+    assert kept.scenes[1].beats[1].text == "The gap keeps its size." and checks is not None
+    pipeline.store.close()
+
+
+def test_a_reviewer_failure_without_breaks_still_gets_the_whole_rewrite(monkeypatch, tmp_path):
+    pipeline = _review_pipeline(tmp_path)
+    narration = splice_beats(_narration(), {
+        ("scene_002", "scene_002_b02"): "Watch the gap. Now notice how the gap stays fixed.",
+    })
+    low = _scored(5.0, improvement_suggestions=["Open on the triangle."])
+    _scripted_reviews(monkeypatch, [low, _scored(8.0)])
+    rewrite = splice_beats(_narration(), {("scene_001", "scene_001_b01"): "A rewritten opening."})
+    planner = _FixPlanner(rewrite=rewrite)
+
+    kept, _ = asyncio.run(pipeline._review_script(
+        None, planner, _lesson(), narration, _source(), {},
+    ))
+
+    assert planner.fix_calls == []
+    ((feedback),) = planner.rewrites
+    assert feedback[0] == "Open on the triangle." and any("notice" in item for item in feedback[1:])
+    assert kept.scenes[0].beats[0].text == "A rewritten opening."
     pipeline.store.close()

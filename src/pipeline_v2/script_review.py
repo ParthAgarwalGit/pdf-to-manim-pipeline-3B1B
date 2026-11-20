@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -15,12 +16,17 @@ from src.prompts.review import (
 
 from .model_config import TEXT_MODEL
 from .models import LessonPlan, NarrationPlan, SourceDocument
-from .prompt_text import FLOW_PASS_SCORE, REVIEW_PASS_SCORE
+from .prompt_text import (
+    FLOW_PASS_SCORE,
+    MAX_SPOKEN_SENTENCE_WORDS,
+    REVIEW_PASS_SCORE,
+    STOCK_PHRASES,
+)
 from .providers import clean_json_text
 from .state import BudgetExceeded
 
 
-SCRIPT_REVIEW_PROMPT_VERSION = "script-review-2-flow"
+SCRIPT_REVIEW_PROMPT_VERSION = "script-review-3-voice"
 SOURCE_SUMMARY_CHARS = 3000
 TREATMENTS = ("covered", "compressed", "deferred", "omitted")
 
@@ -34,6 +40,15 @@ class ScriptReview(BaseModel):
     # Sentences that do not follow from what came before:
     # {"where": "hook" or a scene_id, "sentence": ..., "problem": ...}.
     flow_breaks: list[dict[str, str]] = Field(default_factory=list)
+    # How many sentences the deterministic voice check flagged (with_voice_check),
+    # and whether the reviewer itself passed the script before they were added.
+    voice_problems: int = 0
+    reviewer_passed: Optional[bool] = None
+
+    def reviewer_breaks(self) -> list[dict[str, str]]:
+        """Scene flow breaks the reviewer found (not the voice check's)."""
+
+        return [item for item in self.scene_breaks() if item.get("kind") != "voice"]
     attempt: int = 1
 
     def hook_breaks(self) -> list[dict[str, str]]:
@@ -277,3 +292,118 @@ def _coverage(lesson: LessonPlan) -> dict[str, Any]:
         "counts": counts,
         "decisions": [entry.model_dump(mode="json") for entry in lesson.coverage],
     }
+
+
+# ── spoken voice ────────────────────────────────────────────────────────
+# Patterns that make narration sound like a machine describing slides. Each
+# finding becomes a flow break, so the targeted beat fix rewrites that beat.
+
+_COLORS = r"(?:red|blue|green|gold|golden|yellow|teal|purple|orange|white|gr[ae]y|pink|maroon)"
+_SHAPES = (
+    r"(?:nodes?|arrows?|dots?|circles?|box(?:es)?|bars?|squares?|labels?|trees?|gauges?|"
+    r"slots?|tiles?|bubbles?|triangles?|rectangles?|outlines?|badges?|cards?|tallies|tally)"
+)
+COLOR_SHAPE = re.compile(rf"\b{_COLORS}\b(?:[\s-]+[a-z]+){{0,2}}?[\s-]+{_SHAPES}\b", re.IGNORECASE)
+POINTER = re.compile(
+    r"^(?:now,?\s+|so,?\s+)?(?:look at|watch|notice|keep your eyes on|see how|observe|focus on|"
+    r"compare)\b",
+    re.IGNORECASE,
+)
+SUMMARY_CLOSE = re.compile(
+    r"^(?:In [A-Z][\w-]*(?: [\w-]+){0,4},|By [a-z]+ing\b|This is (?:called|known as)\b)",
+)
+SUMMARY_MIN_WORDS = 15
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.?!])\s+", text.strip()) if part.strip()]
+
+
+def voice_problems(narration: NarrationPlan) -> list[dict[str, str]]:
+    """Sentences that sound written or machine-made rather than spoken, as flow breaks.
+
+    Checks, per scene: describing the drawing by color and shape (the first
+    one is allowed), more than one "look at"/"notice" pointer, a
+    definition-shaped closing sentence, sentences too long to follow by ear,
+    stock phrases, and two scenes in a row that open with a question.
+    """
+
+    found: list[dict[str, str]] = []
+
+    def flag(scene_id: str, sentence: str, problem: str) -> None:
+        found.append({"where": scene_id, "sentence": sentence, "problem": problem})
+
+    previous_opened_with_question = False
+    for scene in narration.scenes:
+        sentences = [sentence for beat in scene.beats for sentence in _sentences(beat.text)]
+        if not sentences:
+            continue
+        drawing, pointers = 0, 0
+        for sentence in sentences:
+            words = len(sentence.split())
+            lowered = sentence.lower()
+            if COLOR_SHAPE.search(sentence):
+                drawing += 1
+                if drawing > 1:
+                    flag(scene.scene_id, sentence,
+                         "It describes the drawing by color and shape; say what the thing is or "
+                         "what it does instead.")
+            if POINTER.search(sentence):
+                pointers += 1
+                if pointers > 1:
+                    flag(scene.scene_id, sentence,
+                         "Another 'look at / notice / watch' instruction; the animation already "
+                         "shows where to look, so say what happens instead.")
+            if words > MAX_SPOKEN_SENTENCE_WORDS:
+                flag(scene.scene_id, sentence,
+                     f"At {words} words it is too long to follow by ear; split it into shorter "
+                     "sentences that follow one another.")
+            phrase = next((item for item in STOCK_PHRASES if re.search(rf"\b{re.escape(item)}\b", lowered)), None)
+            if phrase:
+                flag(scene.scene_id, sentence,
+                     f"The phrase '{phrase}' sounds machine-written; say it plainly.")
+        closing = sentences[-1]
+        if SUMMARY_CLOSE.search(closing) and len(closing.split()) >= SUMMARY_MIN_WORDS:
+            flag(scene.scene_id, closing,
+                 "It closes the scene by reciting a definition or summary, which sounds like a "
+                 "textbook; land the point as a plain consequence of what was just shown.")
+        opens_with_question = sentences[0].endswith("?") or (
+            len(sentences) > 1 and sentences[1].endswith("?") and len(sentences[0].split()) < 12
+        )
+        if opens_with_question and previous_opened_with_question:
+            flag(scene.scene_id, next(s for s in sentences[:2] if s.endswith("?")),
+                 "The previous scene also opened with a question; open this one by picking up "
+                 "the consequence of the last scene instead.")
+        previous_opened_with_question = opens_with_question
+    unique: list[dict[str, str]] = []
+    for item in found:
+        if not any(other["sentence"] == item["sentence"] for other in unique):
+            unique.append(item)
+        else:
+            for other in unique:
+                if other["sentence"] == item["sentence"] and item["problem"] not in other["problem"]:
+                    other["problem"] += " " + item["problem"]
+    return unique
+
+
+def with_voice_check(review: ScriptReview, narration: NarrationPlan) -> ScriptReview:
+    """``review`` with the narration's voice problems added as flow breaks.
+
+    A script with any of them does not pass, so in revise mode the beats
+    holding them are rewritten by the targeted beat fix.
+    """
+
+    problems = voice_problems(narration)
+    if not problems:
+        return review
+    known = {item["sentence"] for item in review.flow_breaks}
+    added = [dict(item, kind="voice") for item in problems if item["sentence"] not in known]
+    return review.model_copy(update={
+        "reviewer_passed": review.passed,
+        "flow_breaks": review.flow_breaks + added,
+        "improvement_suggestions": review.improvement_suggestions + [
+            f'In {item["where"]}, "{item["sentence"]}": {item["problem"]}' for item in added
+        ],
+        "passed": review.passed and not added,
+        "voice_problems": len(problems),
+    })
