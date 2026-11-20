@@ -508,8 +508,8 @@ class ProviderRouter:
             usage = getattr(result, "usage", None)
             return ProviderResponse(
                 text=text, provider=provider, model=model,
-                input_units=int(getattr(usage, "input_tokens", estimate_tokens(system + prompt))),
-                output_units=int(getattr(usage, "output_tokens", estimate_tokens(text))),
+                input_units=_usage_count(usage, "input_tokens", estimate_tokens(system + prompt)),
+                output_units=_usage_count(usage, "output_tokens", estimate_tokens(text)),
                 exact_usage=usage is not None,
                 raw={"id": getattr(result, "id", None), "stop_reason": getattr(result, "stop_reason", None)},
             )
@@ -532,8 +532,8 @@ class ProviderRouter:
             usage = result.usage
             return ProviderResponse(
                 text=text, provider=provider, model=model,
-                input_units=int(getattr(usage, "prompt_tokens", estimate_tokens(system + prompt))),
-                output_units=int(getattr(usage, "completion_tokens", estimate_tokens(text))),
+                input_units=_usage_count(usage, "prompt_tokens", estimate_tokens(system + prompt)),
+                output_units=_usage_count(usage, "completion_tokens", estimate_tokens(text)),
                 exact_usage=usage is not None,
                 raw={"id": result.id, "finish_reason": result.choices[0].finish_reason},
             )
@@ -569,15 +569,15 @@ class ProviderRouter:
                 if (value := getattr(part, "text", None))
             )
             usage = getattr(result, "usage_metadata", None)
-            candidate_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
-            thinking_tokens = int(getattr(usage, "thoughts_token_count", 0) or 0)
+            candidate_tokens = _usage_count(usage, "candidates_token_count", 0)
+            thinking_tokens = _usage_count(usage, "thoughts_token_count", 0)
             output_units = candidate_tokens + thinking_tokens
             finish_reason = str(
                 getattr(candidates[0], "finish_reason", "") if candidates else ""
             )
             return ProviderResponse(
                 text=text, provider=provider, model=model,
-                input_units=int(getattr(usage, "prompt_token_count", estimate_tokens(system + prompt))),
+                input_units=_usage_count(usage, "prompt_token_count", estimate_tokens(system + prompt)),
                 output_units=output_units or estimate_tokens(text),
                 exact_usage=usage is not None,
                 raw={
@@ -616,8 +616,8 @@ class ProviderRouter:
         usage = getattr(result, "usage_metadata", None)
         return ProviderResponse(
             text=text, provider="google", model=model,
-            input_units=int(getattr(usage, "prompt_token_count", estimate_tokens(system + prompt))),
-            output_units=int(getattr(usage, "candidates_token_count", estimate_tokens(text))),
+            input_units=_usage_count(usage, "prompt_token_count", estimate_tokens(system + prompt)),
+            output_units=_usage_count(usage, "candidates_token_count", estimate_tokens(text)),
             exact_usage=usage is not None,
             raw={"finish_reason": str(getattr(result, "finish_reason", ""))},
         )
@@ -693,3 +693,13 @@ def _provider_status_code(exc: Exception) -> Optional[int]:
             return int(value)
     match = re.match(r"^\s*(\d{3})\b", str(exc))
     return int(match.group(1)) if match else None
+
+
+def _usage_count(usage: Any, name: str, fallback: int) -> int:
+    """A token count from provider usage metadata, or ``fallback`` when it is absent.
+
+    Gemini reports a count as None, not 0, for an empty or blocked answer.
+    """
+
+    value = getattr(usage, name, None)
+    return int(value) if value is not None else int(fallback)
