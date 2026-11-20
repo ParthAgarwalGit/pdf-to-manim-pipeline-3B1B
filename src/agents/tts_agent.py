@@ -585,6 +585,9 @@ class TTSAgent(Agent):
 
     def _speech_bytes(self, text: str, model: str, voice: str) -> bytes:
         """MP3 bytes for one chunk of text from the configured provider."""
+        from src.utils.speech_text import speakable
+
+        text = speakable(text)  # "V^T" -> "V transpose": spoken, not spelled
         if self.provider is not None:
             return self.provider.synthesize(text)
         response = self.client.audio.speech.create(

@@ -24,6 +24,7 @@ from src.agents.professor_input_interpreter import (
 )
 from src.schemas.directives import ProfessorDirectives
 
+from .model_config import TEXT_MODEL
 from .models import (
     LessonPlan,
     LessonScene,
@@ -37,8 +38,8 @@ from .models import (
 
 Depth = Literal["skip", "brief", "standard", "deep"]
 
-BRIEF_PROVIDER = "openai"
-BRIEF_MODEL = "gpt-5.4-mini"
+BRIEF_PROVIDER = "google"
+BRIEF_MODEL = TEXT_MODEL
 
 # "deep" stays inside the source: V2 narration may not add unsupported claims.
 DEPTH_INSTRUCTIONS: dict[str, str] = {

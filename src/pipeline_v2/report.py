@@ -12,7 +12,9 @@ from urllib.parse import quote
 
 from .models import LessonPlan, NarrationPlan, RunResult, VerificationFinding
 from .observability import RunArtifacts
+from .prompt_text import MODE_DESCRIPTIONS, MODE_LABELS
 from .providers import PRICES, PRICING_SNAPSHOT_DATE
+from .script_review import ScriptReview
 from .state import RunStore
 
 
@@ -81,6 +83,17 @@ def write_costs(artifacts: RunArtifacts, store: RunStore) -> dict[str, Any]:
     }
     artifacts.write_json("costs.json", payload)
     return payload
+
+
+def _mode_label(run_dir: Path) -> str:
+    """The run's video mode as people say it: brief visualizer or in-depth lecture."""
+
+    try:
+        config = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))["config"]
+        mode = config.get("mode") or "brief"
+    except (OSError, ValueError, KeyError, TypeError):
+        mode = "brief"
+    return f"{MODE_LABELS.get(mode, mode)} ({MODE_DESCRIPTIONS.get(mode, '')})"
 
 
 def write_html_report(
@@ -161,6 +174,7 @@ def write_html_report(
             f"<td>{'yes' if scene.repaired else 'no'}</td><td>{'yes' if scene.fallback_used else 'no'}</td>"
             f"<td>{issues}</td><td>{artifact_links or 'None'}</td></tr>"
         )
+    script_review = _script_review_html(artifacts.run_dir) + _presenter_html(artifacts.run_dir)
     critical_display = " &rarr; ".join(html.escape(item) for item in critical_path) or "None"
     parallel_ratio = total_compute / (wall_seconds * 1000) if wall_seconds else 0.0
     document = f"""<!doctype html>
@@ -170,6 +184,7 @@ table{{border-collapse:collapse;width:100%}}th,td{{padding:8px;border:1px solid 
 th{{background:#f3f4f6}}code{{background:#eee;padding:2px 4px}}.ok{{color:#087830}}.bad{{color:#b3261e}}
 a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <body><h1>pdf2manim V2 run {html.escape(result.run_id)}</h1>
+<p>Mode: <strong>{html.escape(_mode_label(artifacts.run_dir))}</strong></p>
 <p>Status: <strong>{html.escape(result.status.value)}</strong></p>
 <ul><li>Scenes: {result.successful_scenes}/{result.total_scenes} successful</li>
 <li>Tasks: {len(finished)}/{len(task_rows)} successful ({task_success_rate:.1f}%); {failure_count} failed</li>
@@ -181,6 +196,7 @@ a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <p>{_artifact_link(artifacts.run_dir, 'Delivery checks', result.delivery_report_path)}
 {_artifact_link(artifacts.run_dir, 'Professor compliance', artifacts.run_dir / 'compliance.json')}</p>
 <p>Delivery: {html.escape(result.delivery_status or 'not checked')}</p>
+{script_review}
 <h2>Critical path</h2><p>{critical_display} <small>({critical_ms / 1000:.2f}s accumulated)</small></p>
 <h2>Stage activity</h2><table><thead><tr><th>Stage</th><th>Tasks</th><th>Succeeded</th>
 <th>Failed</th><th>Worker time</th></tr></thead><tbody>{stage_rows}</tbody></table>
@@ -188,6 +204,72 @@ a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <th>Fallback</th><th>Findings</th><th>Artifacts</th></tr></thead><tbody>{''.join(scene_rows)}</tbody></table>
 </body></html>"""
     return artifacts.write_text("report.html", document)
+
+
+def _script_review_html(run_dir: Path) -> str:
+    """Final script-review score and its weakest criterion, when a review ran."""
+
+    path = run_dir / "script_review.json"
+    try:
+        attempts = [
+            ScriptReview.model_validate(item)
+            for item in json.loads(path.read_text(encoding="utf-8"))
+        ]
+    except (OSError, ValueError, TypeError):
+        return ""
+    if not attempts:
+        return ""
+    # The pipeline keeps a fixed or rewritten script only when it passes or,
+    # failing, scores strictly higher; max() keeps the first on a tie.
+    final = max(attempts, key=lambda item: (item.passed, item.overall_score))
+    weakest = final.weakest_criterion()
+    weakest_text = (
+        f"; weakest: {html.escape(weakest[0])} {float(weakest[1]['score']):.1f}/10"
+        + (f" &mdash; {html.escape(str(weakest[1].get('feedback') or ''))}"
+           if weakest[1].get("feedback") else "")
+        if weakest else ""
+    )
+    verdict = "passed" if final.passed else "below the pass mark"
+    return (
+        f"<h2>Script review</h2><p>Score {final.overall_score:.2f}/10 ({verdict}, "
+        f"{len(attempts)} review(s)){weakest_text} "
+        f"{_artifact_link(run_dir, 'Details', path)}</p>"
+    )
+
+
+def _presenter_html(run_dir: Path) -> str:
+    """Each presenter bridge: kind, text, approval, outcome, seconds and cost."""
+
+    path = run_dir / "presenter" / "render.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        bridges = list(data.get("bridges") or [])
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+    if not bridges:
+        return ""
+    rows = []
+    for item in bridges:
+        reason = f" <small>({html.escape(str(item['reason']))})</small>" if item.get("reason") else ""
+        seconds = item.get("seconds")
+        rows.append(
+            f"<tr><td>{html.escape(str(item.get('bridge_id', '')))}</td>"
+            f"<td>{html.escape(str(item.get('kind', '')))}</td>"
+            f"<td>{html.escape(str(item.get('text', '')))}</td>"
+            f"<td>{'yes' if item.get('approved') else 'no'}</td>"
+            f"<td>{html.escape(str(item.get('status', '')))}{reason}</td>"
+            f"<td>{f'{float(seconds):.1f}s' if seconds is not None else '-'}</td>"
+            f"<td>${float(item.get('cost_usd') or 0.0):.4f}</td></tr>"
+        )
+    return (
+        f"<h2>Presenter bridges</h2><p>Provider: {html.escape(str(data.get('provider', '')))}; "
+        f"voice: {html.escape(str(data.get('voice', '')))}; presenter video "
+        f"{float(data.get('presenter_seconds') or 0.0):.1f}s of "
+        f"{float(data.get('max_presenter_seconds') or 0.0):g}s allowed.</p>"
+        "<table><thead><tr><th>Bridge</th><th>Kind</th><th>Text</th><th>Approved</th>"
+        "<th>Outcome</th><th>Seconds</th><th>Cost</th></tr></thead><tbody>"
+        + "".join(rows) + "</tbody></table>"
+    )
 
 
 def _artifact_link(run_dir: Path, label: str, value: str | Path | None) -> str:

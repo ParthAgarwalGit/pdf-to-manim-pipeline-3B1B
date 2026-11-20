@@ -11,6 +11,22 @@ import click
 
 from src.pipeline_v2 import PipelineV2, PipelineV2Config, RunStatus
 from src.pipeline_v2.models import MAX_V2_SCENES
+from src.pipeline_v2.prompt_text import DEFAULT_VOICE, MODE_DESCRIPTIONS, MODE_LABELS, MODES
+
+
+def _choose_mode(mode: Optional[str]) -> str:
+    """The video mode: as given, asked for at the start when interactive, else brief."""
+
+    if mode:
+        return mode
+    stdin = click.get_text_stream("stdin")
+    if not stdin.isatty():
+        return "brief"
+    click.echo("Which video should pdf2manim make?")
+    for number, name in enumerate(MODES, start=1):
+        click.echo(f"  {number}. {MODE_LABELS[name]} ({MODE_DESCRIPTIONS[name]})")
+    choice = click.prompt("Choose", type=click.IntRange(1, len(MODES)), default=1)
+    return MODES[choice - 1]
 
 
 def _load_env_files() -> None:
@@ -49,7 +65,19 @@ def pdf2manim() -> None:
 @click.option("-o", "--output-dir", type=click.Path(path_type=Path), default=Path("output"))
 @click.option("-q", "--quality", type=click.Choice(["low", "medium", "high"]), default="medium")
 @click.option("--audience", default="undergraduate", show_default=True)
-@click.option("--voice", type=click.Choice(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]), default="alloy")
+@click.option(
+    "--voice",
+    default=DEFAULT_VOICE,
+    show_default=True,
+    help="Prebuilt voice name: a Gemini voice such as Sulafat, Kore or Puck for --tts-provider "
+    "gemini; alloy, nova, ... for openai.",
+)
+@click.option(
+    "--tts-provider",
+    type=click.Choice(["gemini", "openai"]),
+    default="gemini",
+    show_default=True,
+)
 @click.option("--policy", type=click.Choice(["standard", "strict"]), default="standard")
 @click.option("--strict", is_flag=True, help="Alias for --policy strict.")
 @click.option("--repair", type=click.Choice(["off", "eligible"]), default="eligible")
@@ -67,7 +95,20 @@ def pdf2manim() -> None:
     show_default=True,
     help="Audit logs visual findings without rejecting renderable scenes.",
 )
-@click.option("--max-cost", type=click.FloatRange(min=0.01), default=1.0, show_default=True)
+@click.option(
+    "--mode",
+    type=click.Choice(list(MODES)),
+    default=None,
+    help=(
+        f"brief: {MODE_LABELS['brief']} ({MODE_DESCRIPTIONS['brief']}). "
+        f"deep: {MODE_LABELS['deep']} ({MODE_DESCRIPTIONS['deep']}). "
+        "Asked at the start when omitted in an interactive terminal; otherwise brief."
+    ),
+)
+@click.option(
+    "--max-cost", type=click.FloatRange(min=0.01), default=None,
+    help="API budget in dollars [default: 3 for brief, 15 for deep].",
+)
 @click.option(
     "--min-scenes",
     type=click.IntRange(1, MAX_V2_SCENES),
@@ -77,9 +118,11 @@ def pdf2manim() -> None:
 @click.option(
     "--max-scenes",
     type=click.IntRange(1, MAX_V2_SCENES),
-    default=12,
-    show_default=True,
-    help="Scene ceiling; values above 12 request full coverage for long documents.",
+    default=None,
+    help=(
+        "Scene ceiling [default: 12 for brief, 24 for deep]; in brief mode values above 12 "
+        "request full coverage for long documents."
+    ),
 )
 @click.option(
     "--pacing",
@@ -87,6 +130,16 @@ def pdf2manim() -> None:
     default="standard",
     show_default=True,
     help="Use less-dense narration and slower speech in relaxed mode.",
+)
+@click.option(
+    "--script-review",
+    type=click.Choice(["off", "report", "revise"]),
+    default="revise",
+    show_default=True,
+    help=(
+        "Review the planned script before TTS; revise fixes a failing script once "
+        "(only the beats with flagged sentences, else the whole script)."
+    ),
 )
 @click.option("--skip-tts", is_flag=True)
 @click.option("--skip-render", is_flag=True)
@@ -103,21 +156,46 @@ def pdf2manim() -> None:
 @click.option("--brief", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--directives", "directives_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--plan", "plan_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--presenter",
+    type=click.Choice(["off", "gemini", "d-id"]),
+    default="off",
+    show_default=True,
+    help="On-camera presenter bridges between scenes. gemini: a fictional lecturer in the "
+    "narration's voice; d-id: the professor's consented avatar.",
+)
+@click.option(
+    "--approve-bridges", is_flag=True,
+    help="Approve every proposed bridge (otherwise approve with `pdf2manim bridges`).",
+)
+@click.option(
+    "--max-presenter-seconds", type=click.FloatRange(min=0), default=60.0, show_default=True,
+    help="Cap on presenter video in one run.",
+)
+@click.option("--presenter-persona", default="", help="gemini: a worded description of the fictional presenter.")
+@click.option(
+    "--profile", "presenter_profile", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="d-id: professor profile with signed consent.",
+)
+@click.option("--avatar-image-url", default=None, help="d-id: HTTPS URL of the avatar image.")
 def convert(
     input_pdf: str,
     output_dir: Path,
     quality: str,
     audience: str,
     voice: str,
+    tts_provider: str,
     policy: str,
     strict: bool,
     repair: str,
     max_repairs_per_scene: int,
     verifier_mode: str,
-    max_cost: float,
+    mode: Optional[str],
+    max_cost: Optional[float],
     min_scenes: Optional[int],
-    max_scenes: int,
+    max_scenes: Optional[int],
     pacing: str,
+    script_review: str,
     skip_tts: bool,
     skip_render: bool,
     dry_run: bool,
@@ -133,10 +211,22 @@ def convert(
     brief: Optional[Path],
     directives_path: Optional[Path],
     plan_path: Optional[Path],
+    presenter: str,
+    approve_bridges: bool,
+    max_presenter_seconds: float,
+    presenter_persona: str,
+    presenter_profile: Optional[Path],
+    avatar_image_url: Optional[str],
 ) -> None:
     """Run a new V2 conversion for INPUT_PDF."""
     effective_policy = "strict" if strict else policy
-    if min_scenes is not None and min_scenes > max_scenes:
+    mode = _choose_mode(mode)
+    # Budget and scene ceiling default by mode (PipelineV2Config) unless given.
+    mode_settings = {
+        key: value for key, value in {"max_cost_usd": max_cost, "max_scenes": max_scenes}.items()
+        if value is not None
+    }
+    if min_scenes is not None and max_scenes is not None and min_scenes > max_scenes:
         raise click.UsageError("--min-scenes cannot exceed --max-scenes")
     if brief and directives_path:
         raise click.UsageError("Use --brief or --directives, not both.")
@@ -151,19 +241,23 @@ def convert(
     if directives:
         for line in directives.readback():
             click.echo(f"  Brief: {line}")
+    if tts_provider == "openai" and voice == DEFAULT_VOICE:
+        voice = "alloy"  # the default is a Gemini voice; use an OpenAI one
     config = PipelineV2Config(
+        mode=mode,
+        **mode_settings,
         output_dir=output_dir,
         quality=quality,
         audience=audience,
         voice=voice,
+        tts_provider=tts_provider,
         policy=effective_policy,
         repair=repair,
         max_repairs_per_scene=max_repairs_per_scene,
         verifier_mode=verifier_mode,
-        max_cost_usd=max_cost,
         min_scenes=min_scenes,
-        max_scenes=max_scenes,
         pacing=pacing,
+        script_review=script_review,
         enable_tts=not skip_tts,
         enable_render=not skip_render,
         dry_run=dry_run,
@@ -178,20 +272,77 @@ def convert(
         target_minutes=target_minutes,
         directives=directives.model_dump(mode="json", by_alias=True) if directives else None,
         concept_plan=concept_plan.model_dump(mode="json") if concept_plan else None,
+        presenter=presenter,
+        approve_bridges=approve_bridges,
+        max_presenter_seconds=max_presenter_seconds,
+        presenter_persona=presenter_persona,
+        presenter_profile=presenter_profile.resolve() if presenter_profile else None,
+        avatar_image_url=avatar_image_url,
     )
     click.echo("pdf2manim V2")
+    click.echo(f"  Mode:        {MODE_LABELS[config.mode]} ({MODE_DESCRIPTIONS[config.mode]})")
     click.echo(f"  Input:       {input_pdf}")
     click.echo(f"  Policy:      {effective_policy}")
     click.echo(f"  Quality:     {quality}")
-    click.echo(f"  API budget:  ${max_cost:.2f}")
+    click.echo(f"  API budget:  ${config.max_cost_usd:.2f}")
     click.echo(f"  Repair:      {repair}")
     click.echo(f"  Repair cap:  {max_repairs_per_scene} per scene")
     click.echo(f"  Verifier:    {verifier_mode}")
-    click.echo(f"  Scene range: {min_scenes or 'auto'}-{max_scenes}")
+    click.echo(f"  Scene range: {min_scenes or 'auto'}-{config.max_scenes}")
     click.echo(f"  Pacing:      {pacing}")
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
+    if presenter != "off":
+        approval = "all approved" if approve_bridges else "approve with `pdf2manim bridges`"
+        click.echo(f"  Presenter:   {presenter}, up to {max_presenter_seconds:g}s ({approval})")
     result = PipelineV2(config).run(input_pdf)
     _print_result(result)
+
+
+@pdf2manim.command("bridges")
+@click.argument("run_directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--approve", "approve", multiple=True, metavar="all|BRIDGE_ID",
+              help="Approve a bridge (repeat as needed), or all of them.")
+@click.option("--reject", "reject", multiple=True, metavar="BRIDGE_ID",
+              help="Withdraw approval of a bridge (repeat as needed).")
+def bridges_command(run_directory: Path, approve: tuple[str, ...], reject: tuple[str, ...]) -> None:
+    """List a run's presenter bridges and approve or reject them.
+
+    After approving, run `pdf2manim resume RUN_DIRECTORY` to render them.
+    """
+    from src.pipeline_v2.presenter import approve_bridges, load_bridges, save_bridges
+
+    bridges = load_bridges(run_directory)
+    if not bridges:
+        raise click.ClickException(
+            f"No presenter bridges in {run_directory}; convert with --presenter gemini or d-id."
+        )
+    known = {bridge.bridge_id for bridge in bridges}
+    named = (set(approve) - {"all"}) | set(reject)
+    unknown = sorted(named - known)
+    if unknown:
+        raise click.ClickException(
+            f"Unknown bridge id(s): {', '.join(unknown)}. Available: {', '.join(sorted(known))}"
+        )
+    both = sorted(set(approve) & set(reject))
+    if both:
+        raise click.UsageError(f"Bridge(s) both approved and rejected: {', '.join(both)}")
+    if approve:
+        approve_bridges(run_directory, None if "all" in approve else list(approve))
+    if reject:
+        save_bridges(run_directory, [
+            bridge.model_copy(update={"approved": False}) if bridge.bridge_id in reject else bridge
+            for bridge in load_bridges(run_directory)
+        ])
+    click.echo(f"Presenter bridges in {run_directory.resolve()}:")
+    for bridge in load_bridges(run_directory):
+        place = f"before {bridge.before_scene_id}" if bridge.before_scene_id else "at the end"
+        click.echo(
+            f"  {bridge.bridge_id}  {bridge.kind:<10} {bridge.estimated_seconds:5.1f}s  "
+            f"{'approved' if bridge.approved else 'not approved'}  ({place})"
+        )
+        click.echo(f"      {bridge.text}")
+    if approve or reject:
+        click.echo(f"Run `pdf2manim resume {run_directory}` to render the approved bridges.")
 
 
 @pdf2manim.command("plan")

@@ -65,6 +65,11 @@ class SceneMediaPair:
     # The video already carries its narration (did-avatar clips): keep that
     # track, loudness-normalized, instead of muxing TTS audio or silence.
     embedded_audio: bool = False
+    # Hybrid transitions: dip the picture to the shared background at a
+    # change of frame type (presenter <-> split <-> manim). Audio untouched.
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+    fade_color: str = "0x1C1C1C"
 
 
 class AudioVideoComposerInput(AgentInput):
@@ -175,6 +180,11 @@ class AudioVideoComposerAgent(Agent):
 
         for pair in input_data.scene_media:
             result = self._compose_scene(pair, composed_dir)
+            if result.success and (pair.fade_in or pair.fade_out):
+                try:
+                    self._apply_fades(result.composed_video_path, pair, result.final_duration)
+                except Exception as exc:  # a hard cut beats a lost scene
+                    logger.warning("Scene %s: transition fade skipped (%s)", pair.scene_id, exc)
             scene_results.append(result)
             if result.success and result.composed_video_path:
                 composed_videos.append(result.composed_video_path)
@@ -389,6 +399,28 @@ class AudioVideoComposerAgent(Agent):
         ]
         self._run_ffmpeg(cmd, timeout=self.COMPOSE_TIMEOUT)
 
+    def _apply_fades(self, path: str, pair: SceneMediaPair, duration: float) -> None:
+        """Fade the composed clip's picture in/out through the background
+        colour; the audio is copied untouched and the length is unchanged."""
+        if duration <= 0:
+            duration = self._get_media_duration(path)
+        filters = []
+        if pair.fade_in:
+            filters.append(f"fade=t=in:st=0:d={pair.fade_in:.2f}:color={pair.fade_color}")
+        if pair.fade_out and duration > pair.fade_out:
+            filters.append(
+                f"fade=t=out:st={duration - pair.fade_out:.3f}:d={pair.fade_out:.2f}:color={pair.fade_color}"
+            )
+        if not filters:
+            return
+        faded = path[:-4] + "_faded.mp4"
+        self._run_ffmpeg([
+            get_ffmpeg(), "-y", "-i", path, "-vf", ",".join(filters),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "copy", faded,
+        ], timeout=self.COMPOSE_TIMEOUT)
+        os.replace(faded, path)
+
     def _normalize_embedded_audio(self, video: str, output: str) -> None:
         """Keep the clip's own voice track, loudness-normalized like narration.
 
@@ -503,7 +535,8 @@ class AudioVideoComposerAgent(Agent):
             ]
 
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.CONCAT_TIMEOUT
+                cmd, capture_output=True, text=True, timeout=self.CONCAT_TIMEOUT,
+                stdin=subprocess.DEVNULL,
             )
 
             if result.returncode != 0:
@@ -571,7 +604,7 @@ class AudioVideoComposerAgent(Agent):
         """Run an FFmpeg command and raise on failure."""
         logger.debug(f"FFmpeg: {' '.join(cmd)}")
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+            cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             stderr = result.stderr[-500:] if result.stderr else "No stderr."

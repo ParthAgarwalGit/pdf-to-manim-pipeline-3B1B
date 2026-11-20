@@ -1,7 +1,7 @@
 """Storyboard JSON schema for Script/Storyboard Architect."""
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -63,6 +63,15 @@ class Configuration(BaseModel):
     presenter_bridges: str = Field(
         default="off",
         description="'propose' inserts presenter bridge beats (await approval); 'off' none",
+    )
+    lesson_plan: bool = Field(
+        default=True,
+        description="Plan the lesson (question, acts, running example) before scripting.",
+    )
+    visual_world: List[str] = Field(
+        default_factory=list,
+        description="The video's recurring look (running example, motifs), one fact per line, "
+                    "for the visual planner and the code generator. Set by the script architect.",
     )
 
     @field_validator('verbosity')
@@ -569,6 +578,20 @@ class Scene(BaseModel):
         description="'manim' (generated animation) or 'presenter' (a bridge "
                     "beat spoken by the professor's presenter, no Manim code)."
     )
+    frame_type: Optional[Literal["manim", "presenter", "split"]] = Field(
+        default=None,
+        description="Hybrid backend: how the scene is shown, chosen by the frame "
+                    "director from how much the concept needs to be seen. 'manim' "
+                    "full-screen animation, 'presenter' talking presenter (no Manim "
+                    "code), 'split' presenter left + animation right. None outside "
+                    "the hybrid backend."
+    )
+    frame_reason: str = Field(default="", description="Why the frame director chose frame_type")
+    visual_plan_source: str = Field(
+        default="planner",
+        description="Where the visual plan came from: 'planner' (as designed), 'repaired' "
+                    "(cut down to its budgets), or 'fallback' (planner failed; stub plan).",
+    )
 
     @property
     def is_presenter(self) -> bool:
@@ -576,8 +599,16 @@ class Scene(BaseModel):
 
     @property
     def presenter_approved(self) -> bool:
-        """Bridge text is rendered only once the professor approved (locked) it."""
-        return self.is_presenter and bool(self.source_beats) and all(b.locked for b in self.source_beats)
+        """Bridge text is rendered only once the professor approved (locked) it.
+
+        A content scene the frame director shows as a presenter is not a
+        proposal: its narration is the lesson's own, so it needs no approval.
+        """
+        if not (self.is_presenter and self.source_beats):
+            return False
+        if all(b.role != "bridge" for b in self.source_beats):
+            return True
+        return all(b.locked for b in self.source_beats)
 
     @field_validator('scene_id')
     @classmethod

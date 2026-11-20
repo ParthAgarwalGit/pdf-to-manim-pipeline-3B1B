@@ -51,7 +51,10 @@ def _font(size: int):
 
 
 def _ffmpeg(args: List[str], timeout: int = 300) -> None:
-    result = subprocess.run([get_ffmpeg(), "-v", "error", "-y", *args], capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(
+        [get_ffmpeg(), "-v", "error", "-y", *args],
+        capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()[-400:]}")
 
@@ -132,10 +135,14 @@ class PresenterAgent:
         render_quality: str = "medium",
         layout: str = "full",
         disclose: Optional[bool] = None,
+        background: Optional[tuple] = None,
     ):
         self.provider = provider or NoAvatarProvider()
         self.width, self.height, self.fps = RESOLUTIONS.get(render_quality, RESOLUTIONS["medium"])
         self.layout = layout
+        # The hybrid backend uses the Manim background so cuts between
+        # presenter, split and animation frames blend.
+        self.background = tuple(background) if background else BRAND_BACKGROUND
         # Disclosure is required whenever a synthetic likeness is on screen.
         self.disclose = (self.provider.name != "none") if disclose is None else disclose
 
@@ -145,7 +152,7 @@ class PresenterAgent:
         from PIL import Image, ImageDraw
 
         image = background.copy() if background is not None else Image.new(
-            "RGB", (self.width, self.height), BRAND_BACKGROUND,
+            "RGB", (self.width, self.height), self.background,
         )
         draw = ImageDraw.Draw(image, "RGBA")
         size = max(18, self.height // 18)
@@ -193,15 +200,20 @@ class PresenterAgent:
         duration: float,
         out_dir: str,
         previous_video: Optional[str] = None,
+        raw_clip: Optional[str] = None,
     ) -> str:
-        """Render one bridge as a silent clip exactly ``duration`` seconds long."""
+        """Render one bridge as a silent clip exactly ``duration`` seconds long.
+
+        ``raw_clip``: a talking clip already made (a speaking presenter such as
+        Gemini Omni); the provider is not called again.
+        """
         out_dir_path = Path(out_dir)
         out_dir_path.mkdir(parents=True, exist_ok=True)
         output = out_dir_path / f"{scene_id}_presenter.mp4"
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            raw = None
-            if self.provider.name != "none":
+            raw = raw_clip
+            if raw is None and self.provider.name != "none":
                 raw = self.provider.render(audio_path, text, str(tmp_path / "raw.mp4"), self.width, self.height)
             background = None
             if self.layout == "pip" and previous_video and Path(previous_video).is_file():
@@ -237,6 +249,72 @@ class PresenterAgent:
                 "-pix_fmt", "yuv420p", "-an", str(output),
             ])
         return str(output)
+
+    def render_split(
+        self,
+        scene_id: str,
+        text: str,
+        audio_path: str,
+        duration: float,
+        out_dir: str,
+        visual_video: str,
+        raw_clip: Optional[str] = None,
+    ) -> str:
+        """Presenter on the left half, the scene's Manim render on the right.
+
+        For introducing a concept that needs a simple picture while the
+        presenter explains it. Silent clip of exactly ``duration`` seconds;
+        the composer adds the narration. The Manim half holds its last frame
+        if the render is shorter than the narration.
+        """
+        out_dir_path = Path(out_dir)
+        out_dir_path.mkdir(parents=True, exist_ok=True)
+        output = out_dir_path / f"{scene_id}_split.mp4"
+        half = self.width // 2
+        pad = self.height // 24
+        box_w, box_h = half - 2 * pad, self.height - 2 * pad
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            raw = raw_clip
+            if raw is None and self.provider.name != "none":
+                raw = self.provider.render(audio_path, text, str(tmp_path / "raw.mp4"), half, self.height)
+            card = self._card("", tmp_path / "bg.png")
+            inputs = ["-loop", "1", "-framerate", str(self.fps), "-i", str(card)]
+            filters = []
+            if raw is not None:
+                inputs += ["-i", raw]
+                filters.append(f"[1:v]scale={box_w}:{box_h}:force_original_aspect_ratio=decrease[left]")
+            else:  # no avatar: the narration as a text panel
+                panel = self._half_card(text, tmp_path / "panel.png", half)
+                inputs += ["-loop", "1", "-framerate", str(self.fps), "-i", str(panel)]
+                filters.append(f"[1:v]scale={box_w}:{box_h}:force_original_aspect_ratio=decrease[left]")
+            inputs += ["-i", visual_video]
+            filters.append(
+                f"[2:v]scale={box_w}:{box_h}:force_original_aspect_ratio=decrease,"
+                f"tpad=stop_mode=clone:stop_duration={max(duration, 0.5):.3f}[right]"
+            )
+            filters.append(f"[0:v][left]overlay=x=({half}-w)/2:y=(H-h)/2[v0]")
+            filters.append(f"[v0][right]overlay=x={half}+({half}-w)/2:y=(H-h)/2[v1]")
+            last = "[v1]"
+            if self.disclose:
+                inputs += ["-loop", "1", "-i", str(self._disclosure_overlay(tmp_path / "disclosure.png"))]
+                filters.append(f"{last}[3:v]overlay=0:0[v2]")
+                last = "[v2]"
+            filters.append(f"{last}fps={self.fps},format=yuv420p[out]")
+            _ffmpeg([
+                *inputs, "-filter_complex", ";".join(filters), "-map", "[out]",
+                "-t", f"{max(duration, 0.5):.3f}", "-c:v", "libx264", "-preset", "fast",
+                "-pix_fmt", "yuv420p", "-an", str(output),
+            ])
+        return str(output)
+
+    def _half_card(self, text: str, path: Path, width: int) -> Path:
+        saved = self.width
+        try:
+            self.width = width
+            return self._card(text, path)
+        finally:
+            self.width = saved
 
     def credits(self, lines: List[str], out_dir: str, seconds: float = 4.0) -> str:
         """Closing card naming the synthetic presenter/voice and its consent."""

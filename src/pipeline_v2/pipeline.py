@@ -10,6 +10,7 @@ import platform
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, TypeVar
@@ -43,6 +44,8 @@ from .models import (
 )
 from .observability import RunArtifacts
 from .planning import (
+    BEAT_FIX_PROMPT_VERSION,
+    HOOK_PROMPT_VERSION,
     NARRATION_PROMPT_VERSION,
     PLANNING_MODEL,
     PLANNING_PROVIDER,
@@ -50,12 +53,44 @@ from .planning import (
     PlanningService,
     apply_audio_timing,
     extract_source,
+    hook_problems,
     validate_grounding,
     validate_visual_contract,
 )
+from .presenter import (
+    BRIDGES_PROMPT_VERSION,
+    BridgeProposal,
+    PresenterBudget,
+    PresenterClip,
+    PresenterRenderError,
+    PresenterRequest,
+    PresenterSettings,
+    TitleCardPresenter,
+    approve_bridges,
+    bridge_fingerprint,
+    bridge_scene,
+    build_presenter,
+    interleave_segments,
+    load_bridges,
+    merge_proposals,
+    presenter_usd_per_second,
+    propose_bridges,
+    save_bridges,
+    write_bridges,
+)
+from .prompt_text import BEAT_FIX_MAX_EXTRA_WORDS, DEFAULT_VOICE
 from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VERSION
 from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
 from .report import write_costs, write_html_report, write_storyboard
+from .script_review import (
+    SCRIPT_REVIEW_PROMPT_VERSION,
+    ScriptReview,
+    locate_flow_breaks,
+    review_script,
+    splice_beats,
+    with_voice_check,
+)
+from .model_config import PRESENTER_MODEL, TEXT_MODEL
 from .revision import (
     FROZEN_PLANNING_FILE,
     RevisionError,
@@ -73,6 +108,7 @@ from .revision import (
 )
 from .state import BudgetExceeded, RunStore
 from .tts import (
+    OPENAI_VOICES,
     RELAXED_SPEECH_RATE,
     SCENE_END_PAUSE_SECONDS,
     SPEECH_RATE,
@@ -85,6 +121,16 @@ from src.utils.fingerprints import lexicon_for
 
 
 T = TypeVar("T")
+# A hook rewrite, then at most one more that fixes only the first one's shape.
+HOOK_REWRITE_ATTEMPTS = 2
+# Words a beat fix may add beyond the BEAT_FIX_MAX_EXTRA_WORDS it is asked for:
+# the model counts loosely, but a fix much longer than asked is rejected.
+BEAT_FIX_WORD_TOLERANCE = 5
+
+# A fade through black at every cut between a presenter clip and a Manim scene:
+# the outgoing clip fades out and the incoming one fades in, each this long.
+PRESENTER_FADE_SECONDS = 0.25
+PRESENTER_RENDER_FILE = "presenter/render.json"
 
 
 class PipelineV2:
@@ -115,6 +161,10 @@ class PipelineV2:
         self._revision_previous: dict[str, NarratedScene] = {}
         self._lexicon: dict[str, str] = {}
         self._speech_rates: dict[str, float] = {}
+        # Presenter bridges: built at the start of a run with a presenter, so a
+        # refused configuration fails before any paid call.
+        self.presenter_settings: Optional[PresenterSettings] = None
+        self.presenter_provider: Any = None
 
     def run(self, input_pdf: str | Path, *, run_dir: Optional[str | Path] = None) -> RunResult:
         input_path = Path(input_pdf).resolve()
@@ -353,6 +403,8 @@ class PipelineV2:
             concept_plan=(ConceptPlan.model_validate(self.config.concept_plan)
                           if self.config.concept_plan is not None else None),
             target_minutes=self.config.target_minutes,
+            presenter_opens=self.config.presenter != "off",
+            mode=self.config.mode,
         )
         controls = {
             key: value for key, value in {
@@ -370,6 +422,7 @@ class PipelineV2:
             speech_rate=(
                 RELAXED_SPEECH_RATE if self.config.pacing == "relaxed" else SPEECH_RATE
             ),
+            provider=self.config.tts_provider, audience=self.config.audience,
         )
         result = RunResult(run_id=run_id, run_directory=str(run_dir), status=RunStatus.RUNNING)
         revision_state = read_revision_state(run_dir)
@@ -381,6 +434,11 @@ class PipelineV2:
         frozen_plan = load_frozen_planning(run_dir)
 
         try:
+            if self.config.presenter != "off":
+                # Fail fast: a refused presenter configuration (missing key,
+                # consent, image) stops the run before its first paid call.
+                self.presenter_settings = self._presenter_settings(run_dir)
+                self.presenter_provider = build_presenter(self.presenter_settings)
             if self._retry_scene_ids is not None:
                 source = SourceDocument.model_validate_json(
                     (run_dir / "source" / "document.json").read_text(encoding="utf-8")
@@ -433,6 +491,7 @@ class PipelineV2:
                 lesson_data = await self._task(
                     "lesson", "lesson", None,
                     {"source": source.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
+                     **self._mode_inputs(),
                      "min_scenes": self.config.min_scenes,
                      "max_scenes": self.config.max_scenes,
                      "pacing": self.config.pacing,
@@ -449,10 +508,12 @@ class PipelineV2:
                         for scene in lesson.scenes
                     ]
                 })
+                lesson = await self._settle_hook(planner, lesson)
                 narration_data = await self._task(
                     "narration", "narration", None,
                     {"lesson": lesson.model_dump(mode="json"),
                      "prompt_version": NARRATION_PROMPT_VERSION,
+                     **self._mode_inputs(),
                      "pacing": self.config.pacing,
                      **controls,
                      "structured_output_version": STRUCTURED_OUTPUT_VERSION,
@@ -486,6 +547,21 @@ class PipelineV2:
                 narration, self.directives, planner.omitted_concepts,
             )
             compliance.extend(narration_checks)
+            # Only freshly planned scripts are reviewed: a scene retry or a
+            # professor revision reuses a storyboard that must not be rewritten.
+            if (
+                self.config.script_review != "off"
+                and self._retry_scene_ids is None and frozen_plan is None
+            ):
+                reviewed, replacement_checks = await self._review_script(
+                    router, planner, lesson, narration, source, controls,
+                )
+                if replacement_checks is not None:
+                    narration = reviewed
+                    compliance = [
+                        item for item in compliance
+                        if not any(item is check for check in narration_checks)
+                    ] + replacement_checks
             if controls:
                 self.artifacts.write_json("professor_controls.json", controls)
                 self.artifacts.write_json("compliance.json", [
@@ -495,6 +571,12 @@ class PipelineV2:
                     self.artifacts.write_json("length_budget.json", planner.length_report)
                 if self.config.policy == "strict" and any(not item.passed for item in compliance):
                     raise RuntimeError("Professor directives failed compliance; inspect compliance.json")
+            bridges: list[BridgeProposal] = []
+            if self.presenter_provider is not None:
+                bridges = await self._prepare_bridges(router, lesson, narration, run_dir)
+                narration = self._keep_hook(lesson, narration, bridges)
+                if self._retry_scene_ids is None:
+                    self._refresh_first_scene(narration)
             write_storyboard(self.artifacts, lesson, narration)
             result.total_scenes = len(lesson.scenes)
 
@@ -658,18 +740,48 @@ class PipelineV2:
                     video_path=str(path), audio_path=timed.audio_path if timed else None,
                 ))
                 cursor += duration
-            self.artifacts.write_json("timeline.json", [item.model_dump(mode="json") for item in timeline])
-
             strict_failure = self.config.policy == "strict" and result.failed_scenes > 0
+            bridge_clips: dict[str, tuple[BridgeProposal, PresenterClip]] = {}
+            fades: Optional[list[tuple[float, float]]] = None
+            if (
+                self.presenter_provider is not None and self.config.enable_render
+                and ordered_videos and not strict_failure
+            ):
+                bridge_clips = await self._render_bridges(
+                    bridges, audio, lesson, NarrationPlan(scenes=timed_scenes), run_dir,
+                    {segment.scene_id for segment in timeline},
+                )
+                if bridge_clips:
+                    # Each approved clip sits before its scene; no scene is replaced.
+                    timeline = interleave_segments(timeline, bridge_clips)
+                    ordered_videos = [Path(item.video_path) for item in timeline]
+                    cursor = sum(item.duration_seconds for item in timeline)
+                    fades = _presenter_fades(timeline)
+            self.artifacts.write_json("timeline.json", [item.model_dump(mode="json") for item in timeline])
+            # Fades enter the compose inputs only when there are presenter cuts,
+            # so a run without bridges keeps its task hash and its join command.
+            fade_kwargs: dict[str, Any] = {"fades": fades} if fades else {}
+
             if self.config.enable_render and ordered_videos and not strict_failure:
+                compose_inputs = {
+                    "videos": [_file_signature(path) for path in ordered_videos], **fade_kwargs,
+                }
+                # With a presenter the clip list changes as bridges are approved,
+                # edited or rejected, and the store would reuse "final-compose"
+                # regardless; its inputs are part of the id instead.
+                compose_id = (
+                    "final-compose" if self.presenter_provider is None
+                    else f"final-compose-{_digest(compose_inputs)}"
+                )
                 final_path = await self._task(
-                    "final-compose", "composition", None,
-                    {"videos": [_file_signature(path) for path in ordered_videos]},
-                    lambda: asyncio.to_thread(concatenate, ordered_videos, run_dir / "final.mp4"),
+                    compose_id, "composition", None, compose_inputs,
+                    lambda: asyncio.to_thread(
+                        concatenate, ordered_videos, run_dir / "final.mp4", **fade_kwargs,
+                    ),
                     dependencies=[
                         f"compose-{scene.scene_id}" if scene.audio_path else f"render-{scene.scene_id}"
                         for scene in successful
-                    ],
+                    ] + [str(clip.detail.get("task_id")) for _, clip in bridge_clips.values()],
                 )
                 result.final_video_path = str(final_path)
                 av = inspect_av(Path(final_path))
@@ -724,10 +836,14 @@ class PipelineV2:
                     tail_seconds=timed_by_id[item.scene_id].audio_tail_seconds,
                     silent_narration=timed_by_id[item.scene_id].audio_is_placeholder,
                 ) for item in successful if item.final_video_path]
+                if bridge_clips:
+                    # Presenter clips are checked like scenes (streams, length,
+                    # loudness), in the order the final video plays them.
+                    clips = _timeline_clips(clips, timeline, bridge_clips)
                 report = await asyncio.to_thread(
                     run_delivery_gate, clips, Path(result.final_video_path),
                     max_repair_rounds=self.config.max_delivery_repair_rounds,
-                    reconcat=lambda paths: concatenate(paths, run_dir / "final.mp4"),
+                    reconcat=lambda paths: concatenate(paths, run_dir / "final.mp4", **fade_kwargs),
                 )
                 self.artifacts.write_json(
                     "delivery_report.json", report.model_dump(mode="json"),
@@ -778,6 +894,366 @@ class PipelineV2:
             self.artifacts.event("run_failed", message=str(exc), error_type=type(exc).__name__)
         return self._finalize(input_path, result)
 
+    # ── presenter bridges ───────────────────────────────────────────────
+
+    def _presenter_settings(self, run_dir: Path) -> PresenterSettings:
+        # The presenter speaks in the narration's prebuilt Gemini voice; an
+        # OpenAI narration voice has no Gemini twin, so the default is used.
+        voice = DEFAULT_VOICE if self.config.voice in OPENAI_VOICES else self.config.voice
+        return PresenterSettings(
+            provider=self.config.presenter,
+            profile_path=self.config.presenter_profile,
+            avatar_image_url=self.config.avatar_image_url,
+            max_presenter_seconds=self.config.max_presenter_seconds,
+            voice=voice,
+            persona=self.config.presenter_persona,
+            cache_dir=run_dir / "presenter" / "cache",
+        )
+
+    async def _prepare_bridges(
+        self,
+        router: ProviderRouter,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        run_dir: Path,
+    ) -> list[BridgeProposal]:
+        """Propose (and, for a planned lesson, write) bridges; merge with the saved ones.
+
+        The proposal is a checkpointed task, so a resume never pays for the
+        written text twice. The saved file keeps the professor's approvals and
+        edits. Retries and revisions reuse the saved bridges as they are.
+        """
+        existing = load_bridges(run_dir)
+        if existing and self._retry_scene_ids is not None:
+            return existing
+        planned = bool(lesson.central_question.strip())
+
+        async def propose() -> list[BridgeProposal]:
+            proposals = propose_bridges(lesson, narration, planned=planned)
+            if planned and proposals:
+                proposals = await write_bridges(router, proposals, lesson, narration)
+            return proposals
+
+        data = await self._task(
+            "bridges", "bridges", None,
+            {"lesson": lesson.model_dump(mode="json"),
+             "narration": narration.model_dump(mode="json"),
+             "planned": planned, "prompt_version": BRIDGES_PROMPT_VERSION,
+             "model": TEXT_MODEL if planned else None},
+            propose,
+            dependencies=["narration"],
+        )
+        proposed = [BridgeProposal.model_validate(item) for item in data]
+        known = {bridge.bridge_id for bridge in existing}
+        merged = merge_proposals(existing, proposed)
+        save_bridges(run_dir, merged)
+        new_ids = [bridge.bridge_id for bridge in merged if bridge.bridge_id not in known]
+        if self.config.approve_bridges and new_ids:
+            # Only new proposals: a bridge the professor rejected stays rejected.
+            merged = approve_bridges(run_dir, new_ids)
+        approved = sum(bridge.approved for bridge in merged)
+        self.artifacts.event(
+            "bridges_proposed", stage="bridges",
+            message=(
+                f"{len(merged)} presenter bridge(s) proposed, {approved} approved; "
+                "approve with `pdf2manim bridges RUN_DIR --approve ...` and resume."
+            ),
+            bridges=len(merged), approved=approved, planned=planned,
+        )
+        return merged
+
+    def _keep_hook(
+        self, lesson: LessonPlan, narration: NarrationPlan, bridges: list[BridgeProposal],
+    ) -> NarrationPlan:
+        """The narration was written for a presenter who says the hook.
+
+        Without an approved opening bridge, the hook becomes the first sentence
+        of the first beat instead, so it is never lost. Idempotent: a reused
+        storyboard that already starts with the hook is left alone.
+        """
+        hook = " ".join((lesson.hook or "").split())
+        if not hook or any(b.kind == "opening" and b.approved for b in bridges):
+            return narration
+        first = narration.scenes[0]
+        beat = first.beats[0]
+        if beat.text.lstrip().startswith(hook):
+            return narration
+        sentence = hook if hook[-1] in ".!?" else f"{hook}."
+        opened = first.model_copy(update={
+            "narration": f"{sentence} {first.narration.lstrip()}",
+            "beats": [beat.model_copy(update={"text": f"{sentence} {beat.text.lstrip()}"}),
+                      *first.beats[1:]],
+        })
+        self.artifacts.event(
+            "hook_moved_to_narration", stage="bridges", scene_id=first.scene_id,
+            message="No approved opening bridge: the hook opens the first scene's narration.",
+        )
+        return narration.model_copy(update={"scenes": [opened, *narration.scenes[1:]]})
+
+    def _refresh_first_scene(self, narration: NarrationPlan) -> None:
+        """Rebuild the first scene when the hook moved in or out of its narration.
+
+        Approving or rejecting the opening after a run changes what the first
+        scene says; its recorded audio (and the visuals timed to it) must not
+        be reused, since the store keeps a succeeded task whatever its inputs.
+        """
+        first = narration.scenes[0]
+        recorded = self.store.successful_task_output(f"tts-{first.scene_id}")
+        if recorded is None:
+            return
+        spoken = [beat.text for beat in NarratedScene.model_validate(recorded).beats]
+        if spoken == [beat.text for beat in first.beats]:
+            return
+        self.store.prepare_scene_revision([first.scene_id], [first.scene_id])
+        self.artifacts.event(
+            "hook_placement_changed", stage="bridges", scene_id=first.scene_id,
+            message="The opening bridge's approval changed; the first scene is narrated and rendered again.",
+        )
+
+    async def _render_bridges(
+        self,
+        bridges: list[BridgeProposal],
+        audio: NarrationAudioService,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        run_dir: Path,
+        scene_ids: set[str],
+    ) -> dict[str, tuple[BridgeProposal, PresenterClip]]:
+        """Render approved bridges one at a time within the presenter-seconds cap.
+
+        A bridge that does not fit the cap or the dollar budget is skipped and
+        the run continues. An approved opening that cannot be rendered becomes
+        a title card over TTS of its text, so the hook is still spoken.
+        """
+        provider = self.presenter_provider
+        settings = self.presenter_settings
+        budget = PresenterBudget(self.config.max_presenter_seconds)
+        clips: dict[str, tuple[BridgeProposal, PresenterClip]] = {}
+        records: list[dict[str, Any]] = []
+        for bridge in bridges:
+            record: dict[str, Any] = {
+                "bridge_id": bridge.bridge_id, "kind": bridge.kind, "text": bridge.text,
+                "approved": bridge.approved, "before_scene_id": bridge.before_scene_id,
+                "status": "not approved", "seconds": None, "cost_usd": 0.0, "reason": None,
+            }
+            records.append(record)
+            if not bridge.approved:
+                continue
+            clip: Optional[PresenterClip] = None
+            if bridge.before_scene_id is not None and bridge.before_scene_id not in scene_ids:
+                # Its scene produced no video; the timeline would drop the clip.
+                record.update(status="skipped", reason="scene_missing")
+                self.artifacts.event(
+                    "presenter_skipped", stage="presenter", scene_id=bridge.bridge_id,
+                    message=f"{bridge.before_scene_id} has no video; {bridge.bridge_id} is not rendered.",
+                    reason="scene_missing",
+                )
+                continue
+            if bridge.kind == "opening" and _speaks_hook(lesson, narration):
+                # A reused storyboard already opens with the hook (the opening
+                # was approved after it was written): never say it twice.
+                record.update(status="skipped", reason="hook_in_narration")
+                self.artifacts.event(
+                    "presenter_skipped", stage="presenter", scene_id=bridge.bridge_id,
+                    message="The narration already opens with the hook; the opening is not rendered.",
+                    reason="hook_in_narration",
+                )
+                continue
+            if budget.would_exceed(bridge.estimated_seconds):
+                record.update(status="skipped", reason="presenter_seconds")
+                self.artifacts.event(
+                    "presenter_skipped", stage="presenter", scene_id=bridge.bridge_id,
+                    message=(
+                        f"{bridge.bridge_id} ({bridge.estimated_seconds:.1f}s) would pass the "
+                        f"{budget.max_seconds:g}s presenter cap; skipped."
+                    ),
+                    reason="presenter_seconds",
+                )
+            else:
+                try:
+                    clip = await self._presenter_clip(bridge, provider, settings, run_dir)
+                    budget.add(clip.duration_seconds)
+                    record.update(status="rendered", cost_usd=clip.detail.get("cost_usd", 0.0))
+                except BudgetExceeded as exc:
+                    record.update(status="skipped", reason="budget")
+                    self.artifacts.event(
+                        "presenter_skipped", stage="presenter", scene_id=bridge.bridge_id,
+                        message=f"{bridge.bridge_id} does not fit the run budget; skipped. {exc}",
+                        reason="budget",
+                    )
+                except PresenterRenderError as exc:
+                    record.update(status="failed", reason=str(exc))
+                    self.artifacts.event(
+                        "presenter_failed", stage="presenter", scene_id=bridge.bridge_id,
+                        message=f"{bridge.bridge_id} could not be rendered: {exc}",
+                    )
+            if clip is None and bridge.kind == "opening":
+                try:
+                    clip = await self._title_card_bridge(
+                        bridge, audio, lesson, narration, settings, run_dir,
+                    )
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    record.update(status="failed", reason=f"title card: {exc}")
+                    self.artifacts.event(
+                        "presenter_failed", stage="presenter", scene_id=bridge.bridge_id,
+                        message=f"The opening title card could not be made: {exc}",
+                    )
+                else:
+                    record["status"] = "title card"
+                    self.artifacts.event(
+                        "presenter_title_card", stage="presenter", scene_id=bridge.bridge_id,
+                        message="The opening is shown as a title card over TTS of its text.",
+                    )
+            if clip is not None:
+                record["seconds"] = round(clip.duration_seconds, 3)
+                clips[bridge.bridge_id] = (bridge, clip)
+        self.artifacts.write_json(PRESENTER_RENDER_FILE, {
+            "provider": provider.name,
+            "voice": settings.voice if provider.name == "gemini" else settings.voice_id,
+            "max_presenter_seconds": budget.max_seconds,
+            "presenter_seconds": round(budget.spent_seconds, 3),
+            "bridges": records,
+        })
+        return clips
+
+    async def _presenter_clip(
+        self,
+        bridge: BridgeProposal,
+        provider: Any,
+        settings: PresenterSettings,
+        run_dir: Path,
+    ) -> PresenterClip:
+        """One paid presenter clip, reserved before the call and settled after.
+
+        The task input is the bridge's fingerprint: an unchanged bridge is
+        reused on resume or revision, a changed text renders again.
+        """
+        # The run store reuses a succeeded task id whatever its inputs, so the
+        # fingerprint is also part of the id and the file name: a changed text
+        # is a new task and a new clip, and an unchanged one is reused.
+        fingerprint = bridge_fingerprint(bridge, settings)
+        digest = _digest(fingerprint)
+        task_id = f"presenter-{bridge.bridge_id}-{digest}"
+        request = PresenterRequest(
+            bridge_id=bridge.bridge_id, text=bridge.text, audio_path=None,
+            duration_seconds=bridge.estimated_seconds,
+        )
+        output = run_dir / "presenter" / "clips" / f"{bridge.bridge_id}-{digest}.mp4"
+        vendor = "google" if provider.name == "gemini" else provider.name
+        model = PRESENTER_MODEL if provider.name == "gemini" else provider.name
+
+        async def operation() -> dict[str, Any]:
+            estimate = float(provider.estimated_cost_usd(request))
+            call_id = None
+            if estimate > 0:
+                call_id = f"presenter-{uuid.uuid4().hex[:12]}"
+                # Raises BudgetExceeded before anything is requested.
+                self.store.reserve_call(
+                    call_id, task_id=task_id, scene_id=bridge.bridge_id, stage="presenter",
+                    provider=vendor, model=model, amount_usd=estimate,
+                )
+                self.artifacts.event(
+                    "api_call_started", stage="presenter", scene_id=bridge.bridge_id,
+                    task_id=task_id, provider=vendor, model=model, call_id=call_id,
+                    reserved_usd=estimate,
+                )
+            try:
+                clip = await asyncio.to_thread(provider.render, request, output)
+            except BaseException as exc:
+                if call_id is not None:
+                    # The vendor may have billed a failed take: keep the reservation.
+                    self.store.settle_call(
+                        call_id, actual_usd=estimate, input_units=0, output_units=0,
+                        exact=False, status="FAILED_UNCERTAIN",
+                    )
+                    self.artifacts.event(
+                        "api_call_failed", stage="presenter", scene_id=bridge.bridge_id,
+                        task_id=task_id, provider=vendor, model=model, call_id=call_id,
+                        message=str(exc),
+                    )
+                raise
+            actual = 0.0
+            if call_id is not None:
+                actual = round(clip.duration_seconds * presenter_usd_per_second(provider.name), 6)
+                self.store.settle_call(
+                    call_id, actual_usd=actual, input_units=0,
+                    output_units=round(clip.duration_seconds), exact=False,
+                )
+                self.artifacts.event(
+                    "api_call_finished", stage="presenter", scene_id=bridge.bridge_id,
+                    task_id=task_id, provider=vendor, model=model, call_id=call_id,
+                    actual_usd=actual, clip_seconds=round(clip.duration_seconds, 3),
+                )
+            clip.detail.update(task_id=task_id, cost_usd=actual)
+            return _clip_payload(clip)
+
+        data = await self._task(
+            task_id, "presenter", bridge.bridge_id, {"bridge": fingerprint}, operation,
+            dependencies=["bridges"],
+        )
+        return _clip_from(data)
+
+    async def _title_card_bridge(
+        self,
+        bridge: BridgeProposal,
+        audio: NarrationAudioService,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        settings: PresenterSettings,
+        run_dir: Path,
+    ) -> PresenterClip:
+        """The opening as a title card over TTS of its text, in the narration's voice."""
+        fingerprint = bridge_fingerprint(bridge, settings)
+        bridge_dir = run_dir / "presenter" / f"{bridge.bridge_id}-{_digest(fingerprint)}"
+        audio_path: Optional[str] = None
+        seconds = bridge.estimated_seconds
+        silent = True
+        tts_id = None
+        if self.config.enable_tts:
+            scene = bridge_scene(bridge, lesson, narration)
+            tts_inputs = {
+                "narration": scene.model_dump(mode="json"), "voice": self.config.voice,
+                "stage_version": TTS_TIMING_VERSION, "quality": self.config.quality,
+            }
+            tts_id = f"tts-{bridge.bridge_id}-{_digest(tts_inputs)}"
+            async with self._tts_limit:
+                timed_data = await self._task(
+                    tts_id, "tts", bridge.bridge_id, tts_inputs,
+                    lambda: audio.generate(scene, bridge_dir),
+                    dependencies=["bridges"],
+                )
+            timed = NarratedScene.model_validate(timed_data)
+            audio_path = timed.audio_path
+            seconds = timed.audio_duration_seconds or seconds
+            silent = timed.audio_is_placeholder
+        card = TitleCardPresenter(settings.width, settings.height, settings.fps)
+        request = PresenterRequest(
+            bridge_id=bridge.bridge_id, text=bridge.text,
+            audio_path=Path(audio_path) if audio_path else None, duration_seconds=seconds,
+        )
+        card_inputs = {
+            "bridge": fingerprint, "card": True,
+            "audio": _file_signature(Path(audio_path)) if audio_path else None,
+            "seconds": round(seconds, 3),
+        }
+        digest = _digest(card_inputs)
+        output = run_dir / "presenter" / "clips" / f"{bridge.bridge_id}-card-{digest}.mp4"
+        task_id = f"presenter-card-{bridge.bridge_id}-{digest}"
+
+        def render() -> dict[str, Any]:
+            clip = card.render(request, output)
+            clip.detail.update(task_id=task_id, cost_usd=0.0, silent_narration=silent)
+            return _clip_payload(clip)
+
+        data = await self._task(
+            task_id, "presenter", bridge.bridge_id, card_inputs,
+            lambda: asyncio.to_thread(render),
+            dependencies=[tts_id] if tts_id else ["bridges"],
+        )
+        return _clip_from(data)
+
     async def _tts_task(
         self,
         service: NarrationAudioService,
@@ -821,6 +1297,394 @@ class PipelineV2:
                 f"tts-{scene.scene_id}", "tts", scene.scene_id, payload, operation,
                 dependencies=["narration"],
             )
+
+    def _mode_inputs(self) -> dict[str, str]:
+        """The video mode, for task inputs and calls that depend on it.
+
+        Empty for the brief visualizer, so its task hashes and calls are the
+        same as before modes existed.
+        """
+
+        return {"mode": "deep"} if getattr(self.config, "mode", "brief") == "deep" else {}
+
+    async def _review_script(
+        self,
+        router: ProviderRouter,
+        planner: PlanningService,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        source: SourceDocument,
+        controls: dict[str, Any],
+    ) -> tuple[NarrationPlan, Optional[list]]:
+        """Review the planned script before TTS; in revise mode fix a failing one once.
+
+        A script that fails on sentences that do not follow has only the beats
+        holding them rewritten (_fix_flow_breaks); one that fails with no such
+        sentence is rewritten whole. The new script is reviewed once and kept
+        only if it passes or scores higher than the original.
+
+        Returns the narration to use and, when a fixed or rewritten script
+        replaced the original, its narration-directive checks (otherwise
+        ``None``). The hook was settled before the narration was written, so a
+        hook sentence the review flags is reported, never rewritten here: a new
+        hook now could no longer match the narration that follows it.
+        """
+
+        async def review(
+            candidate: NarrationPlan, attempt: int, dependencies: list[str],
+        ) -> Optional[ScriptReview]:
+            data = await self._task(
+                f"script-review-{attempt}", "script_review", None,
+                {"narration": candidate.model_dump(mode="json"),
+                 "lesson": lesson.model_dump(mode="json"), "attempt": attempt,
+                 "model": TEXT_MODEL, "prompt_version": SCRIPT_REVIEW_PROMPT_VERSION,
+                 **self._mode_inputs()},
+                lambda: review_script(
+                    router, lesson, candidate, source, attempt=attempt, **self._mode_inputs(),
+                ),
+                dependencies=dependencies,
+            )
+            if not data:
+                return None
+            # Sentences that sound written rather than spoken fail the script too,
+            # and go to the targeted beat fix like the reviewer's flow breaks.
+            return with_voice_check(ScriptReview.model_validate(data), candidate)
+
+        first = await review(narration, 1, ["narration"])
+        if first is None:
+            return narration, None
+        if first.hook_breaks():
+            self.artifacts.event(
+                "hook_flow_reported", stage="script_review",
+                message="The script review flagged hook sentences; the hook was settled earlier.",
+                breaks=first.hook_breaks(),
+            )
+        attempts = [first]
+        kept: tuple[NarrationPlan, Optional[list]] = (narration, None)
+        fix: Optional[str] = None  # how a replacement script was made: "beats" or "rewrite"
+        if self.config.script_review == "revise" and not first.passed:
+            # A reviewer that failed the script on its own merits without pointing
+            # at sentences gets the whole rewrite (its suggestions include the
+            # voice check's); otherwise only the flagged beats are fixed.
+            whole_rewrite = (
+                first.reviewer_passed is False and not first.reviewer_breaks()
+                and bool(first.improvement_suggestions)
+            )
+            if first.scene_breaks() and not whole_rewrite:
+                fix = "beats"
+                patched, fix_tasks = await self._fix_flow_breaks(
+                    planner, lesson, narration, source, first.scene_breaks(),
+                )
+                if patched is not None:
+                    patched, patched_checks = enforce_narration_directives(
+                        patched, self.directives, planner.omitted_concepts,
+                    )
+                    recheck = await review(patched, 2, fix_tasks)
+                    if recheck is not None:
+                        attempts.append(recheck)
+                        # first.passed is False, so this keeps a fix that passes or scores higher.
+                        if (recheck.passed, recheck.overall_score) > (
+                            first.passed, first.overall_score,
+                        ):
+                            kept = (patched, patched_checks)
+            elif not first.improvement_suggestions:
+                self.artifacts.event(
+                    "script_review_rewrite_skipped", stage="script_review",
+                    message="The review failed without improvement suggestions; kept the script.",
+                    score=first.overall_score,
+                )
+            else:
+                fix = "rewrite"
+                planner_state = (
+                    planner.length_budget, planner.length_report, planner.compliance_checks,
+                )
+                second: Optional[ScriptReview] = None
+                try:
+                    revised_data = await self._task(
+                        "narration-revised", "narration", None,
+                        {"lesson": lesson.model_dump(mode="json"),
+                         "review_feedback": first.improvement_suggestions,
+                         "prompt_version": NARRATION_PROMPT_VERSION,
+                     **self._mode_inputs(),
+                         "pacing": self.config.pacing,
+                         **controls,
+                         "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                         "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                        lambda: planner.narration(
+                            lesson, source, review_feedback=first.improvement_suggestions,
+                        ),
+                        dependencies=["script-review-1"],
+                    )
+                    revised = NarrationPlan.model_validate(revised_data)
+                    grounding_errors = validate_grounding(lesson, revised, source)
+                    if grounding_errors:
+                        self.artifacts.event(
+                            "script_review_rewrite_rejected", stage="script_review",
+                            message="; ".join(grounding_errors),
+                        )
+                    else:
+                        revised, revised_checks = enforce_narration_directives(
+                            revised, self.directives, planner.omitted_concepts,
+                        )
+                        second = await review(revised, 2, ["narration-revised"])
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self.artifacts.event(
+                        "script_review_rewrite_rejected", stage="script_review",
+                        message=f"The rewrite failed; kept the reviewed script: {exc}",
+                    )
+                if second is not None:
+                    attempts.append(second)
+                # A rewrite that passes beats one that does not; then the higher score wins.
+                if second is not None and (
+                    (second.passed, second.overall_score) > (first.passed, first.overall_score)
+                ):
+                    kept = (revised, revised_checks)
+                else:
+                    (planner.length_budget, planner.length_report,
+                     planner.compliance_checks) = planner_state
+        final = attempts[-1] if kept[1] is not None else first
+        self.artifacts.write_json(
+            "script_review.json", [item.model_dump(mode="json") for item in attempts],
+        )
+        self.artifacts.event(
+            "script_reviewed", stage="script_review",
+            message=(
+                f"Script review scored {final.overall_score:.2f}/10 "
+                f"({'passed' if final.passed else 'below the pass mark'}) after "
+                f"{len(attempts)} review(s); "
+                + (("the fixed script was kept." if fix == "beats"
+                    else "the rewritten script was kept.") if kept[1] is not None
+                   else "the original script was kept.")
+            ),
+            score=final.overall_score, passed=final.passed, attempts=len(attempts),
+            rewritten=kept[1] is not None, fix=fix,
+        )
+        return kept
+
+    async def _fix_flow_breaks(
+        self,
+        planner: PlanningService,
+        lesson: LessonPlan,
+        narration: NarrationPlan,
+        source: SourceDocument,
+        breaks: list[dict[str, str]],
+    ) -> tuple[Optional[NarrationPlan], list[str]]:
+        """Rewrite only the beats holding the review's flow breaks, into a copy of the narration.
+
+        Each beat is asked for once, with every break it holds, and keeps its
+        id and cited facts. A fix that is empty, unchanged or longer than the
+        allowance is dropped and its beat keeps its text. A beat that opens with
+        the hook is never rewritten: the hook was settled before the narration.
+        Returns the fixed narration (``None`` when no beat changed) and the fix
+        task ids, which the re-review depends on.
+        """
+
+        placed, unplaced = locate_flow_breaks(narration, breaks)
+        if unplaced:
+            self.artifacts.event(
+                "flow_breaks_unplaced", stage="script_review",
+                message=f"{len(unplaced)} flagged sentence(s) are in no beat; left as they are.",
+                breaks=unplaced,
+            )
+        first_scene = narration.scenes[0]
+        hook_beat = (
+            (first_scene.scene_id, first_scene.beats[0].beat_id)
+            if _speaks_hook(lesson, narration) else None
+        )
+        facts = {fact.fact_id: fact.text for fact in source.facts}
+        positions = {scene.scene_id: index for index, scene in enumerate(narration.scenes)}
+        texts: dict[tuple[str, str], str] = {}
+        task_ids: list[str] = []
+        fixes: list[dict[str, Any]] = []
+        for (scene_id, beat_id), items in placed.items():
+            if (scene_id, beat_id) == hook_beat:
+                self.artifacts.event(
+                    "beat_fix_skipped", stage="script_review", scene_id=scene_id,
+                    message=f"{beat_id} opens with the settled hook; it is not rewritten.",
+                    breaks=items,
+                )
+                continue
+            index = positions[scene_id]
+            scene = narration.scenes[index]
+            beat = next(item for item in scene.beats if item.beat_id == beat_id)
+            previous = narration.scenes[index - 1].beats[-1].text if index else None
+            problems = [
+                f'The sentence "{item["sentence"]}" does not follow: {item["problem"]}'
+                for item in items
+            ]
+            inputs = {
+                "scene": scene.model_dump(mode="json"), "beat_id": beat_id,
+                "previous_beat": previous, "problems": problems,
+                "facts": {
+                    fact_id: facts[fact_id] for fact_id in beat.source_fact_ids
+                    if fact_id in facts
+                },
+                "prompt_version": BEAT_FIX_PROMPT_VERSION,
+                "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL,
+            }
+            task_id = f"beat-fix-{beat_id}-{_digest(inputs)}"
+
+            async def operation(
+                scene: NarratedScene = scene, beat_id: str = beat_id,
+                previous: Optional[str] = previous, problems: list[str] = problems,
+            ) -> dict[str, str]:
+                return {"text": await planner.fix_beat(scene, beat_id, previous, problems, source)}
+
+            try:
+                data = await self._task(
+                    task_id, "narration", scene_id, inputs, operation,
+                    dependencies=["script-review-1"],
+                )
+            except BudgetExceeded:
+                raise
+            except Exception as exc:
+                self.artifacts.event(
+                    "beat_fix_rejected", stage="script_review", scene_id=scene_id,
+                    message=f"The fix of {beat_id} failed; it keeps its text: {exc}",
+                )
+                continue
+            text = " ".join(str(data.get("text") or "").split())
+            reason = _beat_fix_problem(beat.text, text)
+            if reason:
+                self.artifacts.event(
+                    "beat_fix_rejected", stage="script_review", scene_id=scene_id,
+                    message=f"The fix of {beat_id} was dropped: {reason}.",
+                    before=beat.text, after=text,
+                )
+                continue
+            texts[(scene_id, beat_id)] = text
+            task_ids.append(task_id)
+            fixes.append({
+                "scene_id": scene_id, "beat_id": beat_id, "problems": problems,
+                "before": beat.text, "after": text,
+            })
+        if not texts:
+            self.artifacts.event(
+                "script_review_fix_skipped", stage="script_review",
+                message="No flagged beat could be fixed; kept the reviewed script.",
+            )
+            return None, []
+        self.artifacts.event(
+            "flow_breaks_fixed", stage="script_review",
+            message=f"Rewrote {len(texts)} beat(s) holding sentences that did not follow.",
+            fixes=fixes,
+        )
+        return splice_beats(narration, texts), task_ids
+
+    async def _settle_hook(self, planner: PlanningService, lesson: LessonPlan) -> LessonPlan:
+        """Check the planned hook before any narration is written; rewrite it once if needed.
+
+        The checkable shape (length, one closing question, no dashes, a chain
+        of sentences) is always enforced. Whether each sentence follows is
+        checked by a model when the script review is on; in report mode those
+        findings are logged and the hook is kept.
+        """
+
+        if not (lesson.hook or "").strip():
+            return lesson
+        problems = hook_problems(lesson.hook, planner.presenter_opens)
+        flow: list[str] = []
+        if self.config.script_review != "off":
+            async def check() -> dict[str, list[str]]:
+                return {"problems": await planner.check_hook(lesson)}
+
+            data = await self._task(
+                "hook-check", "lesson", None,
+                {"hook": lesson.hook, "central_question": lesson.central_question,
+                 "running_example": lesson.running_example.model_dump(mode="json"),
+                 "prompt_version": HOOK_PROMPT_VERSION,
+                 "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                 "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                check,
+                dependencies=["lesson"],
+            )
+            flow = [str(item) for item in data.get("problems") or []]
+            self.artifacts.event(
+                "hook_checked", stage="lesson", task_id="hook-check",
+                message=(
+                    f"{len(flow)} hook sentence(s) do not follow."
+                    if flow else "Every hook sentence follows from the one before."
+                ),
+                problems=flow,
+            )
+        if self.config.script_review != "revise":
+            flow = []
+        if not problems and not flow:
+            return lesson
+        return await self._rewrite_hook(
+            planner, lesson, problems + flow, "hook-rewrite", prefer_rewrite=bool(flow),
+        )
+
+    async def _rewrite_hook(
+        self,
+        planner: PlanningService,
+        lesson: LessonPlan,
+        problems: list[str],
+        task_id: str,
+        *,
+        prefer_rewrite: bool = False,
+    ) -> LessonPlan:
+        """Rewrite the hook to fix ``problems``; once more if the rewrite misses the shape.
+
+        A hook is never trimmed to fit: cutting sentences out of a chain of
+        reasoning is what makes it stop following, so it is rewritten whole.
+        The second request only fixes the first rewrite's checkable shape
+        (length, punctuation), keeping its reasoning. ``prefer_rewrite`` (the
+        planned hook does not follow): any rewrite beats it, the one with the
+        fewest shape problems winning; otherwise a rewrite must not fail more
+        shape checks than the planned hook.
+        """
+
+        presenter = planner.presenter_opens
+        original = len(hook_problems(lesson.hook, presenter))
+        best: Optional[tuple[int, str]] = None
+        attempts: list[dict[str, Any]] = []
+        current, asked = lesson, list(problems)
+        for attempt in range(1, HOOK_REWRITE_ATTEMPTS + 1):
+            attempt_id = task_id if attempt == 1 else f"{task_id}-{attempt}"
+
+            async def operation(plan: LessonPlan = current, todo: list[str] = asked) -> dict[str, str]:
+                return {"hook": await planner.rewrite_hook(plan, todo)}
+
+            data = await self._task(
+                attempt_id, "lesson", None,
+                {"lesson": current.model_dump(mode="json"), "problems": asked,
+                 "presenter_opens": presenter,
+                 "prompt_version": HOOK_PROMPT_VERSION,
+                 "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                 "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                operation,
+                dependencies=["lesson"],
+            )
+            hook = " ".join(str(data.get("hook") or "").split())
+            if not hook or hook == current.hook:
+                attempts.append({"hook": hook, "problems": None})
+                break
+            remaining = hook_problems(hook, presenter)
+            attempts.append({"hook": hook, "problems": remaining})
+            if (prefer_rewrite or len(remaining) <= original) and (
+                best is None or len(remaining) <= best[0]
+            ):
+                best = (len(remaining), hook)
+            if not remaining:
+                break
+            current, asked = lesson.model_copy(update={"hook": hook}), remaining
+        kept = best is not None
+        self.artifacts.event(
+            "hook_rewritten" if kept else "hook_rewrite_rejected", stage="lesson",
+            task_id=task_id,
+            message=(
+                "Replaced the hook so each sentence follows from the one before."
+                if kept else
+                "Kept the planned hook: no rewrite was usable or passed more checks."
+            ),
+            problems=problems, before=lesson.hook, after=best[1] if kept else lesson.hook,
+            attempts=attempts,
+        )
+        return lesson.model_copy(update={"hook": best[1]}) if kept else lesson
 
     async def _contract_task(
         self,
@@ -913,6 +1777,12 @@ class PipelineV2:
             if rules:
                 code_payload["notation_rules"] = rules
             notation_kwargs = {"notation_rules": rules} if rules else {}
+            # Added only when the lesson has a running example or motifs, so
+            # runs without a spine keep their code task hashes and requests.
+            world = lesson.visual_world()
+            if world:
+                code_payload["visual_world"] = world
+            world_kwargs = {"visual_world": world} if world else {}
             action = self._revision_actions.get(scene_id)
             previous_code = self._previous_code(scene_id) if action is not None else None
             code_mode = "generate"
@@ -939,12 +1809,14 @@ class PipelineV2:
                         instruction=action.instruction, lesson_scene=lesson_scene,
                         visual_history=visual_history,
                         **notation_kwargs,
+                        **world_kwargs,
                     )
                 return generator.generate(
                     timed_scene, contract, facts, lesson_scene=lesson_scene,
                     visual_history=visual_history,
                     retry_attempt=retry_attempt,
                     **notation_kwargs,
+                    **world_kwargs,
                 )
 
             async with self._code_limit:
@@ -1017,6 +1889,7 @@ class PipelineV2:
                                 findings=selected.findings, frame_paths=selected.frame_paths,
                                 lesson_scene=lesson_scene,
                                 visual_history=visual_history,
+                                **world_kwargs,
                             ),
                             dependencies=[selected_preview_task],
                         )
@@ -1266,9 +2139,12 @@ class PipelineV2:
     ) -> Any:
         payload = _serialize(input_payload)
         input_hash = _hash_text(json.dumps(payload, sort_keys=True, default=str))
+        # Look up the cache before recording the new hash: upsert_task stores
+        # input_hash, so checking afterwards always matched and a task whose
+        # inputs had changed was served its old output.
+        cached = self.store.task_output(task_id, input_hash)
         self.store.upsert_task(task_id, stage, scene_id, input_hash, dependencies)
         worker = asyncio.current_task().get_name() if asyncio.current_task() else "main"
-        cached = self.store.task_output(task_id, input_hash)
         if cached is not None:
             self.artifacts.event(
                 "task_resumed", stage=stage, scene_id=scene_id, task_id=task_id,
@@ -1370,6 +2246,87 @@ class PipelineV2:
 
 async def _return(value: T) -> T:
     return value
+
+
+def _speaks_hook(lesson: LessonPlan, narration: NarrationPlan) -> bool:
+    hook = " ".join((lesson.hook or "").split())
+    first = narration.scenes[0].beats[0].text.lstrip() if narration.scenes else ""
+    return bool(hook) and first.startswith(hook)
+
+
+def _beat_fix_problem(before: str, after: str) -> Optional[str]:
+    """Why a beat fix cannot replace ``before``; ``None`` when it can."""
+
+    if not after:
+        return "it is empty"
+    if after == " ".join(before.split()):
+        return "it left the beat unchanged"
+    added = len(after.split()) - len(before.split())
+    limit = BEAT_FIX_MAX_EXTRA_WORDS + BEAT_FIX_WORD_TOLERANCE
+    if added > limit:
+        return f"it adds {added} words, more than {limit}"
+    return None
+
+
+def _digest(payload: Any) -> str:
+    """Short, stable hash of a task's inputs, for ids the store must not reuse."""
+    return _hash_text(json.dumps(_serialize(payload), sort_keys=True, default=str))[:10]
+
+
+def _clip_payload(clip: PresenterClip) -> dict[str, Any]:
+    return {
+        "path": str(Path(clip.path).resolve()),
+        "duration_seconds": clip.duration_seconds,
+        "synthetic": clip.synthetic,
+        "provider": clip.provider,
+        "detail": clip.detail,
+    }
+
+
+def _clip_from(data: dict[str, Any]) -> PresenterClip:
+    return PresenterClip(
+        path=Path(data["path"]), duration_seconds=float(data["duration_seconds"]),
+        synthetic=bool(data["synthetic"]), provider=str(data["provider"]),
+        detail=dict(data.get("detail") or {}),
+    )
+
+
+def _presenter_fades(timeline: list[TimelineSegment]) -> list[tuple[float, float]]:
+    """(fade-in, fade-out) per segment: a fade through black at each presenter/Manim cut."""
+    fades = []
+    for index, segment in enumerate(timeline):
+        def cut(other: int) -> bool:
+            if not 0 <= other < len(timeline):
+                return False
+            return (segment.mode == "presenter") != (timeline[other].mode == "presenter")
+
+        fades.append((
+            PRESENTER_FADE_SECONDS if cut(index - 1) else 0.0,
+            PRESENTER_FADE_SECONDS if cut(index + 1) else 0.0,
+        ))
+    return fades
+
+
+def _timeline_clips(
+    scene_clips: list[SceneClip],
+    timeline: list[TimelineSegment],
+    bridge_clips: dict[str, tuple[BridgeProposal, PresenterClip]],
+) -> list[SceneClip]:
+    """Scene and presenter clips for the delivery gate, in playing order."""
+    by_scene = {clip.scene_id: clip for clip in scene_clips}
+    ordered: list[SceneClip] = []
+    for segment in timeline:
+        if segment.mode == "presenter" and segment.scene_id in bridge_clips:
+            clip = bridge_clips[segment.scene_id][1]
+            ordered.append(SceneClip(
+                scene_id=segment.scene_id, composed_path=Path(clip.path),
+                narration_seconds=clip.duration_seconds,
+                silent_narration=bool(clip.detail.get("silent_narration")),
+                mode="presenter",
+            ))
+        elif segment.scene_id in by_scene:
+            ordered.append(by_scene.pop(segment.scene_id))
+    return ordered + list(by_scene.values())
 
 
 def _write_json(path: Path, value: Any) -> None:

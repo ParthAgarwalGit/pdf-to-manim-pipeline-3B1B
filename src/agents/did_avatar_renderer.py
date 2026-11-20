@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 # ── configuration constants ─────────────────────────────────────────────
 DID_API_BASE = "https://api.d-id.com"
 TALKS_PATH = "/talks"
+AUDIOS_PATH = "/audios"
 CREDITS_PATH = "/credits"
 DID_KEY_ENV_NAMES = ("DID_API_KEY", "D_ID_API_KEY")  # documented name, then legacy alias
 DEFAULT_VOICE_ID = "en-US-JennyNeural"  # Microsoft stock voice; no cloning
@@ -232,10 +234,22 @@ class DIDClient:
             "Content-Type": "application/json",
         }
 
-    def _once(self, method: str, path: str, payload: Optional[dict]) -> Any:
-        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    def _once(
+        self,
+        method: str,
+        path: str,
+        payload: Optional[dict],
+        raw_body: Optional[bytes] = None,
+        content_type: Optional[str] = None,
+    ) -> Any:
+        body = raw_body if raw_body is not None else (
+            json.dumps(payload).encode("utf-8") if payload is not None else None
+        )
+        headers = self._headers()
+        if content_type:
+            headers["Content-Type"] = content_type
         try:
-            status, raw = self._transport(method, self.base_url + path, self._headers(), body, self.request_timeout)
+            status, raw = self._transport(method, self.base_url + path, headers, body, self.request_timeout)
         except DIDAPIError as exc:
             raise DIDAPIError(exc.error_code, self._redact(exc.message))
         if 200 <= status < 300:
@@ -276,6 +290,82 @@ class DIDClient:
         if not talk_id:
             raise DIDAPIError(BAD_RESPONSE, "D-ID accepted the talk but returned no id.")
         return str(talk_id)
+
+    def upload_audio(self, path: Path) -> str:
+        """Upload narration audio; returns the D-ID-hosted URL a talk can use."""
+        path = Path(path)
+        boundary = "----pdf2manim" + uuid.uuid4().hex
+        body = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; "
+            f"filename=\"{path.name}\"\r\nContent-Type: audio/mpeg\r\n\r\n"
+        ).encode("utf-8") + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        data = execute_with_retry(
+            lambda: self._once("POST", AUDIOS_PATH, None, raw_body=body,
+                               content_type=f"multipart/form-data; boundary={boundary}"),
+            self.retry_policy, f"D-ID POST {AUDIOS_PATH}",
+        )
+        url = (data or {}).get("url") if isinstance(data, dict) else None
+        if not url:
+            raise DIDAPIError(BAD_RESPONSE, "D-ID accepted the audio but returned no URL.")
+        return str(url)
+
+    def create_talk_from_audio(self, image_url: str, audio_url: str) -> str:
+        """A talk lip-synced to uploaded narration (the pipeline's own voice)."""
+        data = self._call("POST", TALKS_PATH, {
+            "source_url": image_url,
+            "script": {"type": "audio", "audio_url": audio_url},
+            "config": {"stitch": True},
+        })
+        talk_id = (data or {}).get("id") if isinstance(data, dict) else None
+        if not talk_id:
+            raise DIDAPIError(BAD_RESPONSE, "D-ID accepted the talk but returned no id.")
+        return str(talk_id)
+
+    def wait_and_download(
+        self,
+        talk_id: str,
+        dest: Path,
+        poll_interval_seconds: float,
+        max_poll_attempts: int,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Tuple[Dict[str, Any], int]:
+        """Poll a talk until done, then download it. Returns (status, polls).
+
+        Raises DIDAPIError (with ``talk_id`` and ``polls`` set) on a rejected,
+        failed or timed-out talk.
+        """
+        polls = 0
+        status: Dict[str, Any] = {}
+        for polls in range(1, max(1, int(max_poll_attempts)) + 1):
+            try:
+                status = self.get_talk(talk_id)
+            except DIDAPIError as exc:
+                exc.talk_id, exc.polls = talk_id, polls
+                raise
+            state = str(status.get("status", "")).lower()
+            if state == "done":
+                result_url = status.get("result_url")
+                if not result_url:
+                    error = DIDAPIError(BAD_RESPONSE, "D-ID reported the talk done without a result URL.")
+                    error.talk_id, error.polls = talk_id, polls
+                    raise error
+                self.download(str(result_url), Path(dest))
+                return status, polls
+            if state in FAILED_STATUSES:
+                detail = status.get("error") or status.get("result") or {}
+                summary = _error_summary(json.dumps(detail).encode("utf-8")) if detail else state
+                error = DIDAPIError(TALK_FAILED, f"D-ID talk {state}: {self._redact(summary)}")
+                error.talk_id, error.polls = talk_id, polls
+                raise error
+            if polls < max_poll_attempts:
+                sleep(poll_interval_seconds)
+        error = DIDAPIError(
+            TIMEOUT,
+            f"D-ID talk not done after {max_poll_attempts} polls "
+            f"({poll_interval_seconds:g}s apart); last status: {status.get('status', 'unknown')}.",
+        )
+        error.talk_id, error.polls = talk_id, polls
+        raise error
 
     def get_talk(self, talk_id: str) -> Dict[str, Any]:
         data = self._call("GET", f"{TALKS_PATH}/{urllib.parse.quote(talk_id, safe='')}")
@@ -527,42 +617,15 @@ class DIDAvatarRendererAgent(Agent):
     ) -> AvatarSceneResult:
         talk_id = self.client.create_talk(image_url, scene.text, input_data.voice_id)
         logger.info("D-ID talk %s created for scene %s", talk_id, scene.scene_id)
-        polls = 0
-        status: Dict[str, Any] = {}
-        for polls in range(1, max(1, int(input_data.max_poll_attempts)) + 1):
-            try:
-                status = self.client.get_talk(talk_id)
-            except DIDAPIError as exc:
-                exc.talk_id, exc.polls = talk_id, polls
-                raise
-            state = str(status.get("status", "")).lower()
-            if state == "done":
-                result_url = status.get("result_url")
-                if not result_url:
-                    error = DIDAPIError(BAD_RESPONSE, "D-ID reported the talk done without a result URL.")
-                    error.talk_id, error.polls = talk_id, polls
-                    raise error
-                dest = self.client.download(str(result_url), avatar_dir / f"{scene.scene_id}.mp4")
-                return AvatarSceneResult(
-                    scene.scene_id, "done", video_path=str(dest),
-                    duration_seconds=_clip_duration(dest, status.get("duration")),
-                    talk_id=talk_id, polls=polls,
-                )
-            if state in FAILED_STATUSES:
-                detail = status.get("error") or status.get("result") or {}
-                summary = _error_summary(json.dumps(detail).encode("utf-8")) if detail else state
-                error = DIDAPIError(TALK_FAILED, f"D-ID talk {state}: {self._redact(summary)}")
-                error.talk_id, error.polls = talk_id, polls
-                raise error
-            if polls < input_data.max_poll_attempts:
-                self._sleep(input_data.poll_interval_seconds)
-        error = DIDAPIError(
-            TIMEOUT,
-            f"D-ID talk not done after {input_data.max_poll_attempts} polls "
-            f"({input_data.poll_interval_seconds:g}s apart); last status: {status.get('status', 'unknown')}.",
+        dest = avatar_dir / f"{scene.scene_id}.mp4"
+        status, polls = self.client.wait_and_download(
+            talk_id, dest, input_data.poll_interval_seconds, input_data.max_poll_attempts, self._sleep,
         )
-        error.talk_id, error.polls = talk_id, polls
-        raise error
+        return AvatarSceneResult(
+            scene.scene_id, "done", video_path=str(dest),
+            duration_seconds=_clip_duration(dest, status.get("duration")),
+            talk_id=talk_id, polls=polls,
+        )
 
     def _report(self, input_data, image_url, results, credits_before, credits_after) -> Dict[str, Any]:
         scenes = []
@@ -608,3 +671,56 @@ def _clip_duration(path: Path, reported: Any) -> Optional[float]:
         return round(float(reported), 3) if reported is not None else None
     except (TypeError, ValueError):
         return None
+
+
+# ── lip-synced presenter (hybrid backend) ───────────────────────────────
+
+class DIDLipSyncProvider:
+    """Presenter avatar for the hybrid backend: D-ID lip-syncs a stock,
+    fictional or licensed portrait to the pipeline's own narration audio,
+    so presenter, split and Manim scenes share one voice.
+
+    Implements the ``AvatarProvider`` interface of ``presenter_agent``
+    (``name`` + ``render``). Errors propagate as DIDAPIError (redacted); the
+    presenter stage then falls back to a plain Manim scene or a title card.
+    """
+
+    name = "d-id"
+
+    def __init__(
+        self,
+        image_url: str,
+        api_key: Optional[str] = None,
+        client: Optional[DIDClient] = None,
+        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        max_poll_attempts: int = DEFAULT_MAX_POLL_ATTEMPTS,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
+        self.image_url = validate_avatar_image_url(image_url)
+        if client is None:
+            key = resolve_did_api_key() if api_key is None else api_key
+            if not key:
+                raise ValueError("DID_API_KEY (or D_ID_API_KEY) is required for the D-ID presenter.")
+            client = DIDClient(key)
+        self.client = client
+        self.poll_interval_seconds = poll_interval_seconds
+        self.max_poll_attempts = max_poll_attempts
+        self._sleep = sleep
+        self.talks: List[Dict[str, Any]] = []
+
+    def __repr__(self) -> str:  # never show the key
+        return f"DIDLipSyncProvider(image_url={display_url(self.image_url)!r})"
+
+    def render(self, audio_path: str, text: str, out_path: str, width: int, height: int) -> Optional[str]:
+        audio_url = self.client.upload_audio(Path(audio_path))
+        talk_id = self.client.create_talk_from_audio(self.image_url, audio_url)
+        status, polls = self.client.wait_and_download(
+            talk_id, Path(out_path), self.poll_interval_seconds, self.max_poll_attempts, self._sleep,
+        )
+        self.talks.append({
+            "talk_id": talk_id,
+            "polls": polls,
+            "duration_seconds": _clip_duration(Path(out_path), status.get("duration")),
+        })
+        logger.info("D-ID lip-synced presenter clip %s (%d polls)", talk_id, polls)
+        return out_path

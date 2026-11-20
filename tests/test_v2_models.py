@@ -153,8 +153,8 @@ def test_lesson_and_narration_use_gemini():
     asyncio.run(exercise())
 
     assert [(call["provider"], call["model"]) for call in calls] == [
-        ("google", "gemini-3.7-flash"),
-        ("google", "gemini-3.7-flash"),
+        ("google", "gemini-4-argon"),
+        ("google", "gemini-4-argon"),
     ]
     assert [call["max_output_tokens"] for call in calls] == [7000, 7000]
     assert "Prefer 4-6 substantial scenes" in calls[0]["prompt"]

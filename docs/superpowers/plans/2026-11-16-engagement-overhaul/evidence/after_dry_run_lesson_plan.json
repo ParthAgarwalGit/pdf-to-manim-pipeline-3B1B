@@ -1,0 +1,274 @@
+{
+  "title": "Rotate, Stretch, Rotate: The Secret Life of a Matrix",
+  "central_question": "Why does every matrix, no matter its shape, secretly act like a rotation, a stretch, and another rotation?",
+  "hook": "Picture a cloud of data points. I want one line through them that captures almost everything. How do I find the single best direction, and why does that same idea reveal what any matrix is really doing?",
+  "promise": "By the end you will see why the best-fit line, the best low-rank approximation, and the geometric action of a matrix are all the same picture.",
+  "takeaway": "A = UDV^T says every matrix just rotates space, stretches it along perpendicular axes by the singular values, and rotates again, and those stretch axes are exactly the best-fit directions through the data.",
+  "running_example": {
+    "description": "A small 2D point cloud (rows of a matrix A) shaped like a tilted ellipse, roughly five points, used throughout to find the best-fit line, build A = UDV^T, and watch the unit circle become an ellipse.",
+    "values": {
+      "A": "5x2 matrix of points, e.g. rows (3,1), (2,2), (1,-1), (-1,1), (-2,-2)",
+      "v1": "first right singular vector (best-fit line direction)",
+      "v2": "second right singular vector (perpendicular to v1)",
+      "sigma1, sigma2": "singular values (stretch factors)",
+      "u1, u2": "left singular vectors (directions of projected points)",
+      "U, D, V^T": "the three factors of A = U D V^T"
+    }
+  },
+  "motifs": [
+    {
+      "motif_id": "point_cloud",
+      "what": "small set of dots scattered in the plane",
+      "color": "WHITE",
+      "stands_for": "the rows of matrix A, our data"
+    },
+    {
+      "motif_id": "candidate_line",
+      "what": "a thin rotating line through the origin with dashed perpendicular segments to each dot",
+      "color": "GRAY_B",
+      "stands_for": "a trial line we're testing for best fit"
+    },
+    {
+      "motif_id": "best_fit_axis",
+      "what": "a bold arrow along the winning direction, v1, with a second perpendicular arrow v2",
+      "color": "TEAL_C",
+      "stands_for": "the singular vectors, the directions that matter most"
+    },
+    {
+      "motif_id": "unit_circle_to_ellipse",
+      "what": "a circle that morphs into a tilted ellipse under the transformation",
+      "color": "GOLD_C",
+      "stands_for": "the geometric action of A: rotate, stretch, rotate"
+    }
+  ],
+  "acts": [
+    {
+      "act_id": "act_01",
+      "kind": "hook",
+      "viewer_question": "What does it even mean to find the 'best' line through a scatter of points?",
+      "key_idea": "A scatter of points can be summarized by a single best-fit line through the origin, but it's not obvious how to define or find it.",
+      "visual": "The point_cloud appears scattered in the plane; a candidate_line sweeps through several trial angles through the origin, with dashed perpendicular drop-lines from each dot to the line flickering as the line rotates.",
+      "source_segments": [
+        "seg_001"
+      ],
+      "words": 55
+    },
+    {
+      "act_id": "act_02",
+      "kind": "build",
+      "viewer_question": "How do we turn 'best fit' into something we can actually compute?",
+      "key_idea": "Minimizing the squared distances to the line is the same as maximizing the squared lengths of the projections onto it, by Pythagoras.",
+      "visual": "For one trial position of candidate_line, right triangles light up between each dot, its projection point on the line, and the perpendicular drop; as the line rotates toward the best angle, the projection segments visibly grow while the dashed perpendiculars shrink.",
+      "source_segments": [
+        "seg_001",
+        "seg_002"
+      ],
+      "words": 110
+    },
+    {
+      "act_id": "act_03",
+      "kind": "build",
+      "viewer_question": "Once we have the best line, what about the next-best direction, and what do we call these special directions?",
+      "key_idea": "The best direction v1 and the next-best perpendicular direction v2 are the singular vectors, and the amount they capture are the singular values.",
+      "visual": "candidate_line locks onto the optimal angle and turns into the bold best_fit_axis arrow labeled v1; a second arrow labeled v2 snaps in perpendicular to it; small tick marks labeled sigma1 and sigma2 appear showing the projection spread along each.",
+      "source_segments": [
+        "seg_002",
+        "seg_003",
+        "seg_004"
+      ],
+      "words": 130
+    },
+    {
+      "act_id": "act_04",
+      "kind": "build",
+      "viewer_question": "These singular vectors describe the data, but how do they describe the matrix A itself as a transformation?",
+      "key_idea": "Multiplying A by its singular vectors produces new orthogonal directions u1, u2, scaled by the singular values, which is exactly the geometric action rotate, stretch, rotate.",
+      "visual": "The unit_circle_to_ellipse motif appears: a plain circle with axes v1, v2 drawn on it first rotates so v1, v2 align with the horizontal and vertical axes, then stretches by sigma1 and sigma2 into an ellipse, then rotates again so the ellipse's axes land on u1, u2; labels U, D, V^T appear under each stage in turn, echoing the rubber sheet being stretched along its natural grain.",
+      "source_segments": [
+        "seg_005",
+        "seg_006",
+        "seg_007",
+        "seg_008"
+      ],
+      "words": 170
+    },
+    {
+      "act_id": "act_05",
+      "kind": "example",
+      "viewer_question": "Why does keeping only the top few singular vectors give the best simple approximation of the data?",
+      "key_idea": "Keeping only the top k singular directions and dropping the rest gives both the best-fit k-dimensional subspace and the best rank-k approximation of A.",
+      "visual": "The point_cloud is shown with each dot snapped onto the best_fit_axis line (projection using v1 only), visibly the closest any single line could get; then a second axis v2 fades in faintly to suggest higher k, while a ghost of the full ellipse from the previous act hovers behind the flattened one-axis version to show what was dropped.",
+      "source_segments": [
+        "seg_008",
+        "seg_009",
+        "seg_010",
+        "seg_011"
+      ],
+      "words": 110
+    },
+    {
+      "act_id": "act_06",
+      "kind": "payoff",
+      "viewer_question": "So what was the matrix doing to our data all along?",
+      "key_idea": "A = UDV^T means every matrix is just a rotation, followed by a stretch along the singular directions, followed by another rotation, and those same stretch directions are the best-fit lines and the best low-rank approximations.",
+      "visual": "The full unit_circle_to_ellipse sequence replays once smoothly start to finish next to the original point_cloud from the hook, now overlaid with the best_fit_axis arrows, as the labels U, D, V^T glow in sequence beneath the moving shape.",
+      "source_segments": [
+        "seg_001",
+        "seg_008"
+      ],
+      "words": 139
+    }
+  ],
+  "coverage": [
+    {
+      "segment_id": "seg_001",
+      "treatment": "covered",
+      "reason": "Supplies the hook's point cloud and the best-fit-line setup, used directly in acts 1-2."
+    },
+    {
+      "segment_id": "seg_002",
+      "treatment": "covered",
+      "reason": "Pythagoras argument for projections vs distances is shown visually in act 2; the aside on why squares are used is skipped per brief's focus on intuition."
+    },
+    {
+      "segment_id": "seg_003",
+      "treatment": "covered",
+      "reason": "Greedy definition of v2 and successive singular vectors shown in act 3."
+    },
+    {
+      "segment_id": "seg_004",
+      "treatment": "compressed",
+      "reason": "The theorem that greedy gives the true best-fit subspace is stated as a visual fact in act 3 without walking through the induction proof, per brief's instruction to skip proofs."
+    },
+    {
+      "segment_id": "seg_005",
+      "treatment": "compressed",
+      "reason": "Frobenius norm / sum-of-squares-of-singular-values idea is gestured at briefly in act 4 as the 'whole content' captured by stretching, not derived in full."
+    },
+    {
+      "segment_id": "seg_006",
+      "treatment": "covered",
+      "reason": "Definition of left singular vectors u_i via Av_i is shown as part of the rotate-stretch-rotate animation in act 4."
+    },
+    {
+      "segment_id": "seg_007",
+      "treatment": "compressed",
+      "reason": "Orthogonality proof for u_i is omitted per brief (skip proofs); only the resulting orthogonal u_i picture is used in act 4."
+    },
+    {
+      "segment_id": "seg_008",
+      "treatment": "covered",
+      "reason": "Core SVD theorem, matrix notation A=UDV^T, and definition of best rank-k approximation are the heart of acts 4-6."
+    },
+    {
+      "segment_id": "seg_009",
+      "treatment": "covered",
+      "reason": "Lemma that rows of A_k are projections onto top-k subspace is the visual core of act 5."
+    },
+    {
+      "segment_id": "seg_010",
+      "treatment": "compressed",
+      "reason": "The 2-norm error equaling sigma_{k+1} is stated as a fact supporting act 5's claim, without the algebraic proof, per brief's instruction to skip proofs."
+    },
+    {
+      "segment_id": "seg_011",
+      "treatment": "compressed",
+      "reason": "The proof that A_k is optimal in 2-norm is summarized as a conclusion in act 5; the symmetric-matrix power-method intuition is not needed for the central question."
+    },
+    {
+      "segment_id": "seg_012",
+      "treatment": "deferred",
+      "reason": "Power method for computing the SVD is a numerical algorithm beyond the geometric 'why' this video answers; named as a method that exists but not explained."
+    },
+    {
+      "segment_id": "seg_013",
+      "treatment": "omitted",
+      "reason": "Probabilistic lemma about random starting vectors is a computational detail of the power method, irrelevant to the geometric story the brief asks for."
+    },
+    {
+      "segment_id": "seg_014",
+      "treatment": "omitted",
+      "reason": "Convergence theorem for the power method under near-ties is a numerical-analysis result outside the scope of the chosen central question."
+    }
+  ],
+  "coverage_report": {
+    "counts": {
+      "covered": 6,
+      "compressed": 5,
+      "deferred": 1,
+      "omitted": 2
+    },
+    "decisions": [
+      {
+        "segment_id": "seg_001",
+        "treatment": "covered",
+        "reason": "Supplies the hook's point cloud and the best-fit-line setup, used directly in acts 1-2."
+      },
+      {
+        "segment_id": "seg_002",
+        "treatment": "covered",
+        "reason": "Pythagoras argument for projections vs distances is shown visually in act 2; the aside on why squares are used is skipped per brief's focus on intuition."
+      },
+      {
+        "segment_id": "seg_003",
+        "treatment": "covered",
+        "reason": "Greedy definition of v2 and successive singular vectors shown in act 3."
+      },
+      {
+        "segment_id": "seg_004",
+        "treatment": "compressed",
+        "reason": "The theorem that greedy gives the true best-fit subspace is stated as a visual fact in act 3 without walking through the induction proof, per brief's instruction to skip proofs."
+      },
+      {
+        "segment_id": "seg_005",
+        "treatment": "compressed",
+        "reason": "Frobenius norm / sum-of-squares-of-singular-values idea is gestured at briefly in act 4 as the 'whole content' captured by stretching, not derived in full."
+      },
+      {
+        "segment_id": "seg_006",
+        "treatment": "covered",
+        "reason": "Definition of left singular vectors u_i via Av_i is shown as part of the rotate-stretch-rotate animation in act 4."
+      },
+      {
+        "segment_id": "seg_007",
+        "treatment": "compressed",
+        "reason": "Orthogonality proof for u_i is omitted per brief (skip proofs); only the resulting orthogonal u_i picture is used in act 4."
+      },
+      {
+        "segment_id": "seg_008",
+        "treatment": "covered",
+        "reason": "Core SVD theorem, matrix notation A=UDV^T, and definition of best rank-k approximation are the heart of acts 4-6."
+      },
+      {
+        "segment_id": "seg_009",
+        "treatment": "covered",
+        "reason": "Lemma that rows of A_k are projections onto top-k subspace is the visual core of act 5."
+      },
+      {
+        "segment_id": "seg_010",
+        "treatment": "compressed",
+        "reason": "The 2-norm error equaling sigma_{k+1} is stated as a fact supporting act 5's claim, without the algebraic proof, per brief's instruction to skip proofs."
+      },
+      {
+        "segment_id": "seg_011",
+        "treatment": "compressed",
+        "reason": "The proof that A_k is optimal in 2-norm is summarized as a conclusion in act 5; the symmetric-matrix power-method intuition is not needed for the central question."
+      },
+      {
+        "segment_id": "seg_012",
+        "treatment": "deferred",
+        "reason": "Power method for computing the SVD is a numerical algorithm beyond the geometric 'why' this video answers; named as a method that exists but not explained."
+      },
+      {
+        "segment_id": "seg_013",
+        "treatment": "omitted",
+        "reason": "Probabilistic lemma about random starting vectors is a computational detail of the power method, irrelevant to the geometric story the brief asks for."
+      },
+      {
+        "segment_id": "seg_014",
+        "treatment": "omitted",
+        "reason": "Convergence theorem for the power method under near-ties is a numerical-analysis result outside the scope of the chosen central question."
+      }
+    ]
+  }
+}

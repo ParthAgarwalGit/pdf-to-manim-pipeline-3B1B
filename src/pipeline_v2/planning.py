@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from pydantic import BaseModel
+
+from src.prompts.narrative import spoken_plain
 from src.schemas.directives import ProfessorDirectives
 
 from .directives import (
@@ -37,10 +41,21 @@ from .models import (
     NarrationBeat,
     NarrationPlan,
     OCRBatch,
+    PageCoverage,
     SourceDocument,
     SourceFact,
     VisualContract,
     VisualContractBatch,
+)
+from .model_config import OCR_MODEL, TEXT_MODEL
+from .prompt_text import (
+    HOOK_MAX_WORDS_NARRATOR,
+    HOOK_MAX_WORDS_PRESENTER,
+    beat_fix_instructions,
+    hook_check_instructions,
+    hook_rewrite_instructions,
+    lesson_instructions,
+    narration_instructions,
 )
 from .providers import MissingProviderKey, ProviderRouter, clean_json_text
 
@@ -50,11 +65,16 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.4.2"
-NARRATION_PROMPT_VERSION = "v2.5.0"
+PROMPT_VERSION = "v2.7.1-brief-coverage"
+NARRATION_PROMPT_VERSION = "v2.8.1-voice"
+HOOK_PROMPT_VERSION = "hook-3-no-spoilers"
+BEAT_FIX_PROMPT_VERSION = "beat-fix-1"
 NARRATION_BATCH_SIZE = 5
+MAX_SPINE_MOTIFS = 4
+# OCR output budgets: first try, then one retry with room for the model's thinking.
+OCR_OUTPUT_BUDGETS = (5000, 16000)
 PLANNING_PROVIDER = "google"
-PLANNING_MODEL = "gemini-3.7-flash"
+PLANNING_MODEL = TEXT_MODEL
 
 
 def extract_source(pdf_path: Path) -> SourceDocument:
@@ -124,10 +144,14 @@ class PlanningService:
         directives: Optional[ProfessorDirectives] = None,
         concept_plan: Optional[ConceptPlan] = None,
         target_minutes: Optional[float] = None,
+        presenter_opens: bool = False,
+        mode: str = "brief",
     ):
         if min_scenes is not None and min_scenes > max_scenes:
             raise ValueError("min_scenes cannot exceed max_scenes")
         self.router = router
+        self.presenter_opens = presenter_opens
+        self.mode = mode
         self.max_scenes = max_scenes
         self.min_scenes = min_scenes
         self.pacing = pacing
@@ -153,6 +177,8 @@ class PlanningService:
     def _required_min_scenes(self, source: SourceDocument) -> int:
         if self.min_scenes is not None:
             floor = self.min_scenes
+        elif self.mode == "deep":
+            floor = max(DEEP_MIN_SCENES, source.page_count // DEEP_PAGES_PER_SCENE)
         elif self.max_scenes > 12:
             floor = _full_coverage_scene_floor(source.page_count, self.max_scenes)
         else:
@@ -201,29 +227,57 @@ class PlanningService:
                     )
                     pixmap.save(str(path))
                     image_paths.append(path)
-                prompt = (
-                    f"PROMPT_VERSION={PROMPT_VERSION}\n"
-                    "Transcribe the educational content in these PDF pages in image order. "
-                    f"Their one-based page numbers are {pages}. Preserve equations exactly. "
-                    "Return JSON only as {\"facts\":[{\"page_number\":1,\"text\":\"...\","
-                    "\"kind\":\"text|equation|image|table\"}]} and do not infer unseen content."
-                )
-                try:
-                    response = await self.router.vision(
-                        stage="ocr", task_id=f"ocr-{batch_index:03d}", scene_id="source",
-                        model="gemini-3.7-flash",
-                        system="You are a precise OCR system for mathematical source documents.",
-                        prompt=prompt, image_paths=image_paths, max_output_tokens=5000,
+                async def read(read_pages: list[int], paths: list, task_id: str, budgets) -> Optional[OCRBatch]:
+                    """Transcribe ``read_pages``; None when every attempt came back unreadable."""
+
+                    prompt = (
+                        f"PROMPT_VERSION={PROMPT_VERSION}\n"
+                        "Transcribe the educational content in these PDF pages in image order. "
+                        f"Their one-based page numbers are {read_pages}. Preserve equations exactly. "
+                        "Return JSON only as {\"facts\":[{\"page_number\":1,\"text\":\"...\","
+                        "\"kind\":\"text|equation|image|table\"}]} and do not infer unseen content."
                     )
-                    parsed = OCRBatch.model_validate_json(clean_json_text(response.text))
-                    for index, fact in enumerate(parsed.facts):
-                        if fact.page_number not in pages:
-                            continue
-                        additions.append(SourceFact(
-                            fact_id=f"p{fact.page_number:03d}-ocr{index:03d}",
-                            page_number=fact.page_number, text=fact.text,
-                            kind=fact.kind, confidence=0.92,
-                        ))
+                    for attempt, budget in enumerate(budgets, start=1):
+                        response = await self.router.vision(
+                            stage="ocr", task_id=task_id, scene_id="source", model=OCR_MODEL,
+                            system="You are a precise OCR system for mathematical source documents.",
+                            prompt=prompt, image_paths=paths, max_output_tokens=budget,
+                        )
+                        try:
+                            return OCRBatch.model_validate_json(clean_json_text(response.text))
+                        except ValueError as exc:
+                            self.router.artifacts.event(
+                                "ocr_batch_unreadable", stage="ocr", task_id=task_id,
+                                pages=read_pages, attempt=attempt,
+                                message=f"OCR answer was not valid JSON: {str(exc)[:160]}",
+                            )
+                    return None
+
+                try:
+                    # The model's thinking shares the output budget, so a batch of dense
+                    # pages can come back empty: retry it with more room, then read its
+                    # pages one at a time. A page still unreadable keeps the PDF's own
+                    # text rather than failing the run.
+                    batch_id = f"ocr-{batch_index:03d}"
+                    parsed = await read(pages, image_paths, batch_id, OCR_OUTPUT_BUDGETS)
+                    readings = [parsed] if parsed is not None else []
+                    if parsed is None and len(pages) > 1:
+                        for page_number, path in zip(pages, image_paths):
+                            single = await read(
+                                [page_number], [path], f"{batch_id}-p{page_number:03d}",
+                                OCR_OUTPUT_BUDGETS[-1:],
+                            )
+                            if single is not None:
+                                readings.append(single)
+                    for reading in readings:
+                        for index, fact in enumerate(reading.facts):
+                            if fact.page_number not in pages:
+                                continue
+                            additions.append(SourceFact(
+                                fact_id=f"p{fact.page_number:03d}-ocr{index:03d}",
+                                page_number=fact.page_number, text=fact.text,
+                                kind=fact.kind, confidence=0.92,
+                            ))
                 except MissingProviderKey as exc:
                     if self.router.strict_keys:
                         raise
@@ -243,7 +297,16 @@ class PlanningService:
         facts = [_lesson_fact_payload(fact) for fact in source.facts]
         max_scenes = self._scene_ceiling()
         required_min = self._required_min_scenes(source)
-        if self.min_scenes is not None or self.max_scenes > 12:
+        if self.mode == "deep":
+            scene_guidance = (
+                f"This document has {source.page_count} pages. Plan between {required_min} and "
+                f"{max_scenes} scenes: as many as its important content needs and no more, since a "
+                "short document needs fewer. A scene is about a minute to a minute and a half of "
+                "narration, so the whole lecture stays under about 25 minutes. Keep every scene "
+                "record concise: a short title, a one-sentence description, learning goal and "
+                "visual objective, and at most two do_not_repeat items. "
+            )
+        elif self.min_scenes is not None or self.max_scenes > 12:
             coverage_floor = required_min
             scene_range = (
                 f"exactly {max_scenes}"
@@ -270,15 +333,13 @@ class PlanningService:
             )
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            "Create a source-grounded educational lesson plan. "
-            + scene_guidance
-            + "Merge "
-            "adjacent scenes that teach the same relationship; do not fragment one example into "
-            "several tiny scenes. Every scene must cite source_fact_ids from the input. For every "
-            "scene set visual_objective, the one new_visual_fact it contributes, and do_not_repeat "
-            "items already demonstrated by earlier scenes. Do not invent facts, examples, or "
-            "equations. Set delivery_mode to manim.\n\n"
-            + json.dumps({"document": source.filename, "facts": facts}, ensure_ascii=False)
+            + lesson_instructions(
+                scene_guidance, self.presenter_opens, self.mode, self.audience or "undergraduate",
+            ) + "\n\n"
+            + json.dumps(
+                {"document": source.filename, "page_count": source.page_count, "facts": facts},
+                ensure_ascii=False,
+            )
         )
         prompt += lesson_directive_block(
             self.directives, self.audience,
@@ -287,9 +348,10 @@ class PlanningService:
         lesson = await self.router.structured(
             stage="lesson", task_id="lesson", provider=PLANNING_PROVIDER,
             model=PLANNING_MODEL, system="You are a rigorous educational lesson director.",
-            prompt=prompt, schema=LessonPlan, fallback=lambda: self._fallback_lesson(source),
-            max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
+            prompt=prompt, schema=LessonPlan, fallback=lambda: self._lesson_fallback(source),
+            max_output_tokens=self._lesson_output_tokens(),
         )
+        lesson = _normalise_spine(lesson, source)
         if len(lesson.scenes) >= required_min:
             return lesson
 
@@ -316,9 +378,10 @@ class PlanningService:
             stage="lesson", task_id="lesson-expand", provider=PLANNING_PROVIDER,
             model=PLANNING_MODEL, system="You are a rigorous educational lesson director.",
             prompt=retry_prompt, schema=LessonPlan,
-            fallback=lambda: self._fallback_lesson(source),
-            max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
+            fallback=lambda: self._lesson_fallback(source),
+            max_output_tokens=self._lesson_output_tokens(),
         )
+        expanded = _normalise_spine(expanded, source)
         if len(expanded.scenes) < required_min:
             raise RuntimeError(
                 f"Lesson planner returned {len(expanded.scenes)} scenes after regeneration; "
@@ -326,8 +389,150 @@ class PlanningService:
             )
         return expanded
 
-    async def narration(self, lesson: LessonPlan, source: SourceDocument) -> NarrationPlan:
+    def _narration_fallback(self, lesson: LessonPlan, source: SourceDocument, scene_words):
+        self._deep_needs_model("narration")
+        return self._fallback_narration(lesson, source, scene_words)
+
+    def _lesson_output_tokens(self) -> int:
+        if self.mode == "deep":
+            return DEEP_LESSON_OUTPUT_TOKENS
+        return min(16000, max(7000, self.max_scenes * 750))
+
+    def _deep_needs_model(self, what: str) -> None:
+        """An in-depth lecture is never built on the rule-based fallback.
+
+        Without a key (tests, offline dry runs) the fallback is all there is.
+        With one, falling back means the model's answer was unreadable even
+        after a retry, and a rule-based plan would quietly replace the lecture.
+        """
+
+        if self.mode == "deep" and os.getenv("GEMINI_API_KEY"):
+            raise RuntimeError(
+                f"The in-depth lecture's {what} came back unreadable after a retry; refusing "
+                "to replace it with a rule-based one. Resume the run to try again."
+            )
+
+    def _lesson_fallback(self, source: SourceDocument) -> LessonPlan:
+        self._deep_needs_model("lesson plan")
+        return self._fallback_lesson(source)
+
+    async def check_hook(self, lesson: LessonPlan) -> list[str]:
+        """Sentences of the hook a first-time listener could not follow, as problems.
+
+        Empty when the hook is empty, every sentence follows, or the check
+        cannot run (the deterministic checks in hook_problems still apply).
+        """
+
+        if not (lesson.hook or "").strip():
+            return []
+        payload = {
+            "hook": lesson.hook,
+            "central_question": lesson.central_question,
+            "running_example": lesson.running_example.model_dump(mode="json"),
+        }
+        prompt = (
+            f"PROMPT_VERSION={HOOK_PROMPT_VERSION}\n"
+            + hook_check_instructions() + "\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        result = await self.router.structured(
+            stage="lesson", task_id="hook-check", provider=PLANNING_PROVIDER,
+            model=PLANNING_MODEL, system="You are a careful listener checking a script.",
+            prompt=prompt, schema=HookCheck, fallback=lambda: HookCheck(breaks=[]),
+            max_output_tokens=1500,
+        )
+        return [
+            f'The sentence "{" ".join(item.sentence.split())}" does not follow: '
+            f'{" ".join(item.problem.split())}'
+            for item in result.breaks
+            if item.sentence.strip()
+        ]
+
+    async def rewrite_hook(self, lesson: LessonPlan, problems: list[str]) -> str:
+        """A new hook for ``lesson`` that fixes ``problems``; the old hook if the call fails."""
+
+        first = lesson.scenes[0] if lesson.scenes else None
+        payload = {
+            "central_question": lesson.central_question,
+            "current_hook": lesson.hook,
+            "running_example": lesson.running_example.model_dump(mode="json"),
+            "first_scene": (
+                {
+                    "title": first.title,
+                    "viewer_question": first.viewer_question,
+                    "visual_objective": first.visual_objective,
+                }
+                if first else None
+            ),
+        }
+        prompt = (
+            f"PROMPT_VERSION={HOOK_PROMPT_VERSION}\n"
+            + hook_rewrite_instructions(self.presenter_opens, problems) + "\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        result = await self.router.structured(
+            stage="lesson", task_id="hook-rewrite", provider=PLANNING_PROVIDER,
+            model=PLANNING_MODEL, system="You write the opening lines of explainer videos.",
+            prompt=prompt, schema=HookRewrite,
+            fallback=lambda: HookRewrite(hook=lesson.hook),
+            max_output_tokens=1500,
+        )
+        return " ".join(result.hook.split())
+
+    async def fix_beat(
+        self,
+        scene: NarratedScene,
+        beat_id: str,
+        previous_beat: Optional[str],
+        problems: list[str],
+        source: SourceDocument,
+    ) -> str:
+        """Beat ``beat_id`` of ``scene`` rewritten to fix ``problems``; its old text if the call fails.
+
+        ``previous_beat`` is the previous scene's last beat (``None`` for the
+        first scene). Only the text comes back: the caller keeps the beat's id
+        and cited facts.
+        """
+
+        beat = next(item for item in scene.beats if item.beat_id == beat_id)
         facts = {fact.fact_id: fact.text for fact in source.facts}
+        payload = {
+            "beat_to_fix": {"beat_id": beat.beat_id, "text": beat.text},
+            "scene_beats": [
+                {"beat_id": item.beat_id, "text": item.text, "visual_action": item.visual_action}
+                for item in scene.beats
+            ],
+            "previous_scene_last_beat": previous_beat,
+            "source_facts": {
+                fact_id: facts[fact_id] for fact_id in beat.source_fact_ids if fact_id in facts
+            },
+        }
+        prompt = (
+            f"PROMPT_VERSION={BEAT_FIX_PROMPT_VERSION}\n"
+            + beat_fix_instructions(problems) + "\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        result = await self.router.structured(
+            stage="narration", task_id=f"beat-fix-{beat_id}", scene_id=scene.scene_id,
+            provider=PLANNING_PROVIDER, model=PLANNING_MODEL,
+            system="You edit spoken educational scripts.",
+            prompt=prompt, schema=BeatFix, fallback=lambda: BeatFix(text=beat.text),
+            max_output_tokens=1500,
+        )
+        return spoken_plain(" ".join(result.text.split()))
+
+    async def narration(
+        self,
+        lesson: LessonPlan,
+        source: SourceDocument,
+        review_feedback: Optional[list[str]] = None,
+    ) -> NarrationPlan:
+        facts = {fact.fact_id: fact.text for fact in source.facts}
+        feedback_block = (
+            "A REVIEWER REJECTED THE PREVIOUS SCRIPT. Fix every point:\n"
+            + "".join(f"- {point}\n" for point in review_feedback)
+            if review_feedback else ""
+        )
         relaxed = self.pacing == "relaxed"
         target_wpm = 115 if relaxed else 135
         pace_guidance = (
@@ -338,12 +543,21 @@ class PlanningService:
             "Use a calm teaching pace of 125-140 words per minute. Split each scene into 2-4 "
             "semantic beats. "
         )
+        # The brief visualizer has no per-scene word cap: each scene takes what its
+        # idea needs. A professor's target length still sets a budget (below).
+        if self.target_minutes is None and self.mode == "deep":
+            low, high = deep_scene_words(len(lesson.scenes))
+            pace_guidance += (
+                f"Each scene's narration is {low} to {high} words; derivation and worked-example "
+                "scenes use the upper end. Split each scene into 3-6 semantic beats. "
+            )
         outline = [
             {
                 "scene_id": item.scene_id,
                 "title": item.title,
                 "learning_goal": item.learning_goal,
                 "new_visual_fact": item.new_visual_fact,
+                "viewer_question": item.viewer_question,
             }
             for item in lesson.scenes
         ]
@@ -376,6 +590,7 @@ class PlanningService:
             )
             payload = {
                 "lesson_title": lesson.title,
+                "lesson_spine": lesson.spine(),
                 "global_scene_outline": outline,
                 "required_scene_ids": expected_ids,
                 "scenes_to_write": [item.model_dump(mode="json") for item in batch],
@@ -401,20 +616,11 @@ class PlanningService:
             }
             prompt = (
                 f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\n"
-                "Write the requested consecutive section of one continuity-aware spoken lesson. "
-                + pace_guidance
-                + "Return exactly the required_scene_ids once each and in the supplied order; do "
-                "not write narration for any other scene. Keep one main idea per sentence. Avoid "
-                "dense clauses, breathless lists, repeated definitions, and abrupt openings. The "
-                "first beat of each scene must connect naturally to what the learner just saw; the "
-                "final beat must either pause for reflection or bridge to the next scene. Populate "
-                "role, pause_after_seconds (normally 0.25-0.55, or 0.6-0.9 for reflection and scene "
-                "endings), visual_action, continuity_note, transition_in, and transition_out. Every "
-                "visual_action must introduce, transform, compare, highlight, or remove visual "
-                "information; never request the same complete construction more than once. Every "
-                "beat must cite only supplied source_fact_ids. Preserve mathematical notation and "
-                f"do not add unsupported claims. Set target_words_per_minute to {target_wpm}. "
-                "Timing fields must be zero; the pipeline computes them after TTS.\n\n"
+                + feedback_block
+                + narration_instructions(
+                    pace_guidance, target_wpm, self.presenter_opens, self.mode,
+                    self.audience or "undergraduate",
+                ) + "\n\n"
                 + json.dumps(payload, ensure_ascii=False)
             )
             prompt += narration_directive_block(
@@ -429,10 +635,10 @@ class PlanningService:
                 stage="narration", task_id=task_id, provider=PLANNING_PROVIDER,
                 model=PLANNING_MODEL, system="You write clear spoken educational scripts.",
                 prompt=prompt, schema=NarrationPlan,
-                fallback=lambda batch_lesson=batch_lesson: self._fallback_narration(
+                fallback=lambda batch_lesson=batch_lesson: self._narration_fallback(
                     batch_lesson, source, scene_words,
                 ),
-                max_output_tokens=7000,
+                max_output_tokens=DEEP_NARRATION_OUTPUT_TOKENS if self.mode == "deep" else 7000,
             )
             actual_ids = [item.scene_id for item in batch_narration.scenes]
             if actual_ids != expected_ids:
@@ -441,7 +647,7 @@ class PlanningService:
                     f"expected {expected_ids}."
                 )
             narrated.extend(
-                item.model_copy(update={"target_words_per_minute": target_wpm})
+                _spoken_scene(item).model_copy(update={"target_words_per_minute": target_wpm})
                 for item in batch_narration.scenes
             )
         plan = NarrationPlan(scenes=narrated)
@@ -489,8 +695,8 @@ class PlanningService:
                 }, ensure_ascii=False)
             )
             result = await self.router.structured(
-                stage="visual_contract", task_id=task_id, provider="openai",
-                model="gpt-5.4-mini", system="You are a Manim visual artifact director.",
+                stage="visual_contract", task_id=task_id, provider="google",
+                model=TEXT_MODEL, system="You are a Manim visual artifact director.",
                 prompt=prompt, schema=VisualContractBatch,
                 fallback=lambda batch=batch: VisualContractBatch(
                     contracts=[self._fallback_contract(scene) for scene in batch]
@@ -531,8 +737,8 @@ class PlanningService:
             }, ensure_ascii=False)
         )
         return await self.router.structured(
-            stage="visual_contract", task_id=task_id, provider="openai",
-            model="gpt-5.4-mini", system="You are a Manim visual artifact director.",
+            stage="visual_contract", task_id=task_id, provider="google",
+            model=TEXT_MODEL, system="You are a Manim visual artifact director.",
             prompt=prompt, schema=VisualContractBatch,
             fallback=lambda: VisualContractBatch(
                 contracts=[self._fallback_contract(scene) for scene in batch]
@@ -637,7 +843,28 @@ class PlanningService:
 
 
 def apply_audio_timing(scene: NarratedScene, duration: float) -> NarratedScene:
-    weights = [max(1, len(beat.text.split())) for beat in scene.beats]
+    """Give each beat its window in a recording of ``duration`` seconds.
+
+    With measured speech spans (per-beat TTS), a beat's window opens when its
+    first word is spoken and closes when the next beat's does, so the visuals
+    timed to it land on its words. Without them, windows are shared out by
+    word count.
+    """
+
+    spans = scene.beat_speech_spans
+    if spans and len(spans) == len(scene.beats):
+        starts = [0.0] + [min(duration, max(0.0, float(span[0]))) for span in spans[1:]]
+        ends = starts[1:] + [duration]
+        return scene.model_copy(update={
+            "beats": [
+                beat.model_copy(update={
+                    "start_seconds": round(start, 3), "end_seconds": round(max(start, end), 3),
+                })
+                for beat, start, end in zip(scene.beats, starts, ends)
+            ],
+            "audio_duration_seconds": duration,
+        })
+    weights =[max(1, len(beat.text.split())) for beat in scene.beats]
     total = sum(weights)
     pauses = [beat.pause_after_seconds for beat in scene.beats]
     pause_total = min(sum(pauses), duration * 0.3)
@@ -743,6 +970,131 @@ def validate_visual_contract(
                     f"{region.value}: {sorted(artifact_ids)}; combine related content into one VGroup"
                 )
     return errors
+
+
+def _spoken_scene(scene: NarratedScene) -> NarratedScene:
+    """Turn leaked snake_case ids in beat text into words; narration follows the beats."""
+
+    beats = [
+        beat.model_copy(update={"text": spoken_plain(beat.text)}) for beat in scene.beats
+    ]
+    return scene.model_copy(update={
+        "beats": beats, "narration": " ".join(beat.text for beat in beats),
+    })
+
+
+class HookRewrite(BaseModel):
+    hook: str
+
+
+class HookBreak(BaseModel):
+    sentence: str
+    problem: str = ""
+
+
+class HookCheck(BaseModel):
+    breaks: list[HookBreak] = []
+
+
+class BeatFix(BaseModel):
+    text: str
+
+
+# In-depth lecture: the whole narration stays under about 25 minutes, and a
+# scene is at least long enough to teach one step properly.
+DEEP_TOTAL_WORDS = 3800
+DEEP_SCENE_WORDS = (110, 260)
+DEEP_MIN_SCENES = 6
+DEEP_PAGES_PER_SCENE = 3
+# Argon's thinking shares the output budget; a long plan or batch needs room.
+DEEP_LESSON_OUTPUT_TOKENS = 32000
+DEEP_NARRATION_OUTPUT_TOKENS = 16000
+LESSON_ROLES = frozenset({"motivate", "intuition", "derive", "apply", "connect"})
+
+
+def deep_scene_words(scene_count: int) -> tuple[int, int]:
+    """Words per scene for an in-depth lecture of ``scene_count`` scenes."""
+
+    low, high = DEEP_SCENE_WORDS
+    high = max(low + 30, min(high, DEEP_TOTAL_WORDS // max(1, scene_count)))
+    return low, high
+_HOOK_PUNCTUATION = ("\u2014", "\u2013", ";", "(", ")")
+
+
+def hook_problems(hook: str, presenter_opens: bool) -> list[str]:
+    """What is checkably wrong with a hook, as sentences a rewrite can act on.
+
+    The hook must be a short chain (situation, snag, question) ending on one
+    question. Whether each sentence follows from the last is judged by the
+    script review; this catches the shapes that cannot flow when spoken.
+    """
+
+    text = " ".join((hook or "").split())
+    if not text:
+        return []
+    problems = []
+    limit = HOOK_MAX_WORDS_PRESENTER if presenter_opens else HOOK_MAX_WORDS_NARRATOR
+    words = len(text.split())
+    if words > limit:
+        problems.append(f"It is {words} words long; the limit is {limit}.")
+    if text.count("?") != 1 or not text.endswith("?"):
+        problems.append(
+            "It must end on exactly one question, the central question, and ask nothing before it."
+        )
+    if any(mark in text for mark in _HOOK_PUNCTUATION) or " - " in text:
+        problems.append(
+            "It uses a dash, semicolon or parentheses, which a listener cannot hear; "
+            "say it as separate sentences."
+        )
+    sentences = [part for part in re.split(r"(?<=[.?!])\s+", text) if part.strip()]
+    if len(sentences) < 3:
+        problems.append(
+            "It is not a chain of situation, snag and question: it needs at least three sentences."
+        )
+    return problems
+
+
+def _normalise_spine(lesson: LessonPlan, source: SourceDocument) -> LessonPlan:
+    """One coverage entry per source page, a reason for every page left out, tidy motifs."""
+
+    fact_pages = {fact.fact_id: fact.page_number for fact in source.facts}
+    cited_pages = {
+        fact_pages[fact_id]
+        for scene in lesson.scenes
+        for fact_id in scene.source_fact_ids
+        if fact_id in fact_pages
+    }
+    by_page: dict[int, PageCoverage] = {}
+    for entry in lesson.coverage:
+        if 1 <= entry.page_number <= source.page_count and entry.page_number not in by_page:
+            if entry.treatment != "covered" and not entry.reason.strip():
+                entry = entry.model_copy(update={"reason": "No reason given by the planner."})
+            by_page[entry.page_number] = entry
+    coverage = []
+    for page in range(1, source.page_count + 1):
+        if page in by_page:
+            coverage.append(by_page[page])
+        elif page in cited_pages:
+            coverage.append(PageCoverage(
+                page_number=page, treatment="covered", reason="Cited by a scene.",
+            ))
+        else:
+            coverage.append(PageCoverage(
+                page_number=page, treatment="omitted",
+                reason="The lesson plan did not place this page.",
+            ))
+    motifs = [
+        motif.model_copy(update={"color": motif.color.strip().upper().replace(" ", "_")})
+        for motif in lesson.motifs[:MAX_SPINE_MOTIFS]
+    ]
+    scenes = [
+        scene.model_copy(update={
+            "role": role if (role := scene.role.strip().lower()) in LESSON_ROLES else "",
+            "chapter": " ".join(scene.chapter.split()),
+        })
+        for scene in lesson.scenes
+    ]
+    return lesson.model_copy(update={"coverage": coverage, "motifs": motifs, "scenes": scenes})
 
 
 def _lesson_fact_payload(fact: SourceFact) -> dict[str, object]:

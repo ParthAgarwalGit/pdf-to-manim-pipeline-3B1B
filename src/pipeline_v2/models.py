@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
+
+from .prompt_text import DEFAULT_VOICE
 
 
 MAX_V2_SCENES = 24
@@ -71,6 +74,31 @@ class LessonScene(BaseModel):
     new_visual_fact: str = ""
     do_not_repeat: list[str] = Field(default_factory=list)
     delivery_mode: Literal["manim", "presenter", "mixed", "transition"] = "manim"
+    viewer_question: str = ""
+    # In-depth lecture: the chapter this scene belongs to, and what the scene
+    # does there (motivate, intuition, derive, apply or connect). Empty in brief mode.
+    chapter: str = ""
+    role: str = ""
+
+
+class RunningExample(BaseModel):
+    description: str = ""
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+class VisualMotif(BaseModel):
+    motif_id: str
+    what: str = ""
+    color: str = ""
+    stands_for: str = ""
+
+
+class PageCoverage(BaseModel):
+    # Not range-checked here: the planner's cleanup drops pages outside the
+    # document, so one bad entry never discards the whole lesson plan.
+    page_number: int
+    treatment: Literal["covered", "compressed", "deferred", "omitted"] = "covered"
+    reason: str = ""
 
 
 class LessonPlan(BaseModel):
@@ -80,6 +108,13 @@ class LessonPlan(BaseModel):
     prerequisites: list[str] = Field(default_factory=list)
     concept_dependencies: dict[str, list[str]] = Field(default_factory=dict)
     scenes: list[LessonScene] = Field(min_length=1, max_length=MAX_V2_SCENES)
+    central_question: str = ""
+    hook: str = ""
+    takeaway: str = ""
+    running_example: RunningExample = Field(default_factory=RunningExample)
+    # The planner's cleanup keeps the first four; no hard cap that would reject the plan.
+    motifs: list[VisualMotif] = Field(default_factory=list)
+    coverage: list[PageCoverage] = Field(default_factory=list)
 
     @field_validator("scenes")
     @classmethod
@@ -88,6 +123,34 @@ class LessonPlan(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("scene_id values must be unique")
         return scenes
+
+    def visual_world(self) -> list[str]:
+        """The running example and motifs as one fact per line, for code generation."""
+
+        lines: list[str] = []
+        example = self.running_example
+        if example.description or example.values:
+            lines.append(f"Running example: {example.description}")
+            lines.extend(f"Value: {name} = {value}" for name, value in example.values.items())
+        for motif in self.motifs:
+            parts = [f"Motif {motif.motif_id}: {motif.what}"]
+            if motif.color:
+                parts.append(f"color {motif.color}")
+            if motif.stands_for:
+                parts.append(f"stands for {motif.stands_for}")
+            lines.append("; ".join(parts))
+        return lines
+
+    def spine(self) -> dict[str, Any]:
+        """The decisions every later stage writes against, as plain JSON values."""
+
+        return {
+            "central_question": self.central_question,
+            "hook": self.hook,
+            "takeaway": self.takeaway,
+            "running_example": self.running_example.model_dump(mode="json"),
+            "motifs": [motif.model_dump(mode="json") for motif in self.motifs],
+        }
 
 
 class NarrationBeat(BaseModel):
@@ -115,6 +178,10 @@ class NarratedScene(BaseModel):
     audio_duration_seconds: Optional[float] = Field(default=None, gt=0.0)
     audio_tail_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
     audio_is_placeholder: bool = False
+    # Measured [start, end] seconds of each beat's speech inside audio_path,
+    # written by per-beat TTS. Beat windows are cut from these when present.
+    # Kept out of the planner's response schema: the model never sets them.
+    beat_speech_spans: SkipJsonSchema[list[list[float]]] = Field(default_factory=list)
 
 
 class NarrationPlan(BaseModel):
@@ -301,15 +368,26 @@ class SceneResult(BaseModel):
     error: Optional[str] = None
 
 
+# In-depth lecture defaults, applied when the caller did not set them.
+DEEP_MAX_COST_USD = 15.0
+DEEP_PREVIEW_TIMEOUT_SECONDS = 240
+DEEP_RENDER_TIMEOUT_SECONDS = 1200
+
+
 class PipelineV2Config(BaseModel):
     output_dir: Path = Path("output")
+    # "brief": the short concept visualizer, about five minutes on the main
+    # idea. "deep": the in-depth lecture that teaches the whole document,
+    # derivations and worked examples included, up to about 25 minutes.
+    mode: Literal["brief", "deep"] = "brief"
     quality: Literal["low", "medium", "high"] = "medium"
     audience: str = "undergraduate"
-    voice: str = "alloy"
+    voice: str = DEFAULT_VOICE
+    tts_provider: Literal["gemini", "openai"] = "gemini"
     policy: Literal["standard", "strict"] = "standard"
     repair: Literal["off", "eligible"] = "eligible"
     verifier_mode: Literal["enforce", "audit"] = "enforce"
-    max_cost_usd: float = Field(default=1.0, gt=0.0)
+    max_cost_usd: float = Field(default=3.0, gt=0.0)
     min_scenes: Optional[int] = Field(default=None, ge=1, le=MAX_V2_SCENES)
     max_scenes: int = Field(default=12, ge=1, le=MAX_V2_SCENES)
     pacing: Literal["standard", "relaxed"] = "standard"
@@ -338,6 +416,31 @@ class PipelineV2Config(BaseModel):
     target_minutes: Optional[float] = Field(default=None, gt=0.0)
     directives: Optional[dict[str, Any]] = None
     concept_plan: Optional[dict[str, Any]] = None
+    # Pre-TTS review of the planned script: when the review fails, "revise"
+    # rewrites only the beats holding flagged sentences (or, with none flagged,
+    # the whole narration) once, and keeps it if it passes or scores higher.
+    script_review: Literal["off", "report", "revise"] = "revise"
+    # On-camera presenter bridges between Manim scenes. Proposals are saved to
+    # presenter/bridges.json; only approved bridges are rendered.
+    presenter: Literal["off", "gemini", "d-id"] = "off"
+    approve_bridges: bool = False
+    max_presenter_seconds: float = Field(default=60.0, ge=0)
+    presenter_persona: str = ""
+    presenter_profile: Optional[Path] = None  # d-id: professor profile with consent
+    avatar_image_url: Optional[str] = None    # d-id: the avatar image
+
+    @model_validator(mode="after")
+    def apply_mode_defaults(self) -> "PipelineV2Config":
+        """A deep lecture gets more scenes, budget and render time unless they were set."""
+
+        if self.mode == "deep":
+            if "max_scenes" not in self.model_fields_set:
+                self.max_scenes = MAX_V2_SCENES
+            if "max_cost_usd" not in self.model_fields_set:
+                self.max_cost_usd = DEEP_MAX_COST_USD
+            self.preview_timeout_seconds = max(self.preview_timeout_seconds, DEEP_PREVIEW_TIMEOUT_SECONDS)
+            self.render_timeout_seconds = max(self.render_timeout_seconds, DEEP_RENDER_TIMEOUT_SECONDS)
+        return self
 
     @model_validator(mode="after")
     def validate_scene_range(self) -> "PipelineV2Config":
