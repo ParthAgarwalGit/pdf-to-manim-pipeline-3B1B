@@ -28,6 +28,10 @@ from .state import BudgetExceeded
 
 SCRIPT_REVIEW_PROMPT_VERSION = "script-review-3-voice"
 SOURCE_SUMMARY_CHARS = 3000
+# An in-depth lecture is judged against far more of the source, and its
+# reviewer has more sentences to list.
+DEEP_SOURCE_SUMMARY_CHARS = 14000
+DEEP_REVIEW_OUTPUT_TOKENS = 8000
 TREATMENTS = ("covered", "compressed", "deferred", "omitted")
 
 
@@ -44,12 +48,12 @@ class ScriptReview(BaseModel):
     # and whether the reviewer itself passed the script before they were added.
     voice_problems: int = 0
     reviewer_passed: Optional[bool] = None
+    attempt: int = 1
 
     def reviewer_breaks(self) -> list[dict[str, str]]:
         """Scene flow breaks the reviewer found (not the voice check's)."""
 
         return [item for item in self.scene_breaks() if item.get("kind") != "voice"]
-    attempt: int = 1
 
     def hook_breaks(self) -> list[dict[str, str]]:
         """Flow breaks in the hook, which only a new hook can fix."""
@@ -77,22 +81,30 @@ async def review_script(
     narration: NarrationPlan,
     source: SourceDocument,
     attempt: int = 1,
+    mode: str = "brief",
 ) -> Optional[ScriptReview]:
     """Grade the planned script; ``None`` (with an event) when the review could not run."""
 
+    deep = mode == "deep"
     task_id = f"script-review-{attempt}"
     prompt = storyboard_review_prompt(
         _plan_summary(lesson, narration),
         _scenes(narration),
         _coverage(lesson),
-        "\n".join(fact.text for fact in source.facts)[:SOURCE_SUMMARY_CHARS],
+        "\n".join(fact.text for fact in source.facts)[
+            :DEEP_SOURCE_SUMMARY_CHARS if deep else SOURCE_SUMMARY_CHARS
+        ],
+        mode=mode,
     )
     try:
         response = await router.text(
             stage="script_review", task_id=task_id, provider="google",
             model=TEXT_MODEL,
-            system="You are a demanding editor of short educational videos.",
-            prompt=prompt, max_output_tokens=3000,
+            system=(
+                "You are a demanding editor of in-depth educational lectures." if deep
+                else "You are a demanding editor of short educational videos."
+            ),
+            prompt=prompt, max_output_tokens=DEEP_REVIEW_OUTPUT_TOKENS if deep else 3000,
         )
         data = json.loads(clean_json_text(response.text))
         if not isinstance(data, dict):

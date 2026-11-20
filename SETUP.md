@@ -254,6 +254,22 @@ pdf-to-manim-pipeline/
 
 ## Running the Pipeline
 
+### Choosing a mode
+
+`pdf2manim convert` makes one of two videos. Pass `--mode`, or run it in a terminal without
+`--mode` and it asks at the start:
+
+| Mode | Label | What you get |
+|---|---|---|
+| `brief` (default) | Brief concept visualizer | About 5 minutes on the document's main idea, shown visually: an overview of the module. Budget $3, up to 12 scenes. |
+| `deep` | In-depth lecture | Up to about 25 minutes teaching the whole document to a new student: every important concept, the intuition behind each result, its derivation step by step, and worked examples of how to use it. Prerequisites get a sentence, not a scene. Budget $15, up to 24 scenes. |
+
+`--max-cost` and `--max-scenes` override the mode's defaults.
+
+```bash
+pdf2manim convert notes.pdf --mode deep -q high --presenter gemini --approve-bridges
+```
+
 ### Command Line Interface
 
 ```bash

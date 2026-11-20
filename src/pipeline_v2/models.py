@@ -75,6 +75,10 @@ class LessonScene(BaseModel):
     do_not_repeat: list[str] = Field(default_factory=list)
     delivery_mode: Literal["manim", "presenter", "mixed", "transition"] = "manim"
     viewer_question: str = ""
+    # In-depth lecture: the chapter this scene belongs to, and what the scene
+    # does there (motivate, intuition, derive, apply or connect). Empty in brief mode.
+    chapter: str = ""
+    role: str = ""
 
 
 class RunningExample(BaseModel):
@@ -364,8 +368,18 @@ class SceneResult(BaseModel):
     error: Optional[str] = None
 
 
+# In-depth lecture defaults, applied when the caller did not set them.
+DEEP_MAX_COST_USD = 15.0
+DEEP_PREVIEW_TIMEOUT_SECONDS = 240
+DEEP_RENDER_TIMEOUT_SECONDS = 1200
+
+
 class PipelineV2Config(BaseModel):
     output_dir: Path = Path("output")
+    # "brief": the short concept visualizer, about five minutes on the main
+    # idea. "deep": the in-depth lecture that teaches the whole document,
+    # derivations and worked examples included, up to about 25 minutes.
+    mode: Literal["brief", "deep"] = "brief"
     quality: Literal["low", "medium", "high"] = "medium"
     audience: str = "undergraduate"
     voice: str = DEFAULT_VOICE
@@ -414,6 +428,19 @@ class PipelineV2Config(BaseModel):
     presenter_persona: str = ""
     presenter_profile: Optional[Path] = None  # d-id: professor profile with consent
     avatar_image_url: Optional[str] = None    # d-id: the avatar image
+
+    @model_validator(mode="after")
+    def apply_mode_defaults(self) -> "PipelineV2Config":
+        """A deep lecture gets more scenes, budget and render time unless they were set."""
+
+        if self.mode == "deep":
+            if "max_scenes" not in self.model_fields_set:
+                self.max_scenes = MAX_V2_SCENES
+            if "max_cost_usd" not in self.model_fields_set:
+                self.max_cost_usd = DEEP_MAX_COST_USD
+            self.preview_timeout_seconds = max(self.preview_timeout_seconds, DEEP_PREVIEW_TIMEOUT_SECONDS)
+            self.render_timeout_seconds = max(self.render_timeout_seconds, DEEP_RENDER_TIMEOUT_SECONDS)
+        return self
 
     @model_validator(mode="after")
     def validate_scene_range(self) -> "PipelineV2Config":

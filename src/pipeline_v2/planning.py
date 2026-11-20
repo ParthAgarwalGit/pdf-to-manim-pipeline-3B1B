@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -144,11 +145,13 @@ class PlanningService:
         concept_plan: Optional[ConceptPlan] = None,
         target_minutes: Optional[float] = None,
         presenter_opens: bool = False,
+        mode: str = "brief",
     ):
         if min_scenes is not None and min_scenes > max_scenes:
             raise ValueError("min_scenes cannot exceed max_scenes")
         self.router = router
         self.presenter_opens = presenter_opens
+        self.mode = mode
         self.max_scenes = max_scenes
         self.min_scenes = min_scenes
         self.pacing = pacing
@@ -174,6 +177,8 @@ class PlanningService:
     def _required_min_scenes(self, source: SourceDocument) -> int:
         if self.min_scenes is not None:
             floor = self.min_scenes
+        elif self.mode == "deep":
+            floor = max(DEEP_MIN_SCENES, source.page_count // DEEP_PAGES_PER_SCENE)
         elif self.max_scenes > 12:
             floor = _full_coverage_scene_floor(source.page_count, self.max_scenes)
         else:
@@ -279,7 +284,16 @@ class PlanningService:
         facts = [_lesson_fact_payload(fact) for fact in source.facts]
         max_scenes = self._scene_ceiling()
         required_min = self._required_min_scenes(source)
-        if self.min_scenes is not None or self.max_scenes > 12:
+        if self.mode == "deep":
+            scene_guidance = (
+                f"This document has {source.page_count} pages. Plan between {required_min} and "
+                f"{max_scenes} scenes: as many as its important content needs and no more, since a "
+                "short document needs fewer. A scene is about a minute to a minute and a half of "
+                "narration, so the whole lecture stays under about 25 minutes. Keep every scene "
+                "record concise: a short title, a one-sentence description, learning goal and "
+                "visual objective, and at most two do_not_repeat items. "
+            )
+        elif self.min_scenes is not None or self.max_scenes > 12:
             coverage_floor = required_min
             scene_range = (
                 f"exactly {max_scenes}"
@@ -306,7 +320,9 @@ class PlanningService:
             )
         prompt = (
             f"PROMPT_VERSION={PROMPT_VERSION}\n"
-            + lesson_instructions(scene_guidance, self.presenter_opens) + "\n\n"
+            + lesson_instructions(
+                scene_guidance, self.presenter_opens, self.mode, self.audience or "undergraduate",
+            ) + "\n\n"
             + json.dumps(
                 {"document": source.filename, "page_count": source.page_count, "facts": facts},
                 ensure_ascii=False,
@@ -319,8 +335,8 @@ class PlanningService:
         lesson = await self.router.structured(
             stage="lesson", task_id="lesson", provider=PLANNING_PROVIDER,
             model=PLANNING_MODEL, system="You are a rigorous educational lesson director.",
-            prompt=prompt, schema=LessonPlan, fallback=lambda: self._fallback_lesson(source),
-            max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
+            prompt=prompt, schema=LessonPlan, fallback=lambda: self._lesson_fallback(source),
+            max_output_tokens=self._lesson_output_tokens(),
         )
         lesson = _normalise_spine(lesson, source)
         if len(lesson.scenes) >= required_min:
@@ -349,8 +365,8 @@ class PlanningService:
             stage="lesson", task_id="lesson-expand", provider=PLANNING_PROVIDER,
             model=PLANNING_MODEL, system="You are a rigorous educational lesson director.",
             prompt=retry_prompt, schema=LessonPlan,
-            fallback=lambda: self._fallback_lesson(source),
-            max_output_tokens=min(16000, max(7000, self.max_scenes * 750)),
+            fallback=lambda: self._lesson_fallback(source),
+            max_output_tokens=self._lesson_output_tokens(),
         )
         expanded = _normalise_spine(expanded, source)
         if len(expanded.scenes) < required_min:
@@ -359,6 +375,33 @@ class PlanningService:
                 f"at least {required_min} are required."
             )
         return expanded
+
+    def _narration_fallback(self, lesson: LessonPlan, source: SourceDocument, scene_words):
+        self._deep_needs_model("narration")
+        return self._fallback_narration(lesson, source, scene_words)
+
+    def _lesson_output_tokens(self) -> int:
+        if self.mode == "deep":
+            return DEEP_LESSON_OUTPUT_TOKENS
+        return min(16000, max(7000, self.max_scenes * 750))
+
+    def _deep_needs_model(self, what: str) -> None:
+        """An in-depth lecture is never built on the rule-based fallback.
+
+        Without a key (tests, offline dry runs) the fallback is all there is.
+        With one, falling back means the model's answer was unreadable even
+        after a retry, and a rule-based plan would quietly replace the lecture.
+        """
+
+        if self.mode == "deep" and os.getenv("GEMINI_API_KEY"):
+            raise RuntimeError(
+                f"The in-depth lecture's {what} came back unreadable after a retry; refusing "
+                "to replace it with a rule-based one. Resume the run to try again."
+            )
+
+    def _lesson_fallback(self, source: SourceDocument) -> LessonPlan:
+        self._deep_needs_model("lesson plan")
+        return self._fallback_lesson(source)
 
     async def check_hook(self, lesson: LessonPlan) -> list[str]:
         """Sentences of the hook a first-time listener could not follow, as problems.
@@ -487,7 +530,13 @@ class PlanningService:
             "Use a calm teaching pace of 125-140 words per minute. Split each scene into 2-4 "
             "semantic beats. "
         )
-        if self.target_minutes is None:
+        if self.target_minutes is None and self.mode == "deep":
+            low, high = deep_scene_words(len(lesson.scenes))
+            pace_guidance += (
+                f"Each scene's narration is {low} to {high} words; derivation and worked-example "
+                "scenes use the upper end. Split each scene into 3-6 semantic beats. "
+            )
+        elif self.target_minutes is None:
             pace_guidance += (
                 f"Each scene's narration is {DEFAULT_SCENE_WORDS[0]} to {DEFAULT_SCENE_WORDS[1]} "
                 "words: say what the picture needs and stop. "
@@ -558,7 +607,10 @@ class PlanningService:
             prompt = (
                 f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\n"
                 + feedback_block
-                + narration_instructions(pace_guidance, target_wpm, self.presenter_opens) + "\n\n"
+                + narration_instructions(
+                    pace_guidance, target_wpm, self.presenter_opens, self.mode,
+                    self.audience or "undergraduate",
+                ) + "\n\n"
                 + json.dumps(payload, ensure_ascii=False)
             )
             prompt += narration_directive_block(
@@ -573,10 +625,10 @@ class PlanningService:
                 stage="narration", task_id=task_id, provider=PLANNING_PROVIDER,
                 model=PLANNING_MODEL, system="You write clear spoken educational scripts.",
                 prompt=prompt, schema=NarrationPlan,
-                fallback=lambda batch_lesson=batch_lesson: self._fallback_narration(
+                fallback=lambda batch_lesson=batch_lesson: self._narration_fallback(
                     batch_lesson, source, scene_words,
                 ),
-                max_output_tokens=7000,
+                max_output_tokens=DEEP_NARRATION_OUTPUT_TOKENS if self.mode == "deep" else 7000,
             )
             actual_ids = [item.scene_id for item in batch_narration.scenes]
             if actual_ids != expected_ids:
@@ -940,6 +992,24 @@ class BeatFix(BaseModel):
 
 # Narration length per scene when the professor sets no target length.
 DEFAULT_SCENE_WORDS = (80, 130)
+# In-depth lecture: the whole narration stays under about 25 minutes, and a
+# scene is at least long enough to teach one step properly.
+DEEP_TOTAL_WORDS = 3800
+DEEP_SCENE_WORDS = (110, 260)
+DEEP_MIN_SCENES = 6
+DEEP_PAGES_PER_SCENE = 3
+# Argon's thinking shares the output budget; a long plan or batch needs room.
+DEEP_LESSON_OUTPUT_TOKENS = 32000
+DEEP_NARRATION_OUTPUT_TOKENS = 16000
+LESSON_ROLES = frozenset({"motivate", "intuition", "derive", "apply", "connect"})
+
+
+def deep_scene_words(scene_count: int) -> tuple[int, int]:
+    """Words per scene for an in-depth lecture of ``scene_count`` scenes."""
+
+    low, high = DEEP_SCENE_WORDS
+    high = max(low + 30, min(high, DEEP_TOTAL_WORDS // max(1, scene_count)))
+    return low, high
 _HOOK_PUNCTUATION = ("\u2014", "\u2013", ";", "(", ")")
 
 
@@ -1009,7 +1079,14 @@ def _normalise_spine(lesson: LessonPlan, source: SourceDocument) -> LessonPlan:
         motif.model_copy(update={"color": motif.color.strip().upper().replace(" ", "_")})
         for motif in lesson.motifs[:MAX_SPINE_MOTIFS]
     ]
-    return lesson.model_copy(update={"coverage": coverage, "motifs": motifs})
+    scenes = [
+        scene.model_copy(update={
+            "role": role if (role := scene.role.strip().lower()) in LESSON_ROLES else "",
+            "chapter": " ".join(scene.chapter.split()),
+        })
+        for scene in lesson.scenes
+    ]
+    return lesson.model_copy(update={"coverage": coverage, "motifs": motifs, "scenes": scenes})
 
 
 def _lesson_fact_payload(fact: SourceFact) -> dict[str, object]:

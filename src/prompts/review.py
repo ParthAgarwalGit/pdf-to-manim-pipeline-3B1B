@@ -33,15 +33,27 @@ def storyboard_review_prompt(
     scenes: List[Dict[str, Any]],
     coverage: Dict[str, Any],
     source_summary: str = "",
+    mode: str = "brief",
 ) -> str:
     """Grade a planned video's script and visual plan before anything is rendered.
 
     ``scenes`` items: scene_id, act_id, narration (full text), visual_hints
     (list), primitives (list of planned primitive names), transformations
-    (count), plan_source, seconds.
+    (count), plan_source, seconds. ``mode`` "deep" grades an in-depth lecture.
     """
+    deep_note = (
+        "\nTHIS IS AN IN-DEPTH LECTURE, not a short explainer. It is meant to teach the whole source to a "
+        "student meeting it for the first time, derivations and worked examples included, and may run "
+        "up to about 25 minutes. Judge it as that: walking through a derivation the source gives, step "
+        "by step, is right here, and length is not a fault when every scene teaches something. The "
+        "lecture still answers one central question, with chapters answering its parts. Take points "
+        "off for: an important result of the source with no intuition, no derivation (when the source "
+        "derives it) or no worked example; time spent on prerequisites the audience already knows; a "
+        "derivation step given without its reason.\n"
+        if mode == "deep" else ""
+    )
     return f"""You are the editor who decides whether a short animated explainer is ready to be rendered. Be demanding. The bar is a video a curious viewer would watch to the end and could explain to a friend afterwards.
-
+{deep_note}
 LESSON PLAN:
 {json.dumps(plan_summary, indent=2, ensure_ascii=False)}
 

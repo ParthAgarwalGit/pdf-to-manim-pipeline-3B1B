@@ -16,6 +16,17 @@ Main merged at `c4b3a38` (parent `origin/main` at `e4c779a`).
   (the model reads any text it is given aloud). Each take is checked against its
   word count and recorded again when it holds extra or missing speech, and each
   beat's measured speech span sets its window, so visuals land on their words.
+- Two modes (`convert --mode`): `brief`, the "Brief concept visualizer" (about 5 min,
+  the original behaviour), and `deep`, the "In-depth lecture" (up to about 25 min:
+  chapters; intuition, derive, apply and connect scenes; derivations step by step;
+  worked examples). Deep mode has its own lesson, narration and review prompts, larger
+  output budgets and render timeouts, and refuses to fall back to a rule-based plan
+  when a key is set.
+- Text about to appear across the frame edge is shrunk toward its inner edge (or
+  shifted) before it is shown; ValueTrackers are no longer reported off-screen.
+- A deterministic voice check flags narration that sounds written rather than spoken
+  (drawing descriptions, stage directions, recited definitions, long sentences, stock
+  phrases); its findings go to the targeted beat fix.
 - The hook is checked (word limit, one closing question, no dashes, at least three
   sentences) and rewritten whole when it fails. The script review scores
   `logical_flow` and lists every sentence that does not follow from the one

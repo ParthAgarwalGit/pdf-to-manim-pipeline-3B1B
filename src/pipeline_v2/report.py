@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from .models import LessonPlan, NarrationPlan, RunResult, VerificationFinding
 from .observability import RunArtifacts
+from .prompt_text import MODE_DESCRIPTIONS, MODE_LABELS
 from .providers import PRICES, PRICING_SNAPSHOT_DATE
 from .script_review import ScriptReview
 from .state import RunStore
@@ -82,6 +83,17 @@ def write_costs(artifacts: RunArtifacts, store: RunStore) -> dict[str, Any]:
     }
     artifacts.write_json("costs.json", payload)
     return payload
+
+
+def _mode_label(run_dir: Path) -> str:
+    """The run's video mode as people say it: brief visualizer or in-depth lecture."""
+
+    try:
+        config = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))["config"]
+        mode = config.get("mode") or "brief"
+    except (OSError, ValueError, KeyError, TypeError):
+        mode = "brief"
+    return f"{MODE_LABELS.get(mode, mode)} ({MODE_DESCRIPTIONS.get(mode, '')})"
 
 
 def write_html_report(
@@ -172,6 +184,7 @@ table{{border-collapse:collapse;width:100%}}th,td{{padding:8px;border:1px solid 
 th{{background:#f3f4f6}}code{{background:#eee;padding:2px 4px}}.ok{{color:#087830}}.bad{{color:#b3261e}}
 a{{color:#0759b5}}small{{color:#5f6368}}</style></head>
 <body><h1>pdf2manim V2 run {html.escape(result.run_id)}</h1>
+<p>Mode: <strong>{html.escape(_mode_label(artifacts.run_dir))}</strong></p>
 <p>Status: <strong>{html.escape(result.status.value)}</strong></p>
 <ul><li>Scenes: {result.successful_scenes}/{result.total_scenes} successful</li>
 <li>Tasks: {len(finished)}/{len(task_rows)} successful ({task_success_rate:.1f}%); {failure_count} failed</li>

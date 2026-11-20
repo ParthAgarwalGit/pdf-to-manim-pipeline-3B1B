@@ -291,6 +291,11 @@ def _lesson_brief(lesson_scene: LessonScene | None, scene: NarratedScene) -> dic
     }
     if lesson_scene.example:
         values["example"] = lesson_scene.example
+    # In-depth lecture only: "derive" and "apply" scenes follow their own layout rules.
+    if lesson_scene.role:
+        values["role"] = lesson_scene.role
+    if lesson_scene.chapter:
+        values["chapter"] = lesson_scene.chapter
     return values
 
 

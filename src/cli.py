@@ -11,7 +11,22 @@ import click
 
 from src.pipeline_v2 import PipelineV2, PipelineV2Config, RunStatus
 from src.pipeline_v2.models import MAX_V2_SCENES
-from src.pipeline_v2.prompt_text import DEFAULT_VOICE
+from src.pipeline_v2.prompt_text import DEFAULT_VOICE, MODE_DESCRIPTIONS, MODE_LABELS, MODES
+
+
+def _choose_mode(mode: Optional[str]) -> str:
+    """The video mode: as given, asked for at the start when interactive, else brief."""
+
+    if mode:
+        return mode
+    stdin = click.get_text_stream("stdin")
+    if not stdin.isatty():
+        return "brief"
+    click.echo("Which video should pdf2manim make?")
+    for number, name in enumerate(MODES, start=1):
+        click.echo(f"  {number}. {MODE_LABELS[name]} ({MODE_DESCRIPTIONS[name]})")
+    choice = click.prompt("Choose", type=click.IntRange(1, len(MODES)), default=1)
+    return MODES[choice - 1]
 
 
 def _load_env_files() -> None:
@@ -80,7 +95,20 @@ def pdf2manim() -> None:
     show_default=True,
     help="Audit logs visual findings without rejecting renderable scenes.",
 )
-@click.option("--max-cost", type=click.FloatRange(min=0.01), default=3.0, show_default=True)
+@click.option(
+    "--mode",
+    type=click.Choice(list(MODES)),
+    default=None,
+    help=(
+        f"brief: {MODE_LABELS['brief']} ({MODE_DESCRIPTIONS['brief']}). "
+        f"deep: {MODE_LABELS['deep']} ({MODE_DESCRIPTIONS['deep']}). "
+        "Asked at the start when omitted in an interactive terminal; otherwise brief."
+    ),
+)
+@click.option(
+    "--max-cost", type=click.FloatRange(min=0.01), default=None,
+    help="API budget in dollars [default: 3 for brief, 15 for deep].",
+)
 @click.option(
     "--min-scenes",
     type=click.IntRange(1, MAX_V2_SCENES),
@@ -90,9 +118,11 @@ def pdf2manim() -> None:
 @click.option(
     "--max-scenes",
     type=click.IntRange(1, MAX_V2_SCENES),
-    default=12,
-    show_default=True,
-    help="Scene ceiling; values above 12 request full coverage for long documents.",
+    default=None,
+    help=(
+        "Scene ceiling [default: 12 for brief, 24 for deep]; in brief mode values above 12 "
+        "request full coverage for long documents."
+    ),
 )
 @click.option(
     "--pacing",
@@ -160,9 +190,10 @@ def convert(
     repair: str,
     max_repairs_per_scene: int,
     verifier_mode: str,
-    max_cost: float,
+    mode: Optional[str],
+    max_cost: Optional[float],
     min_scenes: Optional[int],
-    max_scenes: int,
+    max_scenes: Optional[int],
     pacing: str,
     script_review: str,
     skip_tts: bool,
@@ -189,7 +220,13 @@ def convert(
 ) -> None:
     """Run a new V2 conversion for INPUT_PDF."""
     effective_policy = "strict" if strict else policy
-    if min_scenes is not None and min_scenes > max_scenes:
+    mode = _choose_mode(mode)
+    # Budget and scene ceiling default by mode (PipelineV2Config) unless given.
+    mode_settings = {
+        key: value for key, value in {"max_cost_usd": max_cost, "max_scenes": max_scenes}.items()
+        if value is not None
+    }
+    if min_scenes is not None and max_scenes is not None and min_scenes > max_scenes:
         raise click.UsageError("--min-scenes cannot exceed --max-scenes")
     if brief and directives_path:
         raise click.UsageError("Use --brief or --directives, not both.")
@@ -207,6 +244,8 @@ def convert(
     if tts_provider == "openai" and voice == DEFAULT_VOICE:
         voice = "alloy"  # the default is a Gemini voice; use an OpenAI one
     config = PipelineV2Config(
+        mode=mode,
+        **mode_settings,
         output_dir=output_dir,
         quality=quality,
         audience=audience,
@@ -216,9 +255,7 @@ def convert(
         repair=repair,
         max_repairs_per_scene=max_repairs_per_scene,
         verifier_mode=verifier_mode,
-        max_cost_usd=max_cost,
         min_scenes=min_scenes,
-        max_scenes=max_scenes,
         pacing=pacing,
         script_review=script_review,
         enable_tts=not skip_tts,
@@ -243,14 +280,15 @@ def convert(
         avatar_image_url=avatar_image_url,
     )
     click.echo("pdf2manim V2")
+    click.echo(f"  Mode:        {MODE_LABELS[config.mode]} ({MODE_DESCRIPTIONS[config.mode]})")
     click.echo(f"  Input:       {input_pdf}")
     click.echo(f"  Policy:      {effective_policy}")
     click.echo(f"  Quality:     {quality}")
-    click.echo(f"  API budget:  ${max_cost:.2f}")
+    click.echo(f"  API budget:  ${config.max_cost_usd:.2f}")
     click.echo(f"  Repair:      {repair}")
     click.echo(f"  Repair cap:  {max_repairs_per_scene} per scene")
     click.echo(f"  Verifier:    {verifier_mode}")
-    click.echo(f"  Scene range: {min_scenes or 'auto'}-{max_scenes}")
+    click.echo(f"  Scene range: {min_scenes or 'auto'}-{config.max_scenes}")
     click.echo(f"  Pacing:      {pacing}")
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
     if presenter != "off":

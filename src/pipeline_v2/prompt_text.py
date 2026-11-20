@@ -109,7 +109,7 @@ def lesson_instructions(
             "exercises first, otherwise a small instance of the document's own method with simple "
             "numbers you choose (an illustration of its method, not a new fact)."
         )
-        motif_count = "Two to five"
+        motif_count = "Two to four"
         scene_rules = f"""   - Group the scenes into 3 to 7 chapters (field "chapter": a short title, the same for every scene of a chapter). Each chapter answers one question that the previous chapter leaves open, and its first scene's viewer_question is that question.
    - Give every scene a "role": "motivate" (make a problem felt), "intuition" (why the result should look the way it does, shown with the running example before any algebra), "derive" (the derivation the document gives, one scene for every few steps, with each step's reason in the plan), "apply" (a worked example used the way the document's exercises would use the result) or "connect" (how a result ties to an earlier one, or where it stops working). Every important result gets intuition, then derive when the document derives it, then apply. A plain definition needs no derive scene.
    - A derive scene's learning_goal names the step it takes and its visual_objective names the equation it starts from and the one it ends with. An apply scene states its problem and numbers in "example".

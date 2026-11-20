@@ -404,6 +404,7 @@ class PipelineV2:
                           if self.config.concept_plan is not None else None),
             target_minutes=self.config.target_minutes,
             presenter_opens=self.config.presenter != "off",
+            mode=self.config.mode,
         )
         controls = {
             key: value for key, value in {
@@ -490,6 +491,7 @@ class PipelineV2:
                 lesson_data = await self._task(
                     "lesson", "lesson", None,
                     {"source": source.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
+                     **self._mode_inputs(),
                      "min_scenes": self.config.min_scenes,
                      "max_scenes": self.config.max_scenes,
                      "pacing": self.config.pacing,
@@ -511,6 +513,7 @@ class PipelineV2:
                     "narration", "narration", None,
                     {"lesson": lesson.model_dump(mode="json"),
                      "prompt_version": NARRATION_PROMPT_VERSION,
+                     **self._mode_inputs(),
                      "pacing": self.config.pacing,
                      **controls,
                      "structured_output_version": STRUCTURED_OUTPUT_VERSION,
@@ -1295,6 +1298,15 @@ class PipelineV2:
                 dependencies=["narration"],
             )
 
+    def _mode_inputs(self) -> dict[str, str]:
+        """The video mode, for task inputs and calls that depend on it.
+
+        Empty for the brief visualizer, so its task hashes and calls are the
+        same as before modes existed.
+        """
+
+        return {"mode": "deep"} if getattr(self.config, "mode", "brief") == "deep" else {}
+
     async def _review_script(
         self,
         router: ProviderRouter,
@@ -1325,8 +1337,11 @@ class PipelineV2:
                 f"script-review-{attempt}", "script_review", None,
                 {"narration": candidate.model_dump(mode="json"),
                  "lesson": lesson.model_dump(mode="json"), "attempt": attempt,
-                 "model": TEXT_MODEL, "prompt_version": SCRIPT_REVIEW_PROMPT_VERSION},
-                lambda: review_script(router, lesson, candidate, source, attempt=attempt),
+                 "model": TEXT_MODEL, "prompt_version": SCRIPT_REVIEW_PROMPT_VERSION,
+                 **self._mode_inputs()},
+                lambda: review_script(
+                    router, lesson, candidate, source, attempt=attempt, **self._mode_inputs(),
+                ),
                 dependencies=dependencies,
             )
             if not data:
@@ -1390,6 +1405,7 @@ class PipelineV2:
                         {"lesson": lesson.model_dump(mode="json"),
                          "review_feedback": first.improvement_suggestions,
                          "prompt_version": NARRATION_PROMPT_VERSION,
+                     **self._mode_inputs(),
                          "pacing": self.config.pacing,
                          **controls,
                          "structured_output_version": STRUCTURED_OUTPUT_VERSION,
