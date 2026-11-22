@@ -80,7 +80,7 @@ class _Router:
 
 def test_deep_mode_gets_more_scenes_budget_and_render_time_unless_set():
     brief = PipelineV2Config()
-    assert (brief.mode, brief.max_scenes, brief.max_cost_usd) == ("brief", 12, 3.0)
+    assert (brief.mode, brief.max_scenes, brief.max_cost_usd) == ("brief", 12, 4.0)
     deep = PipelineV2Config(mode="deep")
     assert (deep.max_scenes, deep.max_cost_usd) == (MAX_V2_SCENES, DEEP_MAX_COST_USD)
     assert deep.preview_timeout_seconds > brief.preview_timeout_seconds
@@ -103,7 +103,7 @@ def _convert(tmp_path, *args: str, input_text=None):
 
 def test_cli_mode_option_and_labels(tmp_path):
     config, output = _convert(tmp_path)
-    assert config.mode == "brief" and config.max_cost_usd == 3.0 and config.max_scenes == 12
+    assert config.mode == "brief" and config.max_cost_usd == 4.0 and config.max_scenes == 12
     assert f"Mode:        {MODE_LABELS['brief']}" in output
     config, output = _convert(tmp_path, "--mode", "deep")
     assert (config.mode, config.max_scenes, config.max_cost_usd) == ("deep", MAX_V2_SCENES, DEEP_MAX_COST_USD)

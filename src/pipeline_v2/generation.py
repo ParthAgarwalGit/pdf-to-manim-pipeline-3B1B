@@ -21,8 +21,10 @@ CODE_OUTPUT_TOKENS = 16000
 # Findings shown to the repair model, most serious first.
 REPAIR_FINDINGS_SHOWN = 12
 REPAIR_PRIORITY = (
+    # Seen in the rendered video and confirmed: what a viewer would notice first.
+    "VISUAL_TEXT_OVERLAP", "VISUAL_CUT_OFF",
     "TEXT_FRAME_COLLISION", "OFFSCREEN_OBJECT", "TEXT_TEXT_OVERLAP", "TEXT_GEOMETRY_OVERLAP",
-    "TEXT_TOO_SMALL", "VISUAL_DENSITY_HIGH",
+    "VISUAL_CROWDED", "TEXT_TOO_SMALL", "VISUAL_DENSITY_HIGH",
 )
 
 
@@ -40,6 +42,7 @@ class CodeGenerationService:
         retry_attempt: int = 0,
         notation_rules: list[str] | None = None,
         visual_world: list[str] | None = None,
+        avoid_defects: list[str] | None = None,
     ) -> str:
         class_name = class_name_for(scene.scene_id)
         system, prompt = generation_request(
@@ -52,6 +55,7 @@ class CodeGenerationService:
             retry_attempt=retry_attempt,
             notation_rules=notation_rules,
             visual_world=visual_world,
+            avoid_defects=avoid_defects,
         )
         try:
             response = await self.router.text(
@@ -203,7 +207,11 @@ def repair_findings(findings: list[VerificationFinding]) -> list[VerificationFin
     chosen: list[VerificationFinding] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
     for item in sorted(findings, key=rank):
-        key = (item.code, tuple(sorted(item.object_ids or item.artifact_ids)))
+        ids = tuple(sorted(item.object_ids or item.artifact_ids))
+        if not ids and item.code.startswith("VISUAL_"):
+            # Seen in frames, so named in words, not object ids: each is its own defect.
+            ids = (item.message,)
+        key = (item.code, ids)
         if key in seen:
             continue
         seen.add(key)
@@ -224,6 +232,7 @@ def generation_request(
     retry_attempt: int = 0,
     notation_rules: list[str] | None = None,
     visual_world: list[str] | None = None,
+    avoid_defects: list[str] | None = None,
 ) -> tuple[str, str]:
     """Build the deliberately small model-facing creative request."""
 
@@ -276,6 +285,16 @@ to fill narration time; use a calm hold or a focused highlight when no new const
         payload["notation_rules"] = notation_rules
     if visual_world:
         payload["visual_world"] = visual_world
+    if avoid_defects:
+        # A redesign after repairs could not clear what a viewer would see.
+        payload["regeneration_instruction"] = (
+            "An earlier design of this scene still showed the layout defects in "
+            "avoid_defects in its rendered video after repair. Create a fresh composition "
+            "with a different arrangement in which none of them can happen: give every "
+            "label and formula its own free space for the whole scene, including while "
+            "objects move."
+        )
+        payload["avoid_defects"] = avoid_defects
     return system, json.dumps(payload, ensure_ascii=False)
 
 

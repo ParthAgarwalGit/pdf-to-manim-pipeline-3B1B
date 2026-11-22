@@ -47,8 +47,8 @@ BROKEN_HOOK = (
     "without our predictions ever shooting below 0 or above 1?"
 )
 CHAIN_HOOK = (
-    "Put a square on each side of a three, four, five triangle. The small squares hold nine "
-    "and sixteen tiles. The big one holds twenty five. Why do they always fill it?"
+    "Put squares on the sides of a three, four, five triangle. The small ones hold nine "
+    "and sixteen tiles. The big one holds twenty five. Why do they always fit?"
 )
 
 

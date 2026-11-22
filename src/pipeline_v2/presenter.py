@@ -80,6 +80,7 @@ OMNI_RETAKE_ALLOWANCE = 1.5  # the engine may regenerate one take
 
 # Model-written bridges (planned lessons) are kept only within these bounds.
 BRIDGES_PROMPT_VERSION = "bridges-2-no-repeat"
+GEMINI_CLIP_CHECK = "cut-off-check-1"
 WRITTEN_BRIDGE_MIN_WORDS = 6
 WRITTEN_BRIDGE_MAX_WORDS = 45
 WRITTEN_BRIDGE_MAX_OVERLAP = 0.3
@@ -873,7 +874,9 @@ class GeminiPresenter:
             reference = output_path.parent / "presenter_reference.png"
             if getattr(engine, "reference_image", None) is None and reference.is_file():
                 engine.reference_image = reference
+            taken = len(getattr(engine, "clips", []))
             spoken, seconds = engine.speak(request.text, str(raw))
+            takes = list(getattr(engine, "clips", []))[taken:]
             with tempfile.TemporaryDirectory() as tmp:
                 _brand_clip(Path(spoken), output_path, Path(tmp), self.width, self.height,
                             self.fps, "Gemini presenter clip")
@@ -892,6 +895,8 @@ class GeminiPresenter:
                 "clips": len(_omni().split_for_clips(request.text)),
                 "raw_seconds": round(float(seconds or 0.0), 3),
                 "disclosure": DISCLOSURE_LABEL,
+                # Every part came from the clip cache: nothing was generated or billed.
+                "cached": bool(takes) and all(take.get("cached") for take in takes),
             },
         )
 
@@ -1045,6 +1050,9 @@ def bridge_fingerprint(bridge: BridgeProposal, settings: PresenterSettings) -> d
         "avatar_image_url": settings.avatar_image_url if settings.provider == "d-id" else None,
         "voice": settings.voice if settings.provider == "gemini" else None,
         "persona": settings.persona if settings.provider == "gemini" else None,
+        # Clips made before takes were checked for a cut-off ending are made
+        # again (unchanged takes come back from the clip cache, unpaid).
+        "clip_check": GEMINI_CLIP_CHECK if settings.provider == "gemini" else None,
         "frame": [settings.width, settings.height, settings.fps],
     }
 

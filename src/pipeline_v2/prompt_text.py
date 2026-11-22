@@ -36,7 +36,8 @@ STOCK_PHRASES = (
 # the first picture. planning.hook_problems() enforces them.
 # 34 words fit one presenter clip (about 13 s): a longer opening is split into
 # separately generated clips with a visible jump between them.
-HOOK_MAX_WORDS_PRESENTER = 34
+# Spoken by the presenter in one clip: longer hooks ran out of clip time.
+HOOK_MAX_WORDS_PRESENTER = 30
 HOOK_MAX_WORDS_NARRATOR = 45
 
 HOOK_CHAIN = """Build the hook as a chain of three or four short sentences, each one following from the sentence before it:
@@ -47,7 +48,7 @@ HOOK_CHAIN = """Build the hook as a chain of three or four short sentences, each
    Introduce every person, object, quantity and number before you use it. Never state a conclusion the listener has no reason yet to believe.
    The hook poses the problem; it never gives away what the video works out. Leave every count, value and result that a scene derives to that scene (say "the laws we have are not enough", not "sixteen unknowns but only five equations"). Exactly one question mark, at the end. No dashes, semicolons or parentheses.
    Bad, every sentence jumps: "A café has one barista. A single line breaks the queue rules. How long is the wait?" The listener never learns what is measured, what was tried or why anything breaks.
-   Good, each sentence needs the one before: "A café gets a customer every two minutes, and each drink takes two minutes. They keep pace, so you'd expect no line. Yet a line forms and keeps growing. Why, when the barista is never too slow?\""""
+   Good, each sentence needs the one before: "A café gets a customer every two minutes, and each drink takes two minutes. You'd expect no line at all. Yet a line forms and keeps growing. Why?\""""
 
 
 # Video modes. "brief" is the short concept visualizer (about five minutes, an
@@ -428,6 +429,8 @@ Layout (the frame is 14.2 by 8 units; everything stays inside x from -6.6 to 6.6
 - A label that belongs inside a shape (a node's name) is built with it as VGroup(shape, label) so they move together, and lines and arrows end at the shape's border (buff=0.1 or more), never at its centre.
 - Before new text appears where text already is, FadeOut or Transform the old text. Two pieces of text never share space, and a line never runs through text.
 - About eight things on screen at once at most; FadeOut what the narration has moved past. Labels use font_size 24 to 32, formulas 30 to 40.
+- Plan the whole path of anything that moves, not only where it ends. A dot, arrow, label or group moved with .animate, MoveAlongPath or an updater never passes over other text on the way; move or fade what is in its path first. A label of a moving object follows it (add_updater(lambda m: m.next_to(target, direction, buff=0.2)) or always_redraw), and stays inside the frame at every position the object reaches.
+- When a shape grows, a curve extends or a group is rescaled, the labels beside it move with it (put them in the same VGroup or give them updaters), so the grown shape never covers them and they never leave the frame.
 
 Derivations and worked examples:
 - A derivation (brief.role "derive") is one chain of equations in one place. Each step turns the previous line into the next with TransformMatchingTex or ReplacementTransform, coloring the term that changes and briefly showing why it changes (an arrow from the reason to the term, or the reason as a short label of at most four words beside it). At most three lines are visible; when a fourth is needed, fade the oldest. The result of the chain ends inside a SurroundingRectangle.
@@ -447,7 +450,48 @@ How to fix each kind of finding (object names in findings are variable names in 
 - VISUAL_DENSITY_HIGH: too much on screen. FadeOut what the narration has moved past.
 - TEXT_TOO_SMALL: labels use font_size 24 or more, formulas 30 or more.
 - BEAT_LATE or SCENE_OVERRUN: shorten the run_time of that beat's animations.
+- VISUAL_TEXT_OVERLAP: seen in the rendered video at the time in the message, often while something moves; the first images show it. Find the objects from what their text says. Move the label beside its target on a free side, fade the older text before the newer appears, keep a line's end at a node's border, or make a moving object's label follow it with an updater so nothing crosses it at any moment.
+- VISUAL_CUT_OFF: seen in the rendered video: part of an object leaves the frame at that time, often at the end of a move or as a group grows. Keep every position it reaches inside x from -6.6 to 6.6 and y from -3.6 to 3.6: shift or scale the group, or shorten the move.
+- VISUAL_CROWDED: objects pile up at that time. Spread them out or fade what the narration has finished with.
 Fix every listed finding, starting with the first; change nothing else."""
+
+
+# ── visual QA ───────────────────────────────────────────────────────────
+
+# Defect kinds the visual check may report.
+VISUAL_QA_KINDS = ("text_overlap", "line_through_text", "cut_off", "pile_up")
+
+
+def visual_qa_instructions(timestamps: list[float]) -> str:
+    """Asks a vision model to find layout defects a viewer would notice in a scene's frames."""
+    listed = ", ".join(f"image {index} at {seconds:.1f} s" for index, seconds in enumerate(timestamps, start=1))
+    return f"""You check frames from one scene of an animated math explainer for layout defects a viewer would notice. The images are in order: {listed}. Frames taken during an animation show objects mid-move; check those too.
+
+Report a defect only when it is clearly visible:
+- text_overlap: two pieces of text drawn on top of each other, so either is harder to read.
+- line_through_text: a line, arrow, curve or shape edge drawn across the letters of a label or formula.
+- cut_off: text or a shape partly outside the edge of the frame.
+- pile_up: several objects stacked so close together that you cannot tell them apart.
+
+Do not report: a label beside or inside the shape it names; text on a filled box made for it; an arrow that ends at the border of a node; objects that are merely near each other; text that is still being written or fading in or out; anything about style, color or design.
+
+Report each problem once: list every image it appears in, give the one image that shows it most clearly ("best"), and say which objects in plain words (what the text says and where it is), so someone can find it in the code.
+
+Return only JSON: {{"defects": [{{"kind": "one of {', '.join(VISUAL_QA_KINDS)}", "images": [3, 4], "best": 4, "what": "the label '1' on the arrow from P0 to P2 is crossed by that arrow"}}]}}, with "defects": [] when every frame is clean."""
+
+
+def visual_qa_confirm_instructions(kind: str, what: str, frame_count: int = 1) -> str:
+    """Asks whether one reported defect is really visible in any of the frames it was seen in."""
+    if frame_count == 1:
+        shown, look = "Here is one frame", "Look closely at the image. Is that exact defect clearly visible"
+    else:
+        shown = f"Here are {frame_count} frames, in order,"
+        look = "Look closely at each image. Is that exact defect clearly visible in at least one of them"
+    return f"""{shown} from an animated math explainer. A first look reported this layout defect ({kind.replace('_', ' ')}): "{what}"
+
+{look}, so that a viewer would notice it? Answer no if the objects are only near each other, if the text is fully readable and nothing crosses it, if the described objects are not in the image, or if it is something still being drawn.
+
+Return only JSON: {{"visible": true or false, "frame": the number of the image that shows it most clearly (1 if only one), "where": "where in the frame, in a few words, or empty"}}"""
 
 
 # ── narration review ────────────────────────────────────────────────────

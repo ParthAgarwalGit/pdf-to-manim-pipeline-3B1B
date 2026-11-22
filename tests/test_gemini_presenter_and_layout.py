@@ -20,7 +20,7 @@ from src.agents.video_renderer import SceneRenderResult, VideoRendererOutput
 from src.orchestrator.pipeline import Orchestrator, PipelineAbortError, PipelineConfig
 from src.utils.layout_audit import audit_feedback, check, read_audit
 from src.utils.speech_text import speakable
-from tests.test_did_avatar import _clip, needs_ffmpeg
+from tests.test_did_avatar import needs_ffmpeg
 from tests.test_hybrid import WORDS, _storyboard
 
 LINE = "Every matrix can be unpacked into three simple moves. You'll see the stretch in a moment."
@@ -102,7 +102,8 @@ def speech_clip(tmp_path_factory):
 
     if _ffmpeg() is None:
         pytest.skip("ffmpeg is not installed")
-    return _clip(tmp_path_factory.mktemp("omni") / "talk.mp4", seconds=2.0).read_bytes()
+    # Speech that ends before the clip does, as in a complete Omni take.
+    return _padded_clip(tmp_path_factory.mktemp("omni") / "talk.mp4", lead=0.0, speech=1.6, tail=0.4).read_bytes()
 
 
 class TestGeminiPresenterUnits:
@@ -132,7 +133,7 @@ class TestGeminiPresenterClips:
         path, seconds = presenter.speak("So A = U D V^T.", str(tmp_path / "s1.mp4"), target_seconds=4.0)
         assert Path(path).is_file() and seconds == pytest.approx(2.0, abs=0.2)
         call = fake.calls[0]
-        assert call["model"] == "gemini-omni-1.2-flash" and call["format"]["duration"] == "4s"  # sized by words
+        assert call["model"] == "gemini-omni-1.2-flash" and call["format"]["duration"] == "5s"  # sized by words
         assert 'says exactly these words, nothing more and nothing less: "So A equals U D V transpose."' in call["input"]
         assert "fictional" in call["input"] and "#0B0B0B" in call["input"]
         assert presenter.reference_image is not None and presenter.reference_image.is_file()

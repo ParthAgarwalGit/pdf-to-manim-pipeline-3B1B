@@ -251,10 +251,10 @@ def test_build_presenter_gemini_requires_key(monkeypatch, tmp_path):
 
 def test_cost_estimate_matches_clip_rule():
     text = " ".join(f"word{index}" for index in range(30)) + "."
-    # 30 words at 2.9 words/s need 10.3 s, plus a second, rounded up: one 12 s clip.
-    assert omni_clip_seconds(text) == 12
-    expected = 12 * 5792 * 12.00 / 1_000_000 * 1.5
-    assert expected == pytest.approx(1.251072)
+    # 30 words planned at 2.5 words/s need 12 s, plus 1.5 s of headroom, rounded up: one 14 s clip.
+    assert omni_clip_seconds(text) == 14
+    expected = 14 * 5792 * 12.00 / 1_000_000 * 1.5
+    assert expected == pytest.approx(1.459584)
     request = PresenterRequest(bridge_id="bridge_001", text=text, audio_path=None, duration_seconds=0.0)
     assert GeminiPresenter("key").estimated_cost_usd(request) == pytest.approx(expected)
     assert omni_cost_usd(text) == pytest.approx(expected)

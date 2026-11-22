@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, TypeVar
@@ -80,7 +81,7 @@ from .presenter import (
 )
 from .prompt_text import BEAT_FIX_MAX_EXTRA_WORDS, DEFAULT_VOICE
 from .providers import MissingProviderKey, ProviderRouter, STRUCTURED_OUTPUT_VERSION
-from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer
+from .rendering import VERIFIER_VERSION, RenderOutcome, TrackedManimRenderer, probe_duration
 from .report import write_costs, write_html_report, write_storyboard
 from .script_review import (
     SCRIPT_REVIEW_PROMPT_VERSION,
@@ -107,6 +108,13 @@ from .revision import (
     write_revision_state,
 )
 from .state import BudgetExceeded, RunStore
+from .visual_qa import (
+    UNCONFIRMED_CODE,
+    VISUAL_CODES,
+    VISUAL_ERROR_CODES,
+    VISUAL_QA_PROMPT_VERSION,
+    review_frames,
+)
 from .tts import (
     OPENAI_VOICES,
     RELAXED_SPEECH_RATE,
@@ -131,6 +139,8 @@ BEAT_FIX_WORD_TOLERANCE = 5
 # the outgoing clip fades out and the incoming one fades in, each this long.
 PRESENTER_FADE_SECONDS = 0.25
 PRESENTER_RENDER_FILE = "presenter/render.json"
+# Repairs after the look at the final render finds what the preview look missed.
+FINAL_REPAIRS_PER_SCENE = 2
 
 
 class PipelineV2:
@@ -858,6 +868,7 @@ class PipelineV2:
                     if self.config.policy == "strict":
                         result.final_video_path = None
                     result.message = "Final media needs review; inspect delivery_report.json."
+            self._flag_visual_defects(result, successful)
             if self.config.policy == "strict" and any(not item.passed for item in compliance):
                 result.status = RunStatus.FAILED
                 result.final_video_path = None
@@ -1175,8 +1186,9 @@ class PipelineV2:
                     )
                 raise
             actual = 0.0
-            if call_id is not None:
+            if call_id is not None and not clip.detail.get("cached"):
                 actual = round(clip.duration_seconds * presenter_usd_per_second(provider.name), 6)
+            if call_id is not None:
                 self.store.settle_call(
                     call_id, actual_usd=actual, input_units=0,
                     output_units=round(clip.duration_seconds), exact=False,
@@ -1854,54 +1866,65 @@ class PipelineV2:
                 )
             original = _outcome(original_data)
             self._check_notation(code, original)
+            await self._visual_check(
+                generator, scene_id, original, "00", scene_dir / "attempt-00",
+                f"preview-{scene_id}-00",
+            )
             self.artifacts.write_json(
                 artifact_prefix / "attempt-00" / "diagnostics.json",
                 _serialize(original),
             )
             if self.config.verifier_mode == "audit":
                 self._log_audit_outcome(scene_id, "preview", original)
-            selected_code = code
-            selected = original
-            selected_preview_task = f"preview-{scene_id}-00"
-            for repair_attempt in range(1, self.config.max_repairs_per_scene + 1):
-                eligible = (
-                    self.config.repair == "eligible"
-                    and _repair_needed(selected, self.config.verifier_mode)
-                )
-                if not eligible:
-                    break
-                attempt_label = f"{repair_attempt:02d}"
-                repair_task = f"repair-{scene_id}-{attempt_label}"
-                preview_task = f"preview-{scene_id}-{attempt_label}"
-                try:
-                    async with self._repair_limit:
-                        repaired_code_data = await self._task(
-                            repair_task, "vision_repair", scene_id,
-                            {
-                                "code": _hash_text(selected_code),
-                                "findings": [
-                                    item.model_dump(mode="json")
-                                    for item in selected.findings
-                                ],
-                            },
-                            lambda: generator.repair(
-                                scene=timed_scene, contract=contract, code=selected_code,
-                                findings=selected.findings, frame_paths=selected.frame_paths,
-                                lesson_scene=lesson_scene,
-                                visual_history=visual_history,
-                                **world_kwargs,
-                            ),
-                            dependencies=[selected_preview_task],
-                        )
-                    repaired_code = str(repaired_code_data)
-                    if _repair_code_unchanged(selected_code, repaired_code):
-                        self.artifacts.event(
-                            "repair_noop", stage="vision_repair", scene_id=scene_id,
-                            message="Repair returned code identical to the current candidate.",
-                            repair_attempt=repair_attempt,
-                        )
+
+            async def improve(
+                candidate_code: str,
+                candidate: RenderOutcome,
+                candidate_task: str,
+                prefix: str,
+                max_repairs: int,
+            ) -> tuple[str, RenderOutcome, str, bool]:
+                """Repair a candidate for as long as each repair measurably improves it."""
+
+                improved = False
+                for repair_attempt in range(1, max_repairs + 1):
+                    eligible = (
+                        self.config.repair == "eligible"
+                        and _repair_needed(candidate, self.config.verifier_mode)
+                    )
+                    if not eligible:
                         break
-                    else:
+                    attempt_label = f"{prefix}{repair_attempt:02d}"
+                    repair_task = f"repair-{scene_id}-{attempt_label}"
+                    preview_task = f"preview-{scene_id}-{attempt_label}"
+                    try:
+                        async with self._repair_limit:
+                            repaired_code_data = await self._task(
+                                repair_task, "vision_repair", scene_id,
+                                {
+                                    "code": _hash_text(candidate_code),
+                                    "findings": [
+                                        item.model_dump(mode="json")
+                                        for item in candidate.findings
+                                    ],
+                                },
+                                lambda: generator.repair(
+                                    scene=timed_scene, contract=contract, code=candidate_code,
+                                    findings=candidate.findings, frame_paths=_repair_frames(candidate),
+                                    lesson_scene=lesson_scene,
+                                    visual_history=visual_history,
+                                    **world_kwargs,
+                                ),
+                                dependencies=[candidate_task],
+                            )
+                        repaired_code = str(repaired_code_data)
+                        if _repair_code_unchanged(candidate_code, repaired_code):
+                            self.artifacts.event(
+                                "repair_noop", stage="vision_repair", scene_id=scene_id,
+                                message="Repair returned code identical to the current candidate.",
+                                repair_attempt=repair_attempt,
+                            )
+                            break
                         repaired_path = scene_dir / "code" / f"repaired-{attempt_label}.py"
                         repaired_path.write_text(repaired_code, encoding="utf-8")
                         (scene_dir / "code" / f"repaired_raw-{attempt_label}.py").write_text(
@@ -1921,18 +1944,28 @@ class PipelineV2:
                             )
                         repaired = _outcome(repaired_data)
                         self._check_notation(repaired_code, repaired)
+                        await self._visual_check(
+                            generator, scene_id, repaired, attempt_label,
+                            scene_dir / f"attempt-{attempt_label}", preview_task,
+                        )
                         self.artifacts.write_json(
                             artifact_prefix / f"attempt-{attempt_label}" / "diagnostics.json",
                             _serialize(repaired),
                         )
                         if self.config.verifier_mode == "audit":
                             self._log_audit_outcome(scene_id, "repair_preview", repaired)
-                        visual_changed = _repair_visuals_changed(selected, repaired)
-                        if _repair_improves(selected, repaired) and visual_changed:
-                            before_score = _quality(selected)
-                            selected_code, selected = repaired_code, repaired
-                            selected_preview_task = preview_task
-                            result.repaired = True
+                        # A defect seen mid-animation can be fixed without changing
+                        # the frames taken at beat ends; fewer confirmed defects in
+                        # the new video is a visual change too.
+                        visual_changed = (
+                            _repair_visuals_changed(candidate, repaired)
+                            or _visual_errors(repaired) < _visual_errors(candidate)
+                        )
+                        if _repair_improves(candidate, repaired) and visual_changed:
+                            before_score = _quality(candidate)
+                            candidate_code, candidate = repaired_code, repaired
+                            candidate_task = preview_task
+                            improved = True
                             self.artifacts.event(
                                 "repair_accepted", stage="vision_repair", scene_id=scene_id,
                                 before_score=before_score, after_score=_quality(repaired),
@@ -1943,22 +1976,112 @@ class PipelineV2:
                                 "repair_rejected", stage="vision_repair", scene_id=scene_id,
                                 message=("Checkpoint visuals were unchanged." if not visual_changed
                                          else "Objective diagnostics did not improve."),
-                                before_score=_quality(selected), after_score=_quality(repaired),
+                                before_score=_quality(candidate), after_score=_quality(repaired),
                                 repair_attempt=repair_attempt,
                             )
                             break
+                    except (MissingProviderKey, BudgetExceeded) as exc:
+                        self.artifacts.event(
+                            "repair_skipped", stage="vision_repair", scene_id=scene_id,
+                            message=str(exc), repair_attempt=repair_attempt,
+                        )
+                        break
+                    except Exception as exc:
+                        self.artifacts.event(
+                            "repair_failed", stage="vision_repair", scene_id=scene_id,
+                            message=str(exc), repair_attempt=repair_attempt,
+                        )
+                        break
+                return candidate_code, candidate, candidate_task, improved
+
+            selected_code, selected, selected_preview_task, result.repaired = await improve(
+                code, original, f"preview-{scene_id}-00", "", self.config.max_repairs_per_scene,
+            )
+            if (
+                getattr(self.config, "visual_qa", False) and self.config.repair == "eligible"
+                and code_mode == "generate" and _visual_errors(selected)
+            ):
+                # Repairs could not clear what a viewer would see: one fresh
+                # design that is told what to avoid, kept only if it is better.
+                defects = [
+                    item.message for item in selected.findings if item.code in VISUAL_ERROR_CODES
+                ]
+                redesign_task = f"code-{scene_id}-redesign"
+                redesign_preview_task = f"preview-{scene_id}-redesign"
+                try:
+                    async with self._code_limit:
+                        redesign_data = await self._task(
+                            redesign_task, "code_generation", scene_id,
+                            {**code_payload, "avoid_defects": defects},
+                            lambda: generator.generate(
+                                timed_scene, contract, facts, lesson_scene=lesson_scene,
+                                visual_history=visual_history,
+                                retry_attempt=retry_attempt + 1,
+                                avoid_defects=defects,
+                                **notation_kwargs,
+                                **world_kwargs,
+                            ),
+                            dependencies=[selected_preview_task],
+                        )
+                    redesign_code = str(redesign_data)
+                    (scene_dir / "code" / "redesign.py").write_text(redesign_code, encoding="utf-8")
+                    async with self._preview_limit:
+                        redesign_preview = await self._task(
+                            redesign_preview_task, "preview", scene_id,
+                            {"code": _hash_text(redesign_code), "verifier_version": VERIFIER_VERSION,
+                             "contract": contract.model_dump(mode="json")},
+                            lambda: asyncio.to_thread(
+                                self.renderer.render, redesign_code, contract, timed_scene,
+                                scene_dir / "attempt-redesign", quality="low",
+                                timeout_seconds=self.config.preview_timeout_seconds,
+                            ),
+                            dependencies=[redesign_task],
+                        )
+                    redesigned = _outcome(redesign_preview)
+                    self._check_notation(redesign_code, redesigned)
+                    await self._visual_check(
+                        generator, scene_id, redesigned, "redesign",
+                        scene_dir / "attempt-redesign", redesign_preview_task,
+                    )
+                    self.artifacts.write_json(
+                        artifact_prefix / "attempt-redesign" / "diagnostics.json",
+                        _serialize(redesigned),
+                    )
+                    # A fresh layout has its own small slips: one repair round.
+                    redesign_code, redesigned, redesign_preview_task, _ = await improve(
+                        redesign_code, redesigned, redesign_preview_task, "redesign-", 1,
+                    )
+                    if _repair_improves(selected, redesigned):
+                        self.artifacts.event(
+                            "redesign_accepted", stage="visual_qa", scene_id=scene_id,
+                            before_score=_quality(selected), after_score=_quality(redesigned),
+                            defects_before=len(defects),
+                            defects_after=_visual_errors(redesigned),
+                        )
+                        selected_code, selected = redesign_code, redesigned
+                        selected_preview_task = redesign_preview_task
+                        result.repaired = True
+                    else:
+                        self.artifacts.event(
+                            "redesign_rejected", stage="visual_qa", scene_id=scene_id,
+                            message="The fresh design did not measure better; the repaired scene is kept.",
+                            before_score=_quality(selected), after_score=_quality(redesigned),
+                        )
                 except (MissingProviderKey, BudgetExceeded) as exc:
                     self.artifacts.event(
-                        "repair_skipped", stage="vision_repair", scene_id=scene_id,
-                        message=str(exc), repair_attempt=repair_attempt,
+                        "redesign_skipped", stage="visual_qa", scene_id=scene_id, message=str(exc),
                     )
-                    break
                 except Exception as exc:
                     self.artifacts.event(
-                        "repair_failed", stage="vision_repair", scene_id=scene_id,
-                        message=str(exc), repair_attempt=repair_attempt,
+                        "redesign_failed", stage="visual_qa", scene_id=scene_id, message=str(exc),
                     )
-                    break
+            remaining = [item for item in selected.findings if item.code in VISUAL_ERROR_CODES]
+            if remaining:
+                self.artifacts.event(
+                    "visual_defects_remaining", stage="visual_qa", scene_id=scene_id,
+                    message=f"{len(remaining)} confirmed visual defect(s) remain after repair.",
+                    defects=[item.message for item in remaining],
+                )
 
             final_code_path = scene_dir / "code" / "final.py"
             final_code_path.write_text(selected_code, encoding="utf-8")
@@ -1985,6 +2108,75 @@ class PipelineV2:
                     )
                 final_render = _outcome(final_data)
                 self._check_notation(selected_code, final_render)
+                if getattr(self.config, "visual_qa", False):
+                    # A second, independent look at the video the viewer gets:
+                    # one look at the low-quality preview missed real overlaps
+                    # in 3 of 11 scenes that a look at the final render found.
+                    await self._visual_check(
+                        generator, scene_id, final_render, "final", scene_dir / "final-render",
+                        f"render-{scene_id}",
+                    )
+                    seen_late = [item for item in final_render.findings if item.code in VISUAL_ERROR_CODES]
+                    if seen_late and self.config.repair == "eligible":
+                        # Repair from the selected preview with the final render's
+                        # frames as evidence, render again, and keep the new
+                        # render only if a look at it measures better.
+                        evidence = replace(selected, findings=[*selected.findings, *seen_late])
+                        fixed_code, fixed, fixed_task, improved = await improve(
+                            selected_code, evidence, selected_preview_task, "final-",
+                            FINAL_REPAIRS_PER_SCENE,
+                        )
+                        if improved:
+                            rerender_task = f"render-{scene_id}-final"
+                            try:
+                                async with self._render_limit:
+                                    rerender_data = await self._task(
+                                        rerender_task, "high_render", scene_id,
+                                        {"code": _hash_text(fixed_code), "quality": self.config.quality,
+                                         "verifier_version": VERIFIER_VERSION},
+                                        lambda: asyncio.to_thread(
+                                            self.renderer.render, fixed_code, contract, timed_scene,
+                                            scene_dir / "final-render-2", quality=self.config.quality,
+                                            timeout_seconds=self.config.render_timeout_seconds,
+                                        ),
+                                        dependencies=[fixed_task],
+                                    )
+                                rerendered = _outcome(rerender_data)
+                                self._check_notation(fixed_code, rerendered)
+                                await self._visual_check(
+                                    generator, scene_id, rerendered, "final-2",
+                                    scene_dir / "final-render-2", rerender_task,
+                                )
+                            except (MissingProviderKey, BudgetExceeded) as exc:
+                                rerendered = None
+                                self.artifacts.event(
+                                    "final_repair_skipped", stage="visual_qa", scene_id=scene_id,
+                                    message=str(exc),
+                                )
+                            if rerendered is not None and _render_acceptable(
+                                rerendered, self.config.verifier_mode, self.config.policy,
+                            ) and _repair_improves(final_render, rerendered):
+                                self.artifacts.event(
+                                    "final_repair_accepted", stage="visual_qa", scene_id=scene_id,
+                                    before_score=_quality(final_render), after_score=_quality(rerendered),
+                                    defects_before=len(seen_late), defects_after=_visual_errors(rerendered),
+                                )
+                                selected_code, selected, selected_preview_task = fixed_code, fixed, fixed_task
+                                final_render = rerendered
+                                final_code_path.write_text(selected_code, encoding="utf-8")
+                                result.preview_path = selected.video_path
+                                result.repaired = True
+                            elif rerendered is not None:
+                                self.artifacts.event(
+                                    "final_repair_rejected", stage="visual_qa", scene_id=scene_id,
+                                    message="The repaired render did not measure better; the first render is kept.",
+                                    before_score=_quality(final_render), after_score=_quality(rerendered),
+                                )
+                # Same code, same layout: the preview's frame-by-frame findings
+                # describe the final render too.
+                final_render.findings.extend(
+                    item for item in selected.findings if item.code in VISUAL_CODES
+                )
                 result.findings = final_render.findings
                 result.frame_paths = final_render.frame_paths or selected.frame_paths
                 if self.config.verifier_mode == "audit":
@@ -2099,6 +2291,95 @@ class PipelineV2:
             outcome.findings.append(VerificationFinding(
                 code="NOTATION_DIRECTIVE", severity="error", message=message,
             ))
+
+    async def _visual_check(
+        self,
+        generator: Any,
+        scene_id: str,
+        outcome: RenderOutcome,
+        label: str,
+        attempt_dir: Path,
+        preview_task: str,
+    ) -> None:
+        """Watch a rendered preview frame by frame and add the defects confirmed in it.
+
+        The trace verifier sees objects only at beat ends; this catches what
+        a viewer sees while things move. Without a key or budget the check is
+        skipped and recorded, never fatal.
+        """
+
+        if not getattr(self.config, "visual_qa", False) or not outcome.render_success:
+            return
+        video = Path(outcome.video_path) if outcome.video_path else None
+        if video is None or not video.is_file():
+            return
+        duration = outcome.duration_seconds or probe_duration(video)
+        task_id = f"visual-qa-{scene_id}-{label}"
+        try:
+            data = await self._task(
+                task_id, "visual_qa", scene_id,
+                {"video": _file_signature(video), "prompt_version": VISUAL_QA_PROMPT_VERSION,
+                 "model": TEXT_MODEL},
+                lambda: review_frames(
+                    generator.router, scene_id=scene_id, video_path=video, duration=duration,
+                    out_dir=attempt_dir / "visual_qa", task_id=task_id,
+                ),
+                dependencies=[preview_task],
+            )
+        except (MissingProviderKey, BudgetExceeded) as exc:
+            self.artifacts.event(
+                "visual_qa_skipped", stage="visual_qa", scene_id=scene_id, task_id=task_id,
+                message=str(exc),
+            )
+            return
+        except Exception as exc:
+            self.artifacts.event(
+                "visual_qa_failed", stage="visual_qa", scene_id=scene_id, task_id=task_id,
+                message=str(exc),
+            )
+            return
+        findings = [VerificationFinding.model_validate(item) for item in data or []]
+        unconfirmed = [item.message for item in findings if item.code == UNCONFIRMED_CODE]
+        if unconfirmed:
+            # Kept out of the findings: half of first-look reports were not
+            # there, and they would steer repairs and scores.
+            self.artifacts.event(
+                "visual_qa_unconfirmed", stage="visual_qa", scene_id=scene_id, task_id=task_id,
+                message=f"{len(unconfirmed)} reported defect(s) were not visible on a closer look.",
+                defects=unconfirmed,
+            )
+        outcome.findings.extend(item for item in findings if item.code != UNCONFIRMED_CODE)
+
+    def _flag_visual_defects(self, result: RunResult, successful: list[SceneResult]) -> None:
+        """Mark the video for review when confirmed visual defects are still in it."""
+
+        unresolved = [
+            (item.scene_id, finding) for item in successful
+            if item.final_video_path and not item.fallback_used
+            for finding in item.findings if finding.code in VISUAL_ERROR_CODES
+        ]
+        if not unresolved or not result.final_video_path:
+            return
+        self.artifacts.write_json("visual_review.json", [
+            {"scene_id": scene_id, "code": finding.code, "message": finding.message,
+             "timestamp": finding.timestamp, "frame": finding.screenshot_path}
+            for scene_id, finding in unresolved
+        ])
+        result.delivery_status = "needs_review"
+        result.delivery_summary.extend(
+            f"{scene_id}: {finding.message}" for scene_id, finding in unresolved
+        )
+        if result.status == RunStatus.SUCCESS:
+            result.status = RunStatus.PARTIAL_SUCCESS
+        note = (
+            f"{len(unresolved)} visual defect(s) remain that repair and redesign could "
+            "not fix; inspect visual_review.json."
+        )
+        result.message = f"{result.message} {note}".strip()
+        self.artifacts.event(
+            "visual_review_needed", stage="visual_qa", message=note,
+            scenes=sorted({scene_id for scene_id, _ in unresolved}),
+        )
 
     def _previous_code(self, scene_id: str) -> Optional[str]:
         previous = self._previous_scene_results.get(scene_id)
@@ -2378,6 +2659,20 @@ def _repair_code_unchanged(original_code: str, repaired_code: str) -> bool:
 
 def _repair_improves(original: RenderOutcome, repaired: RenderOutcome) -> bool:
     return _quality(repaired) < _quality(original)
+
+
+def _visual_errors(outcome: RenderOutcome) -> int:
+    """Confirmed frame-check defects a viewer would see."""
+    return sum(item.code in VISUAL_ERROR_CODES for item in outcome.findings)
+
+
+def _repair_frames(outcome: RenderOutcome) -> list[str]:
+    """Frames for the repair model: the clearest frame of each seen defect first."""
+    seen = [
+        item.screenshot_path for item in outcome.findings
+        if item.code in VISUAL_CODES and item.screenshot_path
+    ]
+    return list(dict.fromkeys([*seen[:4], *outcome.frame_paths]))
 
 
 def _repair_needed(outcome: RenderOutcome, verifier_mode: str) -> bool:

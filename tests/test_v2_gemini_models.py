@@ -161,7 +161,7 @@ def test_cli_voice_and_tts_provider_defaults(tmp_path):
     default = convert()
     assert default.voice == "Sulafat"
     assert default.tts_provider == "gemini"
-    assert default.max_cost_usd == 3.0
+    assert default.max_cost_usd == 4.0
 
     openai = convert("--tts-provider", "openai")
     assert (openai.tts_provider, openai.voice) == ("openai", "alloy")

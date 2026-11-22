@@ -387,7 +387,9 @@ class PipelineV2Config(BaseModel):
     policy: Literal["standard", "strict"] = "standard"
     repair: Literal["off", "eligible"] = "eligible"
     verifier_mode: Literal["enforce", "audit"] = "enforce"
-    max_cost_usd: float = Field(default=3.0, gt=0.0)
+    # Brief default: room for the frame-by-frame visual check and presenter
+    # bridges on top of a typical $2.50 brief, so neither is skipped for budget.
+    max_cost_usd: float = Field(default=4.0, gt=0.0)
     min_scenes: Optional[int] = Field(default=None, ge=1, le=MAX_V2_SCENES)
     max_scenes: int = Field(default=12, ge=1, le=MAX_V2_SCENES)
     pacing: Literal["standard", "relaxed"] = "standard"
@@ -403,6 +405,9 @@ class PipelineV2Config(BaseModel):
     repair_workers: int = Field(default=1, ge=1, le=2)
     render_workers: int = Field(default=1, ge=1, le=2)
     max_repairs_per_scene: int = Field(default=3, ge=0, le=3)
+    # Every preview is also watched frame by frame by a vision model; defects
+    # it confirms are repaired, then redesigned once, then flagged for review.
+    visual_qa: bool = True
     preview_timeout_seconds: int = Field(default=120, ge=10)
     render_timeout_seconds: int = Field(default=600, ge=30)
     # Generated Manim always runs with scrubbed secrets in a scratch directory;

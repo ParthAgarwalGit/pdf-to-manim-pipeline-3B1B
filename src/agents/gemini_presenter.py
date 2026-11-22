@@ -16,6 +16,9 @@ voice match by construction).
   so the same fictional lecturer appears throughout the video.
 - Each clip is transcribed (Whisper) and compared with the text it had to
   say; a clip that drifts is regenerated once and the closer take is kept.
+- A clip whose speech runs to its last frame was cut off mid-word: it is
+  regenerated once with more time, and if that take is cut off too the
+  line fails instead of reaching the video with its ending missing.
 - The persona is fictional and described in words: no real person's photo
   is used. Clips carry the "AI-generated presenter" overlay downstream.
 """
@@ -35,15 +38,26 @@ logger = logging.getLogger(__name__)
 
 OMNI_MODEL = "gemini-omni-1.2-flash"
 MIN_CLIP_SECONDS, MAX_CLIP_SECONDS = 3, 15
-CHUNK_SECONDS = 13.0          # target speech per clip, leaving room to breathe
-# Measured on real Omni clips: 2.8-3.2 words/s. Planning slower padded every
-# clip with seconds of dead air (now also trimmed, see trim_to_speech).
+# Measured on real Omni clips: 2.8-3.2 words/s on short lines. Long lines
+# (30-35 words) ran slower, and clips sized at 2.9 words/s plus one second
+# ended mid-word. Clips are sized for the slow case with spare time; the
+# extra padding is trimmed (see trim_to_speech).
 SPOKEN_WORDS_PER_SECOND = 2.9
+PLANNING_WORDS_PER_SECOND = 2.5
+CLIP_HEADROOM_SECONDS = 1.5
+# Speech per clip: a full chunk still fits the longest clip with its headroom.
+CHUNK_SECONDS = MAX_CLIP_SECONDS - CLIP_HEADROOM_SECONDS
 MAX_WORD_ERROR = 0.15
 REQUEST_TIMEOUT_MS = 240_000  # a 15 s clip takes ~60 s to generate
 # Silence around the speech in a generated clip is cut down to a breath.
 SILENCE_DB = -35
-LEAD_SECONDS, TAIL_SECONDS = 0.15, 0.3
+LEAD_SECONDS, TAIL_SECONDS = 0.15, 0.4
+# A take whose speech runs to its last frame was cut off mid-word. Measured
+# against the clip's own noise floor: Omni's silence is not digital silence,
+# and a fixed -35 dB threshold misread a noisy clip as speech to the end.
+CUT_OFF_QUIET_SECONDS = 0.15
+CUT_OFF_RETRY_EXTRA_SECONDS = 2
+_ENVELOPE_WINDOW_SECONDS = 0.02
 DEFAULT_PERSONA = (
     "a friendly fictional university lecturer, a woman in her thirties with short dark hair "
     "and glasses, wearing a navy blazer over a plain gray t-shirt"
@@ -63,7 +77,7 @@ def split_for_clips(text: str, seconds_per_clip: float = CHUNK_SECONDS) -> List[
     longer than a chunk is cut at its commas.
     """
     text = (text or "").strip()
-    budget = seconds_per_clip * SPOKEN_WORDS_PER_SECOND
+    budget = seconds_per_clip * PLANNING_WORDS_PER_SECOND
     total = len(text.split())
     if total <= budget:
         return [text]
@@ -93,10 +107,54 @@ def split_for_clips(text: str, seconds_per_clip: float = CHUNK_SECONDS) -> List[
 
 def clip_seconds(text: str, target: Optional[float] = None) -> int:
     """Requested clip length: room for the words (and the TTS timing, if any)."""
-    needed = len(text.split()) / SPOKEN_WORDS_PER_SECOND
+    needed = len(text.split()) / PLANNING_WORDS_PER_SECOND
     if target:
         needed = max(needed, float(target))
-    return int(max(MIN_CLIP_SECONDS, min(MAX_CLIP_SECONDS, math.ceil(needed + 1.0))))
+    return int(max(MIN_CLIP_SECONDS, min(MAX_CLIP_SECONDS, math.ceil(needed + CLIP_HEADROOM_SECONDS))))
+
+
+class PresenterClipCutOff(RuntimeError):
+    """Every take of a line ended mid-speech; using one would cut the sentence."""
+
+
+def trailing_quiet_seconds(path: Path) -> Optional[float]:
+    """Quiet after the last speech in a clip, or None when no speech is found.
+
+    Speech is anything well above the clip's own noise floor: the level is
+    30 dB under its loud parts (90th percentile of 20 ms windows) but at
+    least 10 dB over its quiet parts (10th percentile), and never more than
+    10 dB under the loud parts, so a clip that is speech throughout (its
+    quiet parts are speech too) still reads as speech to the end.
+    """
+    import numpy as np
+
+    result = subprocess.run(
+        [get_ffmpeg(), "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000",
+         "-f", "s16le", "-"],
+        capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return None
+    samples = np.frombuffer(result.stdout, dtype=np.int16).astype(float)
+    window = int(16000 * _ENVELOPE_WINDOW_SECONDS)
+    count = len(samples) // window
+    if count < 10:
+        return None
+    rms = np.sqrt((samples[: count * window].reshape(count, window) ** 2).mean(axis=1))
+    level = 20 * np.log10(np.maximum(rms, 1.0))
+    speech, floor = np.percentile(level, 90), np.percentile(level, 10)
+    if speech - floor < 10.0:
+        return None  # one steady level throughout: no speech to find the end of
+    loud = np.flatnonzero(level > min(max(speech - 30.0, floor + 10.0), speech - 10.0))
+    if len(loud) == 0:
+        return None
+    return float((count - (loud[-1] + 1)) * _ENVELOPE_WINDOW_SECONDS)
+
+
+def speech_cut_off(path: Path) -> bool:
+    """True when a raw (untrimmed) take's speech runs into its last frame."""
+    quiet = trailing_quiet_seconds(path)
+    return quiet is not None and quiet < CUT_OFF_QUIET_SECONDS
 
 
 def _ffmpeg(args: List[str]) -> None:
@@ -312,7 +370,9 @@ class GeminiOmniPresenter:
 
     def _clip(self, text: str, seconds: int, dest: Path) -> Path:
         cached = self._cache_path(text, seconds)
-        if cached is not None and cached.is_file():
+        # The cache holds raw takes, so one cut off mid-word (cached before
+        # this check existed) is recognised and replaced, never reused.
+        if cached is not None and cached.is_file() and not speech_cut_off(cached):
             dest.write_bytes(cached.read_bytes())
             self.clips.append({"seconds": seconds, "word_error": None, "attempt": 0, "cached": True})
         else:
@@ -326,7 +386,10 @@ class GeminiOmniPresenter:
         return dest
 
     def _generate(self, text: str, seconds: int, dest: Path) -> None:
-        best: Optional[Tuple[float, bytes]] = None
+        """At most two takes. A take cut off mid-word is redone with more time,
+        one that says something else with a stricter prompt; a complete take
+        always beats a cut-off one, and if every take is cut off this raises."""
+        best: Optional[Tuple[Tuple[bool, float], bytes]] = None
         for attempt in range(2):
             try:
                 data = self._request(text, seconds, strict=attempt > 0)
@@ -341,16 +404,26 @@ class GeminiOmniPresenter:
                 logger.warning("Presenter clip request failed (%s); retrying once.", str(exc)[:160])
                 continue
             dest.write_bytes(data)
+            cut_off = speech_cut_off(dest)
             error = self._word_error(text, dest)
-            score = error if error is not None else 0.0
+            score = (cut_off, error if error is not None else 0.0)
             if best is None or score < best[0]:
                 best = (score, data)
-            self.clips.append({"seconds": seconds, "word_error": error, "attempt": attempt + 1})
-            if error is None or error <= MAX_WORD_ERROR:
+            self.clips.append({"seconds": seconds, "word_error": error, "attempt": attempt + 1,
+                               "cut_off": cut_off})
+            if not cut_off and (error is None or error <= MAX_WORD_ERROR):
                 break
-            logger.warning("Presenter clip said something else (WER %.2f); regenerating once.", error)
+            if cut_off:
+                logger.warning("Presenter clip ended mid-speech in %ss; regenerating with more time.", seconds)
+                seconds = min(MAX_CLIP_SECONDS, seconds + CUT_OFF_RETRY_EXTRA_SECONDS)
+            else:
+                logger.warning("Presenter clip said something else (WER %.2f); regenerating once.", error)
         if best is None:
             raise RuntimeError("Gemini Omni returned no presenter clip.")
+        if best[0][0]:
+            raise PresenterClipCutOff(
+                f"Every presenter take of a {len(text.split())}-word line ended mid-speech."
+            )
         dest.write_bytes(best[1])
 
     def _capture_reference(self, clip: Path) -> None:

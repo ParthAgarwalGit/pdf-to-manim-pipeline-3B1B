@@ -89,6 +89,15 @@ def pdf2manim() -> None:
     help="Maximum sequential improving repair attempts for each scene.",
 )
 @click.option(
+    "--visual-qa/--no-visual-qa",
+    default=True,
+    show_default=True,
+    help=(
+        "Watch each preview frame by frame with a vision model; confirmed overlaps and "
+        "cut-off objects are repaired, redesigned once, or flagged for review."
+    ),
+)
+@click.option(
     "--verifier-mode",
     type=click.Choice(["enforce", "audit"]),
     default="enforce",
@@ -107,7 +116,7 @@ def pdf2manim() -> None:
 )
 @click.option(
     "--max-cost", type=click.FloatRange(min=0.01), default=None,
-    help="API budget in dollars [default: 3 for brief, 15 for deep].",
+    help="API budget in dollars [default: 4 for brief, 15 for deep].",
 )
 @click.option(
     "--min-scenes",
@@ -189,6 +198,7 @@ def convert(
     strict: bool,
     repair: str,
     max_repairs_per_scene: int,
+    visual_qa: bool,
     verifier_mode: str,
     mode: Optional[str],
     max_cost: Optional[float],
@@ -254,6 +264,7 @@ def convert(
         policy=effective_policy,
         repair=repair,
         max_repairs_per_scene=max_repairs_per_scene,
+        visual_qa=visual_qa,
         verifier_mode=verifier_mode,
         min_scenes=min_scenes,
         pacing=pacing,
@@ -287,7 +298,7 @@ def convert(
     click.echo(f"  API budget:  ${config.max_cost_usd:.2f}")
     click.echo(f"  Repair:      {repair}")
     click.echo(f"  Repair cap:  {max_repairs_per_scene} per scene")
-    click.echo(f"  Verifier:    {verifier_mode}")
+    click.echo(f"  Verifier:    {verifier_mode}{', frame-by-frame visual check' if visual_qa else ''}")
     click.echo(f"  Scene range: {min_scenes or 'auto'}-{config.max_scenes}")
     click.echo(f"  Pacing:      {pacing}")
     click.echo(f"  API workers: {api_workers} (code {code_workers}, preview {preview_workers})")
