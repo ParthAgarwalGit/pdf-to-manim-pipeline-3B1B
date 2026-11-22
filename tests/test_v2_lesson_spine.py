@@ -23,9 +23,8 @@ from src.pipeline_v2.models import (
     SourceFact,
 )
 from src.pipeline_v2.planning import (
-    NARRATION_PROMPT_VERSION,
-    PROMPT_VERSION,
     PlanningService,
+    prompt_version,
 )
 from src.pipeline_v2.prompt_text import CODEGEN_STYLE_RULES, REVIEW_PASS_SCORE
 from src.pipeline_v2.providers import (
@@ -39,6 +38,9 @@ from src.prompts.review import PLANNED_CRITERIA_WEIGHTS
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "test_trig_3pages.pdf"
+# These tests plan in the default brief mode.
+PROMPT_VERSION = prompt_version("brief", "planning")
+NARRATION_PROMPT_VERSION = prompt_version("brief", "narration")
 
 
 def _without_keys(monkeypatch):

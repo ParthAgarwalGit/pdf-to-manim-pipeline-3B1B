@@ -78,6 +78,8 @@ class RunArtifacts:
             )
             if event.endswith("failed") or event == "error":
                 self.logger.error(redact_text(human))
+            elif event.endswith("warning"):
+                self.logger.warning(redact_text(human))
             else:
                 self.logger.info(redact_text(human))
 

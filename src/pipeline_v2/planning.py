@@ -65,8 +65,34 @@ except ImportError:  # pragma: no cover - compatibility with older PyMuPDF
     import fitz as pymupdf
 
 
-PROMPT_VERSION = "v2.7.1-brief-coverage"
-NARRATION_PROMPT_VERSION = "v2.8.1-voice"
+# Prompt versions, per video mode. A planning task's input hash includes its
+# mode's version, so changing one mode's prompts re-plans only that mode's runs
+# on resume. Bump a mode's entry when its prompts change, and both entries when
+# text the two modes share changes. "planning" covers OCR, lesson and visual
+# contract prompts; "narration" covers the narration prompt.
+PROMPT_VERSIONS = {
+    "brief": {"planning": "v2.7.1-brief-coverage", "narration": "v2.8.1-voice"},
+    "deep": {"planning": "v2.7.0-modes", "narration": "v2.8.0-voice"},
+}
+# Other names a mode's current prompts went by: a task whose stored hash used
+# one of them is still reused. Deep runs planned while both modes shared one
+# version (070d988) carry that commit's brief-only bump. Drop a mode's aliases
+# when its version is bumped.
+PROMPT_VERSION_ALIASES = {
+    "deep": {"planning": ("v2.7.1-brief-coverage",), "narration": ("v2.8.1-voice",)},
+}
+
+
+def prompt_version(mode: str, kind: str) -> str:
+    """The prompt version of ``kind`` ("planning" or "narration") for a video mode."""
+
+    return PROMPT_VERSIONS[mode][kind]
+
+
+def prompt_version_aliases(mode: str, kind: str) -> tuple[str, ...]:
+    return PROMPT_VERSION_ALIASES.get(mode, {}).get(kind, ())
+
+
 HOOK_PROMPT_VERSION = "hook-3-no-spoilers"
 BEAT_FIX_PROMPT_VERSION = "beat-fix-1"
 NARRATION_BATCH_SIZE = 5
@@ -231,7 +257,7 @@ class PlanningService:
                     """Transcribe ``read_pages``; None when every attempt came back unreadable."""
 
                     prompt = (
-                        f"PROMPT_VERSION={PROMPT_VERSION}\n"
+                        f"PROMPT_VERSION={prompt_version(self.mode, 'planning')}\n"
                         "Transcribe the educational content in these PDF pages in image order. "
                         f"Their one-based page numbers are {read_pages}. Preserve equations exactly. "
                         "Return JSON only as {\"facts\":[{\"page_number\":1,\"text\":\"...\","
@@ -332,7 +358,7 @@ class PlanningService:
                 f"{max_scenes} scenes. "
             )
         prompt = (
-            f"PROMPT_VERSION={PROMPT_VERSION}\n"
+            f"PROMPT_VERSION={prompt_version(self.mode, 'planning')}\n"
             + lesson_instructions(
                 scene_guidance, self.presenter_opens, self.mode, self.audience or "undergraduate",
             ) + "\n\n"
@@ -615,7 +641,7 @@ class PlanningService:
                 },
             }
             prompt = (
-                f"PROMPT_VERSION={NARRATION_PROMPT_VERSION}\n"
+                f"PROMPT_VERSION={prompt_version(self.mode, 'narration')}\n"
                 + feedback_block
                 + narration_instructions(
                     pace_guidance, target_wpm, self.presenter_opens, self.mode,
@@ -678,7 +704,7 @@ class PlanningService:
                 if fact_id in fact_map
             }
             prompt = (
-                f"PROMPT_VERSION={PROMPT_VERSION}\n"
+                f"PROMPT_VERSION={prompt_version(self.mode, 'planning')}\n"
                 "For each scene, first define a semantic artifact_inventory, then compose those "
                 "same artifacts into beat-level composition_plan entries. Separate primary visuals, "
                 "semantic text, target-linked annotations, and transient effects. Every artifact needs "
@@ -720,7 +746,7 @@ class PlanningService:
         }
         task_id = f"visual-{batch_index:03d}"
         prompt = (
-            f"PROMPT_VERSION={PROMPT_VERSION}\n"
+            f"PROMPT_VERSION={prompt_version(self.mode, 'planning')}\n"
             "For each scene, first define a semantic artifact_inventory, then compose those "
             "same artifacts into beat-level composition_plan entries. Separate primary visuals, "
             "semantic text, target-linked annotations, and transient effects. Every artifact needs "
