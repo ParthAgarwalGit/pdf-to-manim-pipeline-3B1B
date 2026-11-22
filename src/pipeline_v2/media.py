@@ -98,12 +98,19 @@ def source_page_fallback(
     return output_path.resolve()
 
 
-def concatenate(videos: list[Path], output: Path) -> Path:
+def concatenate(
+    videos: list[Path],
+    output: Path,
+    *,
+    fades: Optional[list[tuple[float, float]]] = None,
+) -> Path:
     """Join clips into one uniform file, whatever each clip's own format is.
 
     Every clip is scaled and padded to the most common frame size and rate
     and resampled to 48 kHz stereo (silence when it has no audio track), so
     a 1080p fallback page or a silent clip cannot corrupt the joined video.
+    ``fades`` gives each clip a (fade-in, fade-out) through black in seconds;
+    only the picture fades, the audio is untouched.
     """
     if not videos:
         raise RuntimeError("No scene videos are available for final composition")
@@ -120,14 +127,29 @@ def concatenate(videos: list[Path], output: Path) -> Path:
     rate = f"{fps or 30.0:g}"
     chains: list[str] = []
     for index, info in enumerate(infos):
+        video_seconds = info.video.duration or info.duration or 0.0
+        audio_seconds = (info.audio.duration or 0.0) if info.audio is not None else 0.0
+        # The concat filter gives each segment the longer of its two streams;
+        # a picture shorter than its sound would leave a timestamp gap and make
+        # the joined file variable-rate. Hold the last frame for the difference.
+        hold = audio_seconds - video_seconds
+        hold_filter = f"tpad=stop_mode=clone:stop_duration={hold:.3f}," if hold > 0.01 else ""
+        fade = _fade_filters(
+            fades[index] if fades and index < len(fades) else (0.0, 0.0),
+            max(video_seconds, audio_seconds) or info.duration,
+        )
         chains.append(
             f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,fps={rate},setsar=1,"
-            f"format=yuv420p[v{index}]"
+            f"{hold_filter}{fade}format=yuv420p[v{index}]"
         )
         if info.audio is not None:
+            # And the reverse: silence under a picture that outlasts its sound.
+            pad_filter = (
+                f",apad=whole_dur={video_seconds:.3f}" if video_seconds - audio_seconds > 0.01 else ""
+            )
             chains.append(
-                f"[{index}:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a{index}]"
+                f"[{index}:a:0]aformat=sample_rates=48000:channel_layouts=stereo{pad_filter}[a{index}]"
             )
         else:
             seconds = info.video.duration or info.duration or 0.0
@@ -139,7 +161,7 @@ def concatenate(videos: list[Path], output: Path) -> Path:
 
     inputs = [arg for path in videos for arg in ("-i", str(path))]
     encode = [
-        "-map", "[v]", "-map", "[a]", *_VIDEO_ARGS, *_AUDIO_ARGS,
+        "-map", "[v]", "-map", "[a]", "-r", rate, *_VIDEO_ARGS, *_AUDIO_ARGS,
         "-movflags", "+faststart", str(output),
     ]
     if len(graph) <= _INLINE_FILTER_LIMIT:
@@ -162,6 +184,17 @@ def concatenate(videos: list[Path], output: Path) -> Path:
             900, "final concatenation",
         )
     return output.resolve()
+
+
+def _fade_filters(fade: tuple[float, float], seconds: Optional[float]) -> str:
+    """Video fade-in/out filters (each ending in a comma), or "" for none."""
+    fade_in, fade_out = fade
+    parts = []
+    if fade_in > 0:
+        parts.append(f"fade=t=in:st=0:d={fade_in:.3f},")
+    if fade_out > 0 and seconds and seconds > fade_out:
+        parts.append(f"fade=t=out:st={seconds - fade_out:.3f}:d={fade_out:.3f},")
+    return "".join(parts)
 
 
 def _concatenate_demuxer(videos: list[Path], output: Path) -> Path:

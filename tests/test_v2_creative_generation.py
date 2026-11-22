@@ -7,6 +7,7 @@ import pytest
 from manim import Text
 
 from src.pipeline_v2.generation import generation_request
+from src.pipeline_v2.prompt_text import CODEGEN_STYLE_RULES
 from src.pipeline_v2.instrumentation import (
     deinstrument_scene_code,
     instrument_scene_code,
@@ -99,7 +100,8 @@ def test_generation_request_is_compact_and_free_of_tracking_bookkeeping():
         }],
     )
 
-    assert len(system) < 1800
+    # The shared style rules (prompt_text.CODEGEN_STYLE_RULES) are appended on purpose.
+    assert len(system) < 1800 + len(CODEGEN_STYLE_RULES)
     assert len(prompt) < 4000
     assert "register_artifact" not in system + prompt
     assert "place_in_region" not in system + prompt

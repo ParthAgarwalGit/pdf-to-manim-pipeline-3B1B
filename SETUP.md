@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide will help you set up and run the PDF-to-Manim pipeline. The current implementation uses **mock agents** for development and testing. To enable full end-to-end functionality with real LLM integration, you'll need to configure API keys.
+This guide will help you set up and run the PDF-to-Manim pipeline. The V2 pipeline (`pdf2manim convert`) calls real Gemini models when `GEMINI_API_KEY` is set; without it, every stage uses a deterministic local fallback (silent timing audio, a rule-based lesson and scaffold code) so the full flow still runs offline. `--strict-keys` turns a missing key into an error instead.
 
 ## Current Status
 
@@ -81,45 +81,38 @@ print(f"Generated {manifest.successful_scenes} scenes")
 
 ## Production Setup (Real LLM Integration)
 
-### Required APIs
+### Required API key
 
-#### 1. **Vision+OCR Agent** (Choose one)
+V2 needs one key: `GEMINI_API_KEY`, created in Google AI Studio. Copy `keys.example.env` to
+`keys.env` (or `.env`) in the project root; the CLI loads it automatically:
 
-**Option A: OpenAI GPT-4 Vision**
 ```bash
-# Set environment variable
-export OPENAI_API_KEY="your-api-key-here"
+# keys.env
+GEMINI_API_KEY=...
 ```
 
-**Option B: Anthropic Claude 3 Opus**
-```bash
-export ANTHROPIC_API_KEY="your-api-key-here"
-```
+That key drives every paid stage. The model ids live in `src/pipeline_v2/model_config.py`:
 
-**Option C: Mathpix OCR** (for math notation)
-```bash
-export MATHPIX_APP_ID="your-app-id"
-export MATHPIX_APP_KEY="your-app-key"
-```
+| Stage | Constant | Model |
+|---|---|---|
+| Lesson, narration, narration review, brief interpretation | `TEXT_MODEL` | `gemini-4-argon` |
+| Low-confidence page OCR (vision) | `OCR_MODEL` | `gemini-4-argon` |
+| Manim generation, revision and screenshot-guided repair | `CODE_MODEL` | `gemini-4-argon` |
+| Narration audio (Gemini TTS, default voice `Sulafat`) | `TTS_MODEL` | `gemini-3.8-flash-tts` |
+| On-camera presenter | `PRESENTER_MODEL` | `gemini-omni-1.2-flash` |
 
-#### 2. **Script Architect Agent**
+Narration is recorded one beat per Gemini TTS request, so each beat's timing is measured
+exactly. Gemini TTS has a small per-minute request quota (10 per model on Tier 1); every
+request waits for a slot and a rate-limited request waits the delay the API asks for. On a
+higher tier, set `GEMINI_TTS_RPM` in `keys.env` to your quota to record faster.
 
-Uses the same LLM API as Vision+OCR (OpenAI or Anthropic).
-
-#### 3. **Animation Generator Agent**
-
-Uses the same LLM API for code generation.
-
-### API Configuration
-
-Create a `.env` file in the project root:
+### Optional keys
 
 ```bash
-# .env file
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-MATHPIX_APP_ID=...
-MATHPIX_APP_KEY=...
+# keys.env
+OPENAI_API_KEY=...       # only for --tts-provider openai, or the legacy V1 pipeline
+DID_API_KEY=...          # legacy D-ID talking-professor backend
+ANTHROPIC_API_KEY=...    # legacy V1 only; V2 does not use Claude
 
 # Optional: AWS S3 for cloud storage triggers
 AWS_ACCESS_KEY_ID=...
@@ -154,6 +147,12 @@ are written to `<run>/avatar/`, concatenated into
 `final_with_narration.mp4`, and summarized in the redacted `did_avatar.json`.
 Polling defaults (5 s interval, 120 polls, 60 s request timeout) are
 `PipelineConfig.did_*` settings.
+
+`--render-backend hybrid` combines both: Manim scenes for visualization, the
+D-ID presenter (lip-synced to the pipeline's TTS narration) for explanation,
+and split screens for concept introductions. It needs `DID_API_KEY`, an
+`OPENAI_API_KEY` (TTS, frame director, comprehension verifier) and the usual
+codegen key; see the README's Hybrid section.
 
 ### Update Agent Implementations
 
@@ -254,6 +253,22 @@ pdf-to-manim-pipeline/
 ```
 
 ## Running the Pipeline
+
+### Choosing a mode
+
+`pdf2manim convert` makes one of two videos. Pass `--mode`, or run it in a terminal without
+`--mode` and it asks at the start:
+
+| Mode | Label | What you get |
+|---|---|---|
+| `brief` (default) | Brief concept visualizer | A short overview of the module: every main concept of the document, shown visually, without full derivations. Each scene takes what its idea needs. Budget $3, up to 12 scenes. |
+| `deep` | In-depth lecture | Up to about 25 minutes teaching the whole document to a new student: every important concept, the intuition behind each result, its derivation step by step, and worked examples of how to use it. Prerequisites get a sentence, not a scene. Budget $15, up to 24 scenes. |
+
+`--max-cost` and `--max-scenes` override the mode's defaults.
+
+```bash
+pdf2manim convert notes.pdf --mode deep -q high --presenter gemini --approve-bridges
+```
 
 ### Command Line Interface
 

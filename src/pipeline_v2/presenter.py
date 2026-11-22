@@ -7,15 +7,18 @@ replaces a Manim scene. The flow the pipeline wires together is::
         -> render_bridge (budgeted, title-card fallback) -> interleave_segments
 
 Nothing is narrated or rendered before approval. The default provider is a
-plain title card: no likeness, no vendor, no network. The D-ID avatar is
-used only after the professor's signed consent and the vendor's identity
-verification have been checked, and before any vendor object exists.
+plain title card: no likeness, no vendor, no network. The Gemini presenter
+is a fictional lecturer described in words who speaks in the narration's
+voice. The D-ID avatar is used only after the professor's signed consent and
+the vendor's identity verification have been checked, and before any vendor
+object exists.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -26,11 +29,17 @@ from typing import Any, Callable, Literal, Mapping, Optional, Protocol, Sequence
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
 
+from src.prompts.narrative import bridge_prompt, bridge_slot_line, spoken_plain
 from src.schemas.professor_profile import ConsentError, ProfessorProfile, require_consent
 from src.utils import media_probe
 from src.utils.ffmpeg_finder import get_ffmpeg
+from src.utils.narration_flow import overlaps
 
 from .media import NARRATION_FILTER
+from .model_config import TEXT_MODEL
+from .prompt_text import DEFAULT_VOICE
+from .providers import clean_json_text
+from .state import BudgetExceeded
 from .models import (
     LessonPlan,
     LessonScene,
@@ -63,6 +72,19 @@ DID_POLL_INTERVAL_SECONDS = 5.0
 DID_MAX_POLLS = 120
 DID_MAX_ATTEMPTS = 4
 
+# Gemini Omni bills video output tokens: 5792 per second at $12 per million.
+OMNI_VIDEO_TOKENS_PER_SECOND = 5792
+OMNI_USD_PER_MILLION_TOKENS = 12.00
+OMNI_USD_PER_SECOND = OMNI_VIDEO_TOKENS_PER_SECOND * OMNI_USD_PER_MILLION_TOKENS / 1_000_000
+OMNI_RETAKE_ALLOWANCE = 1.5  # the engine may regenerate one take
+
+# Model-written bridges (planned lessons) are kept only within these bounds.
+BRIDGES_PROMPT_VERSION = "bridges-2-no-repeat"
+GEMINI_CLIP_CHECK = "cut-off-check-1"
+WRITTEN_BRIDGE_MIN_WORDS = 6
+WRITTEN_BRIDGE_MAX_WORDS = 45
+WRITTEN_BRIDGE_MAX_OVERLAP = 0.3
+
 _ENCODE_ARGS = [
     "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
@@ -87,11 +109,16 @@ def propose_bridges(
     narration: NarrationPlan,
     *,
     words_per_minute: Optional[int] = None,
+    planned: bool = False,
 ) -> list[BridgeProposal]:
     """Deterministic bridge proposals: about one per 90 s, at most 20 % of runtime.
 
     Every proposal is unapproved. The text only names the lesson title, the
     neighbouring scene titles and the lesson objectives; it adds no content.
+
+    ``planned`` (the lesson has a central question): the script already ends
+    on its payoff, so there is no recap slot, and the opening says the
+    lesson's hook verbatim when it has one.
     """
     narrated = {scene.scene_id: scene for scene in narration.scenes}
     scenes = [
@@ -117,13 +144,14 @@ def propose_bridges(
             elapsed = 0.0
         elapsed += seconds
     else:
-        if len(slots) < budget and elapsed >= BRIDGE_EVERY_SECONDS:
+        if not planned and len(slots) < budget and elapsed >= BRIDGE_EVERY_SECONDS:
             slots.append(("recap", None))
 
+    hook = lesson.hook if planned and (lesson.hook or "").strip() else ""
     proposals: list[BridgeProposal] = []
     for number, (kind, index) in enumerate(slots, start=1):
         if kind == "opening":
-            text = _opening_text(lesson, scenes[0][0])
+            text = hook or _opening_text(lesson, scenes[0][0])
         elif kind == "transition":
             text = _transition_text(scenes[index - 1][0], scenes[index][0])
         else:
@@ -246,6 +274,123 @@ def _recap_text(lesson: LessonPlan) -> str:
     )
 
 
+async def write_bridges(
+    router: Any,
+    proposals: Sequence[BridgeProposal],
+    lesson: LessonPlan,
+    narration: NarrationPlan,
+) -> list[BridgeProposal]:
+    """Bridge text written from the lesson spine, for a planned lesson.
+
+    One model call covers every slot except an opening that already says the
+    hook. A written text replaces its template only when it has 6-45 words
+    and does not repeat the beat before or after it; otherwise, and when the
+    model cannot be reached, the template stays.
+    """
+    narrated = {scene.scene_id: scene for scene in narration.scenes}
+    planned_scenes = {scene.scene_id: scene for scene in lesson.scenes}
+    order = [scene.scene_id for scene in lesson.scenes if scene.scene_id in narrated]
+    updated = list(proposals)
+    hook = (lesson.hook or "").strip()
+    slots: list[tuple[int, str, str]] = []
+    lines: list[str] = []
+    for slot, bridge in enumerate(updated):
+        if bridge.kind == "opening" and hook and bridge.text.strip() == hook:
+            continue
+        before, after, question = _bridge_context(bridge, order, narrated, planned_scenes)
+        lines.append(bridge_slot_line(slot, bridge.kind, before, after, question))
+        slots.append((slot, before, after))
+    if not lines:
+        return updated
+
+    events = router.artifacts
+    try:
+        response = await router.text(
+            stage="bridges", task_id="bridges", provider="google", model=TEXT_MODEL,
+            system="You write what a lecturer says on camera between the scenes of an explainer video.",
+            prompt=bridge_prompt(lines, lesson), max_output_tokens=1500,
+        )
+        data = json.loads(clean_json_text(response.text))
+        items = data.get("bridges") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("the response has no bridges list")
+    except BudgetExceeded:
+        raise
+    except Exception as exc:
+        events.event(
+            "bridges_written_by_template", stage="bridges", task_id="bridges",
+            message=f"Bridge text was not written by the model; kept the templates: {exc}",
+            reason=type(exc).__name__,
+        )
+        return updated
+
+    texts: dict[int, str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            texts[int(item.get("slot"))] = " ".join(str(item.get("text") or "").split())
+        except (TypeError, ValueError):
+            continue
+    written: list[str] = []
+    kept: list[str] = []
+    for slot, before, after in slots:
+        bridge = updated[slot]
+        text = texts.get(slot, "")
+        if (
+            WRITTEN_BRIDGE_MIN_WORDS <= len(text.split()) <= WRITTEN_BRIDGE_MAX_WORDS
+            and overlaps(text, before) < WRITTEN_BRIDGE_MAX_OVERLAP
+            and overlaps(text, after) < WRITTEN_BRIDGE_MAX_OVERLAP
+        ):
+            text = spoken_plain(text)
+            rate = _bridge_neighbour(bridge, order, narrated).target_words_per_minute
+            updated[slot] = bridge.model_copy(update={
+                "text": text, "estimated_seconds": round(len(text.split()) * 60.0 / rate, 3),
+            })
+            written.append(bridge.bridge_id)
+        else:
+            kept.append(bridge.bridge_id)
+    if written:
+        events.event(
+            "bridges_written", stage="bridges", task_id="bridges",
+            message=f"Wrote {len(written)} bridge(s) from the lesson spine; kept {len(kept)} template(s).",
+            written=written, templates=kept,
+        )
+    else:
+        events.event(
+            "bridges_written_by_template", stage="bridges", task_id="bridges",
+            message="No written bridge passed the length and repetition checks; kept the templates.",
+            reason="rejected", templates=kept,
+        )
+    return updated
+
+
+def _bridge_context(
+    bridge: BridgeProposal,
+    order: Sequence[str],
+    narrated: Mapping[str, NarratedScene],
+    planned_scenes: Mapping[str, LessonScene],
+) -> tuple[str, str, str]:
+    """(last beat before the bridge, first beat after it, the next scene's viewer question)."""
+    if bridge.before_scene_id is None or bridge.before_scene_id not in order:
+        position = len(order)
+    else:
+        position = order.index(bridge.before_scene_id)
+    before = narrated[order[position - 1]].beats[-1].text if position > 0 else ""
+    if position >= len(order):
+        return before, "", ""
+    scene_id = order[position]
+    question = planned_scenes[scene_id].viewer_question if scene_id in planned_scenes else ""
+    return before, narrated[scene_id].beats[0].text, question
+
+
+def _bridge_neighbour(
+    bridge: BridgeProposal, order: Sequence[str], narrated: Mapping[str, NarratedScene],
+) -> NarratedScene:
+    scene_id = bridge.before_scene_id if bridge.before_scene_id in narrated else order[-1]
+    return narrated[scene_id]
+
+
 # ── 2. persistence and approval ─────────────────────────────────────────
 
 def load_bridges(run_dir: Path) -> list[BridgeProposal]:
@@ -350,15 +495,20 @@ class PresenterRenderError(RuntimeError):
 
 @dataclass
 class PresenterSettings:
-    provider: str = "title-card"  # "title-card" | "d-id"
+    provider: str = "title-card"  # "title-card" | "gemini" | "d-id"
     layout: str = "full"
     profile_path: Optional[Path] = None
     avatar_image_url: Optional[str] = None
-    voice_id: str = "en-US-JennyNeural"
+    voice_id: str = "en-US-JennyNeural"  # D-ID stock voice
     max_presenter_seconds: float = 180.0
     width: int = 1280
     height: int = 720
     fps: int = 30
+    # Gemini: the prebuilt voice the narration uses, a worded fictional
+    # persona ("" = the default lecturer) and where raw clips are cached.
+    voice: str = DEFAULT_VOICE
+    persona: str = ""
+    cache_dir: Optional[Path] = None
 
 
 @dataclass
@@ -419,6 +569,9 @@ def build_presenter(
     For ``d-id`` the checks run in a fixed order (profile, consent and vendor
     verification, image URL, API key) and all of them pass before the vendor
     client is built, so a refused configuration can never reach the network.
+    ``gemini`` needs only ``GEMINI_API_KEY``: its persona is fictional and
+    described in words, never a real person's likeness, so no consent profile
+    is involved. Nothing here makes a network call.
     """
     if settings.layout != "full":
         raise PresenterConfigError(
@@ -426,9 +579,20 @@ def build_presenter(
         )
     if settings.provider == "title-card":
         return TitleCardPresenter(settings.width, settings.height, settings.fps)
+    if settings.provider == "gemini":
+        env = os.environ if environ is None else environ
+        api_key = (env.get("GEMINI_API_KEY") or "").strip()
+        if not api_key:
+            raise PresenterConfigError(
+                "GEMINI_API_KEY is not set; the gemini presenter cannot be used."
+            )
+        return GeminiPresenter(
+            api_key, voice=settings.voice, persona=settings.persona, cache_dir=settings.cache_dir,
+            width=settings.width, height=settings.height, fps=settings.fps,
+        )
     if settings.provider != "d-id":
         raise PresenterConfigError(
-            f"Unknown presenter provider {settings.provider!r}: use 'title-card' or 'd-id'."
+            f"Unknown presenter provider {settings.provider!r}: use 'title-card', 'gemini' or 'd-id'."
         )
 
     did = _did()
@@ -643,22 +807,156 @@ class DIDPresenter:
 
     def _brand(self, raw: Path, output_path: Path, workdir: Path) -> None:
         """Fit the clip to the frame with the disclosure label, keeping its voice."""
-        info = media_probe.probe(str(raw))
-        if info is not None and info.audio is None:
-            raise PresenterRenderError("The D-ID clip has no audio track.")
-        label = _draw_label(workdir / "label.png", self.width, self.height)
-        background = "0x%02X%02X%02X" % BRAND_BACKGROUND
-        # The label is a transparent PNG laid over the frame: drawtext would
-        # need a font file path, which is not portable to Windows.
-        graph = (
-            f"[0:v]scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-            f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:color={background},"
-            f"fps={self.fps},setsar=1[base];[base][1:v]overlay=0:0,format=yuv420p[v]"
+        _brand_clip(raw, output_path, workdir, self.width, self.height, self.fps, "D-ID clip")
+
+
+class GeminiPresenter:
+    """A fictional lecturer (Gemini Omni) who says the bridge in the narration's voice.
+
+    Build it through ``build_presenter``. The Omni engine is created on the
+    first render, so checking the configuration never builds a client. Clips
+    are cached by text and voice (``cache_dir``), carry the disclosure label,
+    and are re-encoded to the compositor's frame, rate, audio format and
+    loudness. The engine's Whisper check is off: it would be an OpenAI call
+    outside this run's cost ledger.
+    """
+
+    name = "gemini"
+    synthetic = True
+    speaks = True
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        voice: str = DEFAULT_VOICE,
+        persona: str = "",
+        cache_dir: Optional[Path] = None,
+        width: int = 1280,
+        height: int = 720,
+        fps: int = 30,
+        client: Any = None,
+    ):
+        if not api_key and client is None:
+            raise PresenterConfigError("A GEMINI_API_KEY is required for the gemini presenter.")
+        self._api_key = api_key
+        self._client = client
+        self.voice = voice
+        self.persona = persona
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.width, self.height, self.fps = width, height, fps
+        self._engine: Any = None
+
+    def __repr__(self) -> str:  # never show the key
+        return f"GeminiPresenter(voice={self.voice!r})"
+
+    @property
+    def engine(self) -> Any:
+        if self._engine is None:
+            omni = _omni()
+            self._engine = omni.GeminiOmniPresenter(
+                api_key=self._api_key, client=self._client,
+                persona=self.persona or omni.DEFAULT_PERSONA,
+                use_default_transcriber=False, cache_dir=self.cache_dir, voice=self.voice,
+            )
+        return self._engine
+
+    def estimated_cost_usd(self, request: PresenterRequest) -> float:
+        return omni_cost_usd(request.text)
+
+    def render(self, request: PresenterRequest, output_path: Path) -> PresenterClip:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw = output_path.with_name(f"{output_path.stem}.omni{output_path.suffix}")
+        try:
+            engine = self.engine
+            # The engine keeps its lecturer's reference frame beside the clips;
+            # a resumed run picks it up so the same person appears throughout.
+            reference = output_path.parent / "presenter_reference.png"
+            if getattr(engine, "reference_image", None) is None and reference.is_file():
+                engine.reference_image = reference
+            taken = len(getattr(engine, "clips", []))
+            spoken, seconds = engine.speak(request.text, str(raw))
+            takes = list(getattr(engine, "clips", []))[taken:]
+            with tempfile.TemporaryDirectory() as tmp:
+                _brand_clip(Path(spoken), output_path, Path(tmp), self.width, self.height,
+                            self.fps, "Gemini presenter clip")
+        except PresenterRenderError as exc:
+            raise PresenterRenderError(self._redact(exc), code=exc.code) from None
+        except Exception as exc:
+            raise PresenterRenderError(self._redact(f"{type(exc).__name__}: {exc}")) from None
+        return PresenterClip(
+            path=output_path,
+            duration_seconds=_media_seconds(output_path) or _positive(seconds) or MIN_CLIP_SECONDS,
+            synthetic=True,
+            provider=self.name,
+            detail={
+                "bridge_id": request.bridge_id,
+                "voice": self.voice,
+                "clips": len(_omni().split_for_clips(request.text)),
+                "raw_seconds": round(float(seconds or 0.0), 3),
+                "disclosure": DISCLOSURE_LABEL,
+                # Every part came from the clip cache: nothing was generated or billed.
+                "cached": bool(takes) and all(take.get("cached") for take in takes),
+            },
         )
-        _encode([
-            "-i", str(raw), "-i", str(label), "-filter_complex", graph,
-            "-map", "[v]", "-map", "0:a:0", "-af", NARRATION_FILTER,
-        ], output_path, "D-ID clip branding")
+
+    def _redact(self, text: Any) -> str:
+        message = str(text)[:600]
+        return message.replace(self._api_key, "[REDACTED]") if self._api_key else message
+
+
+def omni_clip_seconds(text: str) -> int:
+    """Seconds of Omni video ``text`` is requested as: each clip chunk rounded up."""
+    omni = _omni()
+    return sum(omni.clip_seconds(chunk) for chunk in omni.split_for_clips(text))
+
+
+def omni_cost_usd(text: str) -> float:
+    """Reservation for one Gemini bridge, with an allowance for one retake."""
+    seconds = omni_clip_seconds(text)
+    return (
+        seconds * OMNI_VIDEO_TOKENS_PER_SECOND * OMNI_USD_PER_MILLION_TOKENS / 1_000_000
+        * OMNI_RETAKE_ALLOWANCE
+    )
+
+
+def presenter_usd_per_second(provider_name: str) -> float:
+    """Settlement rate for measured presenter video, by provider name."""
+    return {"gemini": OMNI_USD_PER_SECOND, "d-id": DID_USD_PER_SECOND}.get(provider_name, 0.0)
+
+
+def _omni() -> Any:
+    # Imported on demand, like the D-ID module: the title-card path never loads it.
+    from src.agents import gemini_presenter
+
+    return gemini_presenter
+
+
+def _brand_clip(
+    raw: Path, output_path: Path, workdir: Path, width: int, height: int, fps: int, what: str,
+) -> None:
+    """Fit a talking clip to the frame under the disclosure label, keeping its voice.
+
+    The audio is loudness-normalised exactly like narration (``NARRATION_FILTER``)
+    and encoded with the compositor's codecs, so presenter and Manim segments
+    join as uniform media.
+    """
+    info = media_probe.probe(str(raw))
+    if info is not None and info.audio is None:
+        raise PresenterRenderError(f"The {what} has no audio track.")
+    label = _draw_label(workdir / "label.png", width, height)
+    background = "0x%02X%02X%02X" % BRAND_BACKGROUND
+    # The label is a transparent PNG laid over the frame: drawtext would
+    # need a font file path, which is not portable to Windows.
+    graph = (
+        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background},"
+        f"fps={fps},setsar=1[base];[base][1:v]overlay=0:0,format=yuv420p[v]"
+    )
+    _encode([
+        "-i", str(raw), "-i", str(label), "-filter_complex", graph,
+        "-map", "[v]", "-map", "0:a:0", "-af", NARRATION_FILTER,
+    ], output_path, f"{what} branding")
 
 
 def credits_card(
@@ -750,6 +1048,11 @@ def bridge_fingerprint(bridge: BridgeProposal, settings: PresenterSettings) -> d
         "layout": settings.layout,
         "voice_id": settings.voice_id if settings.provider == "d-id" else None,
         "avatar_image_url": settings.avatar_image_url if settings.provider == "d-id" else None,
+        "voice": settings.voice if settings.provider == "gemini" else None,
+        "persona": settings.persona if settings.provider == "gemini" else None,
+        # Clips made before takes were checked for a cut-off ending are made
+        # again (unchanged takes come back from the clip cache, unpaid).
+        "clip_check": GEMINI_CLIP_CHECK if settings.provider == "gemini" else None,
         "frame": [settings.width, settings.height, settings.fps],
     }
 

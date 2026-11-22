@@ -242,6 +242,20 @@ class TestBriefInterpretation:
         assert d.avoided_analogies() == ["clock"]
         assert "Say 'singular values' rather than 'sigma values'." in d.script_instructions()
 
+    def test_vocabulary_never_becomes_formula_notation(self):
+        # A live SVD run wrote "singular value_{k+1}" instead of σ_{k+1}.
+        llm = FakeLLM({
+            "notation": [
+                {"use": "singular values", "instead_of": "sigma values"},
+                {"use": "j", "instead_of": "i"},
+            ],
+        })
+        d = ProfessorInputInterpreter(llm=llm).interpret_brief(
+            'Say "singular values" rather than "sigma values". Write j, not i.'
+        )
+        assert [(n.use, n.instead_of) for n in d.notation] == [("j", "i")]
+        assert d.global_.terminology == {"sigma values": "singular values"}
+
     def test_reversal_detected_from_the_brief_alone(self):
         llm = FakeLLM({"global": {"terminology": {"eigenvector": "characteristic vector"}}})
         d = ProfessorInputInterpreter(llm=llm).interpret_brief("Say eigenvector instead of characteristic vector.")

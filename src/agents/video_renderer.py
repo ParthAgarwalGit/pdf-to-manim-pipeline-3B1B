@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -50,6 +50,8 @@ class SceneRenderResult:
     video_path: Optional[str] = None
     error: Optional[str] = None
     duration_seconds: float = 0.0
+    # Render-time layout audit findings (overlapping / off-frame text).
+    layout_issues: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +134,10 @@ class VideoRendererAgent(Agent):
 
     RENDER_TIMEOUT_SECONDS = 300  # per scene
 
-    def __init__(self, sandbox: Optional[RenderSandboxConfig] = None):
+    def __init__(self, sandbox: Optional[RenderSandboxConfig] = None, layout_audit: bool = True):
         self.sandbox = sandbox or RenderSandboxConfig()
+        # Measure on-screen text overlaps while rendering (native mode only).
+        self.layout_audit = layout_audit
 
     def execute(self, input_data: VideoRendererInput) -> AgentOutput:
         if not self.validate_input(input_data):
@@ -293,6 +297,10 @@ class VideoRendererAgent(Agent):
                 f"Rendering ({self.sandbox.mode} sandbox): {scene_file} {class_name}"
             )
 
+            audit_path = (
+                scratch_dir / "layout_audit.json"
+                if self.layout_audit and not self.sandbox.is_docker else None
+            )
             result = run_manim(
                 scene_path=Path(render_scene_file),
                 scene_class=class_name,
@@ -301,7 +309,19 @@ class VideoRendererAgent(Agent):
                 scratch_dir=scratch_dir,
                 timeout_seconds=self.RENDER_TIMEOUT_SECONDS,
                 sandbox=self.sandbox,
+                audit_path=audit_path,
             )
+            layout_issues: List[str] = []
+            if audit_path is not None:
+                from src.utils.layout_audit import read_audit
+
+                layout_issues = read_audit(audit_path)
+                audit_path.unlink(missing_ok=True)
+                if layout_issues:
+                    logger.warning(
+                        "Layout audit for %s: %d issue(s), e.g. %s",
+                        scene_id, len(layout_issues), layout_issues[0],
+                    )
             if not self.sandbox.is_docker:
                 remove_if_empty(scratch_dir)
 
@@ -340,6 +360,7 @@ class VideoRendererAgent(Agent):
                 success=True,
                 video_path=video_path,
                 duration_seconds=duration,
+                layout_issues=layout_issues,
             )
 
         except FileNotFoundError:

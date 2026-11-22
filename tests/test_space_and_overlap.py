@@ -32,6 +32,14 @@ def _obj(oid, x, y, w=2.0, h=2.0, t_in=0.0, t_out=10.0):
     )
 
 
+def _text(oid, x, y, w=2.0, h=2.0, t_in=0.0, t_out=10.0):
+    return MathematicalObject(
+        object_id=oid, object_type="text", content="label", primitive="Text",
+        args={"text": "label"}, bbox=BBox(x=x, y=y, w=w, h=h),
+        interval=TimeInterval(t_in=t_in, t_out=t_out),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3.1 — safe-area clamp in coercion
 # ---------------------------------------------------------------------------
@@ -72,29 +80,39 @@ class TestOverlapNudge:
         return dx > 0 and dy > 0
 
     def test_concurrent_overlap_resolved(self):
-        a, b = _obj("a", 0.0, 0.0), _obj("b", 0.5, 0.1)
+        a, b = _text("a", 0.0, 0.0), _text("b", 0.5, 0.1)
         _resolve_bbox_overlaps([a, b])
         assert not self._overlap(a, b)
 
     def test_disjoint_time_windows_left_alone(self):
-        a = _obj("a", 0.0, 0.0, t_in=0.0, t_out=5.0)
-        b = _obj("b", 0.5, 0.1, t_in=5.0, t_out=10.0)  # appears after a leaves
+        a = _text("a", 0.0, 0.0, t_in=0.0, t_out=5.0)
+        b = _text("b", 0.5, 0.1, t_in=5.0, t_out=10.0)  # appears after a leaves
         bx = b.bbox.x
         _resolve_bbox_overlaps([a, b])
         assert b.bbox.x == bx  # untouched
 
     def test_result_stays_in_safe_area(self):
-        objs = [_obj("a", 6.0, 0.0), _obj("b", 6.3, 0.0)]
+        objs = [_text("a", 6.0, 0.0), _text("b", 6.3, 0.0)]
         _resolve_bbox_overlaps(objs)
         for o in objs:
             assert -SAFE_X <= o.bbox.x <= SAFE_X
             assert -SAFE_Y <= o.bbox.y <= SAFE_Y
 
     def test_non_overlapping_layout_unchanged(self):
-        a, b = _obj("a", -3.0, 0.0), _obj("b", 3.0, 0.0)
+        a, b = _text("a", -3.0, 0.0), _text("b", 3.0, 0.0)
         ax, bx = a.bbox.x, b.bbox.x
         _resolve_bbox_overlaps([a, b])
         assert (a.bbox.x, b.bbox.x) == (ax, bx)
+
+    def test_overlapping_drawings_are_not_moved(self):
+        a, b = _obj("a", 0.0, 0.0), _obj("b", 0.5, 0.1)
+        _resolve_bbox_overlaps([a, b])
+        assert (a.bbox.x, a.bbox.y, b.bbox.x, b.bbox.y) == (0.0, 0.0, 0.5, 0.1)
+
+    def test_text_over_a_drawing_is_not_moved(self):
+        a, b = _obj("a", 0.0, 0.0), _text("b", 0.5, 0.1)
+        _resolve_bbox_overlaps([a, b])
+        assert (b.bbox.x, b.bbox.y) == (0.5, 0.1)
 
 
 # ---------------------------------------------------------------------------

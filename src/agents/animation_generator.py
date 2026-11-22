@@ -16,6 +16,7 @@ from google import genai
 from google.genai import types
 
 from src.agents.base import Agent, AgentExecutionError, AgentInput, AgentOutput, BackoffStrategy, RetryPolicy
+from src.prompts.codegen import codegen_static_system_prompt, visual_world_block
 from src.schemas.animation_code import AnimationCodeObject
 from src.schemas.scene_processing import SceneProcessingInput, SharedContext
 from src.utils.sync_contract import SYNC_IMPORT, inject_sync_contract, lint_sync_calls
@@ -38,149 +39,8 @@ def _codegen_static_system_prompt() -> str:
     engine and quality contracts. Per-scene data (class name, pacing,
     briefing, colors) is appended separately.
     """
-    engine_contract = build_animation_codegen_contract_prompt()
-    quality_contract = build_3b1b_quality_prompt()
-    return (
-        "You are an expert Manim Community v0.19 developer who creates\n"
-        "3Blue1Brown-quality educational animations. The scene's class name,\n"
-        "pacing targets, and context follow AFTER these standing rules.\n\n"
-        f"{engine_contract}\n\n{quality_contract}\n"
-        + """
-═══════════════════════  SCREEN LAYOUT (NO OVERLAP)  ═══════════════════════
-A LayoutTracker is imported for you.  Use it to REGISTER every Mobject after
-you place it, and to PLACE LABELS so they never overlap other objects.
-
-    layout = LayoutTracker()          # create once at the top of construct()
-
-    # After creating and positioning any object, register it:
-    triangle = Polygon(A, B, C, color=WHITE)
-    triangle.shift(LEFT * 2)
-    layout.register("triangle", triangle)
-
-    # To place a label near a registered object without overlap:
-    opp_label = Text("opposite = 6m", font_size=24, color=GREEN)
-    layout.place_label(opp_label, "opp_label", anchor="triangle",
-                       preferred=RIGHT, buff=0.3)
-    #   → tries RIGHT first; if that overlaps something it auto-tries
-    #     UP, LEFT, DOWN, UR, UL, DR, DL until it finds free space.
-    #   → stays within max_distance=1.5 of the anchor (labels stay close).
-
-    # For angle arcs at a vertex — place arc at the vertex, register,
-    # then use place_label for the θ symbol:
-    arc = Arc(radius=0.5, start_angle=0, angle=PI/4, color=YELLOW)
-    arc.shift(triangle.get_vertices()[0])      # put arc AT the vertex
-    layout.register("theta_arc", arc)
-    theta = MathTex(r"\\theta", color=YELLOW)
-    layout.place_label(theta, "theta", anchor="theta_arc",
-                       preferred=RIGHT, buff=0.2)
-
-    # When you FadeOut objects, unregister them to free space:
-    layout.unregister("triangle")
-    layout.unregister("opp_label")
-
-RULES:
-1. Create `layout = LayoutTracker()` as the FIRST line of construct().
-2. Call `layout.register(name, mob)` after EVERY Mobject is positioned.
-3. ALWAYS use `layout.place_label(...)` for Text/MathTex labels — never
-   raw `.next_to()` or `.move_to()` for labels.  The tracker prevents overlap.
-4. Call `layout.unregister(name)` before or after FadeOut so space is freed.
-5. Keep font sizes readable:  Text(font_size=28..36), MathTex default is fine.
-6. Scale graphs/axes to fit reasonably (x_length ≤ 5, y_length ≤ 3).
-7. Angle arcs: position the arc at the ACTUAL VERTEX of the shape using
-   `.shift(vertex_point)`, then register it, then place_label the θ symbol
-   anchored to the arc.  This keeps the angle annotation touching the shape.
-8. FRAME GUARD — after composing any VGroup or calling .arrange(...), clamp it:
-       if group.width > 12: group.scale_to_fit_width(12)
-       if group.height > 6.5: group.scale_to_fit_height(6.5)
-   then re-position it inside the safe area (|x| <= 6.5, |y| <= 3.5). Nothing
-   may extend past the frame edge at any point of the animation, including
-   mid-shift positions.
-
-═══════════════════════  NARRATOR MASCOT (SIG)  ═══════════════════════
-If and only if the storyboard intent includes a `pi_creature` object, use the
-pre-built blob mascot helpers (already imported — do NOT draw a character from
-raw shapes yourself):
-
-    sig = create_pi_teacher(height=1.2).to_corner(DL, buff=0.4)
-    bubble = create_speech_bubble("Key insight text", sig)
-
-    self.play(FadeIn(sig, shift=UP * 0.3), run_time=0.8)
-    self.play(Write(bubble), run_time=1.0)
-    self.wait(2)
-    self.play(FadeOut(bubble), FadeOut(sig), run_time=0.8)
-
-RULES:
-- At most ONE mascot appearance per scene, in a corner, small (height <= 1.4).
-- The mascot never overlaps the math content and leaves before dense content
-  animates.
-- Do not invent helper objects that are not present in the visual intent.
-
-═══════════════════════  STYLE  ═══════════════════════
-- Black background (default).  Use BLUE, YELLOW, GREEN, RED for emphasis.
-- Use MathTex(r"...") for ALL equations.  Use Text("...") for plain labels.
-- Prefer Write / Create for new objects, ReplacementTransform for morphing.
-- Smooth pacing: run_time between 1.0 and 3.0 for most animations.
-- After every major visual change, add a brief self.wait() so the reveal lands.
-
-═══════════════════════  VISUAL PLAN (HONOR IT)  ═══════════════════════
-Each entry in `objects` is a PRE-PLANNED visual. Treat it as the intended
-design, not a loose suggestion:
-- `primitive` + `args`  → construct THIS Manim class with these kwargs
-  (e.g. primitive="Vector", args={"direction": [2,1,0]} → Vector([2,1,0])).
-  You may add helpers/labels around it, but do not silently swap the primitive
-  for a plainer one (e.g. don't downgrade a planned Vector to a static Line).
-- `position` {x, y}   → place the object there: mob.move_to([x, y, 0]).
-- `visible` {t_in, t_out} → reveal it around t_in and remove/fade it near
-  t_out so the screen stays uncluttered.
-- `id` / `role`         → use `id` as the variable name; `role` tells you its
-  job (main_equation, shared_axes, label, …).
-- `purpose` / `supports_beat_ids` → before creating the object, write exactly
-  one short comment: `# Purpose [beat_ids]: purpose text`. Every visible helper
-  object you add must receive the same kind of purpose comment. Never create
-  unexplained decoration or filler.
-- `notation_key` / `coordinate_system_id` → REUSE the matching helper instead
-  of redrawing; these mark objects shared across scenes.
-When an object has no `primitive`, fall back to the type/content and choose the
-most visually intuitive Manim primitive yourself.
-
-═══════════════════════  GEOMETRIC ANCHORING (NO MENTAL MATH)  ═══════════════
-An endpoint that refers to another object may NEVER be a hardcoded coordinate.
-Eyeballed numbers land midway or in the wrong direction. Helpers are imported:
-- Arrow/line BETWEEN two objects  ->  connect(obj_a, obj_b)
-- A point ON axes                 ->  on_axes(axes, x, y)  (never guess pixels)
-- Distance point-to-line/plane    ->  drop_perpendicular(dot, line) — computes
-  the TRUE projected foot and adds the right-angle tick. NEVER draw this with
-  a hand-placed DashedLine.
-- The projection point itself     ->  perpendicular_foot(p, line_start, line_end)
-- Anchoring to a part of an object -> obj.get_center() / get_top() / get_corner(UR)
-Hardcoded coordinates are ONLY acceptable for free-standing placement of a
-single object (its move_to position from the plan).
-
-═══════════════════════  SCENE ENDING (CONTINUITY)  ═══════════════════════
-`carry_out` in the scene data lists object ids that MUST still be visible when
-this scene ends — the NEXT scene begins from exactly that arrangement:
-- NEVER FadeOut / Uncreate / clear a carry_out object at the end of construct().
-- NEVER use FadeOut(*self.mobjects) or self.clear() when carry_out is non-empty.
-- Objects NOT in carry_out should be faded out before the scene ends so the
-  handoff is clean.
-- Leave each carry_out object at its planned position in the final frame.
-
-═══════════════════════  CONTENT FIDELITY  ═══════════════════════
-The narration is extracted from an academic PDF.  Your animation MUST
-show every formula, definition, and example the narration mentions:
-- If the narration says "sin θ = opposite / hypotenuse", you MUST show
-  that equation on screen using MathTex.
-- If the narration describes a right triangle with specific sides,
-  you MUST draw that triangle with labeled sides.
-- If the narration mentions the unit circle, you MUST draw it.
-Do NOT omit PDF content.  Do NOT replace it with unrelated content.
-
-═══════════════════════  OUTPUT RULES  ═══════════════════════
-- Return ONLY the class definition.  No module docstrings, no imports,
-  no markdown fences, no commentary outside the class body.
-- Every self.play() call MUST have an explicit run_time parameter.
-- Do NOT use deprecated Manim APIs (e.g. ShowCreation → Create).
-"""
+    return codegen_static_system_prompt(
+        build_animation_codegen_contract_prompt(), build_3b1b_quality_prompt()
     )
 
 
@@ -422,6 +282,8 @@ class AnimationCodeGeneratorAgent(Agent):
             "audio_duration_seconds": scene_spec.audio_duration_seconds,
             "word_count": word_count,
             "carry_out": carry_out,
+            "plan_source": getattr(scene_spec, "plan_source", "planner") or "planner",
+            "visual_hints": list(getattr(scene_spec, "visual_hints", None) or []),
             "objects": [
                 self._object_plan_for_prompt(obj)
                 for obj in scene_spec.visual_intent.mathematical_objects
@@ -433,6 +295,9 @@ class AnimationCodeGeneratorAgent(Agent):
                     "timing": t.timing,
                     "beat_index": t.parameters.get("beat_index", 0)
                         if hasattr(t, "parameters") and t.parameters else 0,
+                    "beat_id": getattr(t, "beat_id", ""),
+                    "description": (t.parameters or {}).get("description", "") if hasattr(t, "parameters") else "",
+                    "animation_hint": (t.parameters or {}).get("animation_hint", "") if hasattr(t, "parameters") else "",
                 }
                 for t in scene_spec.visual_intent.transformations
             ],
@@ -469,7 +334,7 @@ about {target_duration}s.
 At the END of construct(), add a comment:
   # Total animation time: Xs
 with your manually-computed running total.
-{color_block}{self._build_notation_block(context)}{self._build_sync_block(scene_spec)}"""
+{color_block}{visual_world_block(list(getattr(context, "visual_world", None) or []))}{self._build_notation_block(context)}{self._build_sync_block(scene_spec)}"""
         user_prompt = f"""Generate the full class for this scene:
 
 {json.dumps(scene_data, indent=2)}

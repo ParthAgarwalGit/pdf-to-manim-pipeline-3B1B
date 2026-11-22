@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 from manim import Camera, Group, Mobject, Scene, VGroup, config
+from manim.animation.animation import prepare_animation
+from manim.animation.transform import MoveToTarget
 
 from .layout import region_bounds
 from .models import LayoutTemplate
@@ -25,6 +27,82 @@ TEXT_CLASS_NAMES = {
 LATE_TOLERANCE_SECONDS = 0.25
 # Gaps below one 60 fps frame cannot be rendered and are not worth a wait.
 MIN_SYNC_GAP_SECONDS = 1.0 / 60.0
+# Text about to appear across the frame edge is moved this far inside it
+# (and shrunk only when it is wider or taller than the safe area). The
+# verifier reports text within 0.21 of the edge, so this stays clear of it.
+SAFE_MARGIN = 0.4
+# Text is never shrunk below this to fit; the rest of the overflow is shifted.
+MIN_FIT_SCALE = 0.6
+
+
+def text_only(mobject) -> bool:
+    """True when ``mobject`` is text or math, or a plain group of nothing else."""
+
+    if TrackedScene._is_text_class(type(mobject).__name__):
+        return True
+    if type(mobject) in (VGroup, Group):
+        children = list(mobject.submobjects)
+        return bool(children) and all(text_only(child) for child in children)
+    return False
+
+
+def fit_into_frame(mobject, half_width: float, half_height: float) -> dict[str, float] | None:
+    """Bring ``mobject`` inside the safe area, disturbing its placement as little as possible.
+
+    Generated code places text relative to its neighbours (``next_to`` a line
+    or a node), so the side facing inward is where the code put it. Text that
+    runs over one edge is shrunk toward that inner side, keeping it beside
+    what it labels; it is shifted only for what shrinking to MIN_FIT_SCALE
+    cannot fix. Returns what was done, or None when it already fits, is
+    staged off screen on purpose, or has no extent.
+    """
+
+    def edges():
+        return (
+            float(mobject.get_left()[0]), float(mobject.get_right()[0]),
+            float(mobject.get_bottom()[1]), float(mobject.get_top()[1]),
+        )
+
+    try:
+        left, right, bottom, top = edges()
+    except Exception:
+        return None
+    width, height = right - left, top - bottom
+    if width <= 0.0 and height <= 0.0:
+        return None
+    center_x, center_y = (left + right) / 2.0, (top + bottom) / 2.0
+    if abs(center_x) > half_width + SAFE_MARGIN or abs(center_y) > half_height + SAFE_MARGIN:
+        return None  # placed off screen on purpose (to fly in later)
+    if left >= -half_width and right <= half_width and bottom >= -half_height and top <= half_height:
+        return None
+    # The largest scale at which the text fits from its inner edge, per axis.
+    needed = 1.0
+    anchor = np.array([center_x, center_y, 0.0])
+    if right > half_width and left >= -half_width and width > 0:
+        needed = min(needed, (half_width - left) / width)
+        anchor[0] = left
+    elif left < -half_width and right <= half_width and width > 0:
+        needed = min(needed, (right + half_width) / width)
+        anchor[0] = right
+    elif width > 2.0 * half_width:
+        needed = min(needed, 2.0 * half_width / width)
+    if top > half_height and bottom >= -half_height and height > 0:
+        needed = min(needed, (half_height - bottom) / height)
+        anchor[1] = bottom
+    elif bottom < -half_height and top <= half_height and height > 0:
+        needed = min(needed, (top + half_height) / height)
+        anchor[1] = top
+    elif height > 2.0 * half_height:
+        needed = min(needed, 2.0 * half_height / height)
+    scale = max(MIN_FIT_SCALE, needed) if needed < 1.0 else 1.0
+    if scale < 1.0:
+        mobject.scale(scale, about_point=anchor)
+        left, right, bottom, top = edges()
+    shift_x = max(0.0, -half_width - left) - max(0.0, right - half_width)
+    shift_y = max(0.0, -half_height - bottom) - max(0.0, top - half_height)
+    if shift_x or shift_y:
+        mobject.shift(np.array([shift_x, shift_y, 0.0]))
+    return {"scale": round(scale, 4), "shift_x": round(shift_x, 4), "shift_y": round(shift_y, 4)}
 
 
 class TrackedScene(Scene):
@@ -50,6 +128,7 @@ class TrackedScene(Scene):
         self._animation_depth = 0
         self._play_start_time = 0.0
         self._play_sample_targets: list[float] = []
+        self._frame_fits: list[dict[str, Any]] = []
         trace = os.getenv("PDF2MANIM_TRACE_PATH")
         self._trace_path = Path(trace).resolve() if trace else None
         if self._trace_path:
@@ -257,7 +336,94 @@ class TrackedScene(Scene):
         self.set_beat(name)
         return super().next_section(name, *args, **kwargs)
 
+    def _keep_text_in_frame(self, mobjects) -> None:
+        """Bring text that is about to appear inside the frame before it is shown.
+
+        Only text that is not on screen yet, has no updaters and sits at least
+        partly in view is moved: moving geometry, or anything already visible,
+        would leave arrows and neighbours pointing at its old place.
+        """
+
+        try:
+            on_screen = {id(member) for member in self.get_mobject_family_members()}
+        except Exception:
+            on_screen = set()
+        half_width = float(config.frame_width) / 2.0 - SAFE_MARGIN
+        half_height = float(config.frame_height) / 2.0 - SAFE_MARGIN
+        mobjects = [m for m in mobjects if isinstance(m, Mobject)]
+        # A piece of another object being shown moves with that object, never alone.
+        mobjects = [
+            m for m in mobjects
+            if not any(other is not m and m in other.get_family() for other in mobjects)
+        ]
+        fitted: set[int] = set()
+        for piece in mobjects:
+            if id(piece) in on_screen:
+                continue
+            # Code often writes one formula in pieces (formula[:3], then
+            # formula[3:]); fit the whole named formula once, never a piece.
+            mobject = self._text_owner(piece)
+            if id(mobject) in fitted:
+                continue
+            fitted.add(id(mobject))
+            try:
+                family = mobject.get_family()
+                if any(id(member) in on_screen for member in family):
+                    continue  # part of it is already visible: moving it would jump
+                if any(member.get_updaters() for member in family):
+                    continue
+            except Exception:
+                continue
+            if not text_only(mobject):
+                continue
+            fit = fit_into_frame(mobject, half_width, half_height)
+            if fit is not None:
+                record = self._artifact_record(id(mobject), mobject)
+                self._frame_fits.append({
+                    "object_id": record["artifact_id"] if record else type(mobject).__name__,
+                    **fit,
+                })
+
+    def _text_owner(self, mobject):
+        """The largest registered text object that ``mobject`` is part of (or itself)."""
+
+        # A slice such as formula[:3] is a new group holding the formula's own
+        # pieces, so match on the pieces, not on the group object.
+        pieces = {id(member) for member in mobject.get_family() if member is not mobject}
+        pieces = pieces or {id(mobject)}
+        owner, size = mobject, len(mobject.get_family())
+        for record in self._artifact_registry.values():
+            candidate = record["mobject"]
+            try:
+                family = candidate.get_family()
+            except Exception:
+                continue
+            members = {id(member) for member in family}
+            if len(family) > size and pieces <= members and text_only(candidate):
+                owner, size = candidate, len(family)
+        return owner
+
+    def _entering_mobjects(self, animation) -> list:
+        """Objects an animation will show that may not be on screen yet."""
+
+        whole = getattr(animation, "to_add", None)
+        if isinstance(whole, Mobject):
+            return [whole]  # TransformMatchingTex/Shapes: fit the whole new formula, never a piece
+        found = []
+        for child in getattr(animation, "animations", None) or []:
+            found.extend(self._entering_mobjects(child))
+        if isinstance(animation, MoveToTarget):
+            return found  # a move of an object already shown: left to the prompt and repair
+        mobject = getattr(animation, "mobject", None)
+        if mobject is not None:
+            found.append(mobject)
+        target = getattr(animation, "target_mobject", None)
+        if target is not None and target is not mobject:
+            found.append(target)
+        return found
+
     def add(self, *mobjects):
+        self._keep_text_in_frame(mobjects)
         for mobject in mobjects:
             if self._artifact_record(id(mobject), mobject) is None:
                 self._auto_counter += 1
@@ -274,6 +440,15 @@ class TrackedScene(Scene):
         return result
 
     def play(self, *args, **kwargs):
+        try:
+            args = tuple(prepare_animation(arg) for arg in args)
+        except Exception:
+            pass  # let Manim report the bad argument itself
+        else:
+            entering = []
+            for animation in args:
+                entering.extend(self._entering_mobjects(animation))
+            self._keep_text_in_frame(entering)
         self._play_start_time = float(getattr(getattr(self, "renderer", None), "time", 0.0))
         self._play_sample_targets = [0.25, 0.50, 0.75]
         self._animation_depth += 1
@@ -333,6 +508,9 @@ class TrackedScene(Scene):
         }
         if extra:
             payload.update(extra)
+        if self._frame_fits:
+            payload["frame_fits"] = self._frame_fits
+            self._frame_fits = []
         self._checkpoint_index += 1
         try:
             with self._trace_path.open("a", encoding="utf-8") as handle:

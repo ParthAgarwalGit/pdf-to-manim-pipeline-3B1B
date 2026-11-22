@@ -17,6 +17,7 @@ from src.pipeline_v2.generation import (
     generation_request,
 )
 from src.pipeline_v2.instrumentation import deinstrument_scene_code, instrument_scene_code
+from src.pipeline_v2.model_config import CODE_MODEL
 from src.pipeline_v2.models import VerificationFinding
 from src.pipeline_v2.observability import RunArtifacts
 from src.pipeline_v2.providers import ProviderRouter, estimate_tokens, price
@@ -37,7 +38,7 @@ from .models import (
 
 
 MODEL_ALIASES = {
-    "gemini": ModelSpec(alias="gemini", provider="google", model="gemini-3.7-flash"),
+    "gemini": ModelSpec(alias="gemini", provider="google", model=CODE_MODEL),
     "gemma": ModelSpec(alias="gemma", provider="google", model="gemma-4-26b-a4b-it"),
 }
 

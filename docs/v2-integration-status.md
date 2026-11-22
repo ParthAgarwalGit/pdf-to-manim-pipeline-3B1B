@@ -11,6 +11,29 @@ Main merged at `c4b3a38` (parent `origin/main` at `e4c779a`).
 - Native execution scrubs credentials and uses scratch directories.
 - Optional Docker execution adds network isolation and resource limits.
 - Beat synchronization waits for narration, caps retiming, and reports lateness.
+- Gemini TTS records each beat as its own request. Only the words to be spoken are
+  sent as text; delivery goes in the Interactions API's `speech_metadata` style
+  (the model reads any text it is given aloud). Each take is checked against its
+  word count and recorded again when it holds extra or missing speech, and each
+  beat's measured speech span sets its window, so visuals land on their words.
+- Two modes (`convert --mode`): `brief`, the "Brief concept visualizer" (a short
+  overview touching every main concept, with no per-scene word cap), and `deep`, the "In-depth lecture" (up to about 25 min:
+  chapters; intuition, derive, apply and connect scenes; derivations step by step;
+  worked examples). Deep mode has its own lesson, narration and review prompts, larger
+  output budgets and render timeouts, and refuses to fall back to a rule-based plan
+  when a key is set.
+- Text about to appear across the frame edge is shrunk toward its inner edge (or
+  shifted) before it is shown; ValueTrackers are no longer reported off-screen.
+- A deterministic voice check flags narration that sounds written rather than spoken
+  (drawing descriptions, stage directions, recited definitions, long sentences, stock
+  phrases); its findings go to the targeted beat fix.
+- The hook is checked (word limit, one closing question, no dashes, at least three
+  sentences) and rewritten whole when it fails. The script review scores
+  `logical_flow` and lists every sentence that does not follow from the one
+  before; a break in the narration fails the review, a break in the hook triggers
+  a hook rewrite. In `revise` mode only the beats holding flagged sentences are
+  rewritten (the whole narration only when the review fails without one); the
+  fixed script is reviewed once more and kept if it passes or scores higher.
 - `convert` accepts professor briefs/directives, concept plans, and duration targets.
 - Scope, notation and narration compliance are persisted and checked.
 - `plan` creates an editable, source-derived outline locally without API calls.
@@ -21,24 +44,33 @@ Main merged at `c4b3a38` (parent `origin/main` at `e4c779a`).
 - Final delivery checks measure streams, loudness, silence and duration drift.
 - Standard policy retains reviewed output; strict withholds official delivery on failure.
 - Evaluation CLI and frozen benchmark remain available.
+- Presenter bridges (`src/pipeline_v2/presenter.py`) are orchestrated by `PipelineV2`.
+  Gemini Omni is the default presenter provider (`convert --presenter gemini`): a
+  fictional lecturer described in words who speaks in the narration's prebuilt
+  Gemini voice. The consent-gated D-ID avatar remains available (`--presenter d-id`
+  with `--profile` and `--avatar-image-url`).
+  - Opt-in, off by default; `--approve-bridges`, `--max-presenter-seconds`,
+    `--presenter-persona`.
+  - Provider configuration (key, consent, image) is checked before the first paid call.
+  - Proposals are persisted to `presenter/bridges.json` (lesson-spine text for
+    planned lessons) and only approved bridges are rendered; `pdf2manim bridges
+    RUN_DIR --approve ...` then `pdf2manim resume RUN_DIR`.
+  - Presenter costs go through atomic V2 reservations (settled on measured clip
+    length) and are logged as events; a bridge over the presenter-seconds cap or
+    the dollar budget is skipped and the run continues.
+  - The hook is never lost: without an approved opening it opens the narration; an
+    approved opening that cannot be rendered becomes a title card over TTS.
+  - Approved clips are interleaved as `TimelineSegment(mode="presenter")` without
+    replacing Manim scenes, with a fade through black at each presenter/Manim cut.
+  - Presenter clips are in the delivery checks and `report.html` lists every bridge.
+  - Clip tasks are keyed by the bridge fingerprint: resume and revision reuse
+    unchanged clips and re-render only a bridge whose text changed.
 
 ## Not Yet Connected
 
-`src/pipeline_v2/presenter.py` has independently tested bridge proposals,
-approval, title-card rendering, a consent-gated D-ID provider, presenter duration
-limits and timeline interleaving. These are not yet orchestrated by `PipelineV2`.
-
-Before exposing paid presenter rendering:
-
-1. Add explicit opt-in CLI/config settings, off by default.
-2. Validate consent/profile/provider configuration before core paid calls.
-3. Persist proposals and require approval before any presenter call.
-4. Route presenter costs through atomic V2 reservations and event logging.
-5. Persist provider job identifiers before polling so ambiguous failures never
-   create a duplicate paid job on resume. Do not silently retry creation.
-6. Insert approved clips into `TimelineSegment` without replacing Manim scenes.
-7. Include presenter clips in final delivery checks and report provenance.
-8. Test interruption, budget exhaustion and selective scene revision with bridges.
+- D-ID talk ids are not persisted before polling, so an ambiguous D-ID failure
+  could create a second paid talk on resume (Gemini Omni is synchronous and
+  caches clips by text and voice, so it has no such window).
 
 `src/web/professor_app.py` still uses the legacy CLI. The V2 studio must call
 V2 services directly, read `run.json`/`storyboard.json`/delivery reports, and
