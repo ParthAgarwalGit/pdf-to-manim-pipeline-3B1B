@@ -162,6 +162,14 @@ class RunStore:
             return None
         return json.loads(row["output_json"]) if row["output_json"] else None
 
+    def task_state(self, task_id: str) -> Optional[dict[str, Any]]:
+        """A task's stored status and input hash; None before it first runs."""
+
+        row = self._connection.execute(
+            "SELECT status, input_hash FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        return {"status": row["status"], "input_hash": row["input_hash"]} if row else None
+
     def successful_task_output(self, task_id: str) -> Optional[Any]:
         """Return persisted output without recomputing its historical input hash."""
 

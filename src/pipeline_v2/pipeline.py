@@ -46,14 +46,14 @@ from .observability import RunArtifacts
 from .planning import (
     BEAT_FIX_PROMPT_VERSION,
     HOOK_PROMPT_VERSION,
-    NARRATION_PROMPT_VERSION,
     PLANNING_MODEL,
     PLANNING_PROVIDER,
-    PROMPT_VERSION,
     PlanningService,
     apply_audio_timing,
     extract_source,
     hook_problems,
+    prompt_version,
+    prompt_version_aliases,
     validate_grounding,
     validate_visual_contract,
 )
@@ -121,6 +121,9 @@ from src.utils.fingerprints import lexicon_for
 
 
 T = TypeVar("T")
+# Tasks whose re-run re-plans the video: a resume warns before redoing one
+# that already succeeded.
+REPLAN_TASKS = frozenset({"ocr-enrichment", "lesson", "narration", "narration-revised"})
 # A hook rewrite, then at most one more that fixes only the first one's shape.
 HOOK_REWRITE_ATTEMPTS = 2
 # Words a beat fix may add beyond the BEAT_FIX_MAX_EXTRA_WORDS it is asked for:
@@ -155,6 +158,8 @@ class PipelineV2:
         self._retry_attempts: dict[str, int] = {}
         self._previous_scene_results: dict[str, SceneResult] = {}
         self._previous_result: Optional[dict[str, Any]] = None
+        # The run's status before this run started (None for a new run).
+        self._status_before: Optional[str] = None
         # Revision state: per-scene actions, the pre-revision timed narration
         # they start from, and run-wide pronunciation/pacing overrides.
         self._revision_actions: dict[str, SceneAction] = {}
@@ -378,6 +383,7 @@ class PipelineV2:
         run_dir, run_id = self._prepare_run(input_path, resume_dir)
         self.artifacts = RunArtifacts(run_dir, run_id)
         self.store = RunStore(run_dir / "run.db", self.config.max_cost_usd)
+        self._status_before = self.store.get_meta("status")
         self.store.set_meta("status", RunStatus.RUNNING.value)
         self.store.set_meta("input_pdf", str(input_path))
         self.artifacts.event(
@@ -474,32 +480,26 @@ class PipelineV2:
                     lambda: asyncio.to_thread(extract_source, input_path),
                 )
                 source = SourceDocument.model_validate(source_data)
+                ocr_inputs = self._ocr_inputs(source)
                 enriched_data = await self._task(
-                    "ocr-enrichment", "ocr", None,
-                    {"source_sha256": source.sha256,
-                     "pages": source.low_confidence_pages, "prompt_version": PROMPT_VERSION},
+                    "ocr-enrichment", "ocr", None, ocr_inputs,
                     lambda: planner.enrich_low_confidence_pages(
                         source, input_path, run_dir / "source" / "ocr"
                     ),
                     dependencies=["source"],
+                    equivalent_inputs=self._equivalent_inputs(ocr_inputs, "planning"),
                 )
                 source = SourceDocument.model_validate(enriched_data)
                 source, scope_checks = apply_scope(source, self.directives)
                 compliance.extend(scope_checks)
                 self.artifacts.write_json("source/document.json", source.model_dump(mode="json"))
 
+                lesson_inputs = self._lesson_inputs(source, controls)
                 lesson_data = await self._task(
-                    "lesson", "lesson", None,
-                    {"source": source.model_dump(mode="json"), "prompt_version": PROMPT_VERSION,
-                     **self._mode_inputs(),
-                     "min_scenes": self.config.min_scenes,
-                     "max_scenes": self.config.max_scenes,
-                     "pacing": self.config.pacing,
-                     **controls,
-                     "structured_output_version": STRUCTURED_OUTPUT_VERSION,
-                     "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                    "lesson", "lesson", None, lesson_inputs,
                     lambda: planner.lesson(source),
                     dependencies=["ocr-enrichment"],
+                    equivalent_inputs=self._equivalent_inputs(lesson_inputs, "planning"),
                 )
                 lesson = LessonPlan.model_validate(lesson_data)
                 lesson = lesson.model_copy(update={
@@ -509,17 +509,12 @@ class PipelineV2:
                     ]
                 })
                 lesson = await self._settle_hook(planner, lesson)
+                narration_inputs = self._narration_inputs(lesson, controls)
                 narration_data = await self._task(
-                    "narration", "narration", None,
-                    {"lesson": lesson.model_dump(mode="json"),
-                     "prompt_version": NARRATION_PROMPT_VERSION,
-                     **self._mode_inputs(),
-                     "pacing": self.config.pacing,
-                     **controls,
-                     "structured_output_version": STRUCTURED_OUTPUT_VERSION,
-                     "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                    "narration", "narration", None, narration_inputs,
                     lambda: planner.narration(lesson, source),
                     dependencies=["lesson"],
+                    equivalent_inputs=self._equivalent_inputs(narration_inputs, "narration"),
                 )
                 narration = NarrationPlan.model_validate(narration_data)
                 grounding_errors = validate_grounding(lesson, narration, source)
@@ -1305,7 +1300,48 @@ class PipelineV2:
         same as before modes existed.
         """
 
-        return {"mode": "deep"} if getattr(self.config, "mode", "brief") == "deep" else {}
+        return {"mode": "deep"} if self._mode() == "deep" else {}
+
+    def _mode(self) -> str:
+        return getattr(self.config, "mode", "brief")
+
+    # Planning task inputs. Their hashes key the run's task cache, so a change
+    # here re-plans existing runs on resume (tests/test_v2_prompt_versions.py).
+    def _ocr_inputs(self, source: SourceDocument) -> dict[str, Any]:
+        return {"source_sha256": source.sha256, "pages": source.low_confidence_pages,
+                "prompt_version": prompt_version(self._mode(), "planning")}
+
+    def _lesson_inputs(self, source: SourceDocument, controls: dict[str, Any]) -> dict[str, Any]:
+        return {"source": source.model_dump(mode="json"),
+                "prompt_version": prompt_version(self._mode(), "planning"),
+                **self._mode_inputs(),
+                "min_scenes": self.config.min_scenes,
+                "max_scenes": self.config.max_scenes,
+                "pacing": self.config.pacing,
+                **controls,
+                "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL}
+
+    def _narration_inputs(
+        self, lesson: LessonPlan, controls: dict[str, Any],
+        review_feedback: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        inputs = {"lesson": lesson.model_dump(mode="json"),
+                  "prompt_version": prompt_version(self._mode(), "narration"),
+                  **self._mode_inputs(),
+                  "pacing": self.config.pacing,
+                  **controls,
+                  "structured_output_version": STRUCTURED_OUTPUT_VERSION,
+                  "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL}
+        if review_feedback is not None:
+            inputs["review_feedback"] = review_feedback
+        return inputs
+
+    def _equivalent_inputs(self, inputs: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+        """``inputs`` under the other names of this mode's current prompt version."""
+
+        return [{**inputs, "prompt_version": alias}
+                for alias in prompt_version_aliases(self._mode(), kind)]
 
     async def _review_script(
         self,
@@ -1400,20 +1436,16 @@ class PipelineV2:
                 )
                 second: Optional[ScriptReview] = None
                 try:
+                    revised_inputs = self._narration_inputs(
+                        lesson, controls, review_feedback=first.improvement_suggestions,
+                    )
                     revised_data = await self._task(
-                        "narration-revised", "narration", None,
-                        {"lesson": lesson.model_dump(mode="json"),
-                         "review_feedback": first.improvement_suggestions,
-                         "prompt_version": NARRATION_PROMPT_VERSION,
-                     **self._mode_inputs(),
-                         "pacing": self.config.pacing,
-                         **controls,
-                         "structured_output_version": STRUCTURED_OUTPUT_VERSION,
-                         "provider": PLANNING_PROVIDER, "model": PLANNING_MODEL},
+                        "narration-revised", "narration", None, revised_inputs,
                         lambda: planner.narration(
                             lesson, source, review_feedback=first.improvement_suggestions,
                         ),
                         dependencies=["script-review-1"],
+                        equivalent_inputs=self._equivalent_inputs(revised_inputs, "narration"),
                     )
                     revised = NarrationPlan.model_validate(revised_data)
                     grounding_errors = validate_grounding(lesson, revised, source)
@@ -2136,13 +2168,26 @@ class PipelineV2:
         input_payload: Any,
         operation: Callable[[], Awaitable[T]],
         dependencies: Optional[list[str]] = None,
+        equivalent_inputs: Optional[list[Any]] = None,
     ) -> Any:
-        payload = _serialize(input_payload)
-        input_hash = _hash_text(json.dumps(payload, sort_keys=True, default=str))
+        """Run ``operation`` unless this task already succeeded with the same inputs.
+
+        ``equivalent_inputs`` are older forms of the same inputs (a prompt
+        version's other names): a stored output under one of them is reused,
+        and the task is then recorded under ``input_payload``'s hash.
+        """
+
+        input_hash = _input_hash(input_payload)
         # Look up the cache before recording the new hash: upsert_task stores
         # input_hash, so checking afterwards always matched and a task whose
         # inputs had changed was served its old output.
         cached = self.store.task_output(task_id, input_hash)
+        for equivalent in equivalent_inputs or []:
+            if cached is not None:
+                break
+            cached = self.store.task_output(task_id, _input_hash(equivalent))
+        if cached is None and task_id in REPLAN_TASKS:
+            self._warn_replanning(task_id, stage, input_hash)
         self.store.upsert_task(task_id, stage, scene_id, input_hash, dependencies)
         worker = asyncio.current_task().get_name() if asyncio.current_task() else "main"
         if cached is not None:
@@ -2183,6 +2228,31 @@ class PipelineV2:
                 message=str(exc), error_type=type(exc).__name__, worker=worker,
             )
             raise
+
+    def _warn_replanning(self, task_id: str, stage: str, input_hash: str) -> None:
+        """Warn when a planning task that already succeeded is about to run again.
+
+        Its inputs changed (usually a prompt version bump in the code), so the
+        run re-plans and regenerates the video after it. The stored hash is
+        overwritten once the task starts, so the event keeps the old one.
+        """
+
+        stored = self.store.task_state(task_id)
+        if stored is None or stored["status"] != TaskStatus.SUCCEEDED.value:
+            return
+        status_before = getattr(self, "_status_before", None)
+        self.artifacts.event(
+            "replan_warning", stage=stage, task_id=task_id,
+            message=(
+                f"{task_id} already succeeded in this run (run status "
+                f"{status_before or 'unknown'}) but its inputs have changed, so it "
+                "runs again and everything planned after it is "
+                "redone. To rebuild scenes of a finished run, use retry-scenes or revise, "
+                "which keep its storyboard."
+            ),
+            previous_input_hash=stored["input_hash"], input_hash=input_hash,
+            run_status_before=status_before,
+        )
 
     def _prepare_run(self, input_path: Path, resume_dir: Optional[Path]) -> tuple[Path, str]:
         if resume_dir:
@@ -2422,6 +2492,12 @@ def _source_fallback_allowed(policy: str, audio_path: Optional[str]) -> bool:
 
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _input_hash(input_payload: Any) -> str:
+    """The task cache key of a task's inputs."""
+
+    return _hash_text(json.dumps(_serialize(input_payload), sort_keys=True, default=str))
 
 
 def _file_signature(path: Path) -> dict[str, str]:
