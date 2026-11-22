@@ -2,8 +2,9 @@
 
 A planning task's input hash includes its mode's prompt version, so a resume
 reuses a task only while that hash is unchanged. The digests below were
-computed by the code before the per-mode split (deep at v2.7.0-modes /
-v2.8.0-voice, brief at v2.7.1-brief-coverage / v2.8.1-voice). If one of these
+computed with the task-input formula from before the per-mode split: deep at
+v2.7.0-modes / v2.8.0-voice (what deep runs had before 070d988), brief at
+v2.7.1-brief-coverage / v2.8.1-voice (070d988's values). If one of these
 tests fails, every existing run of that mode re-plans on resume: change a
 digest only together with a deliberate version bump.
 """
